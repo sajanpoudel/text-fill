@@ -9,12 +9,17 @@ const JOB_HINTS = [
   "what you'll do",
   "about the role",
   "about the job",
+  "about this role",
+  "the role",
+  "your impact",
+  "what we're looking for",
 ];
 
 const state = {
   activeField: null,
   modal: null,
   button: null,
+  cachedJobDescription: null,
 };
 
 const normalizeText = (text) => text.replace(/\s+/g, " ").trim();
@@ -26,11 +31,14 @@ const extractSectionText = (element) => {
   return normalizeText(element.innerText || "");
 };
 
-const findJobSections = () => {
+const findJobSections = (searchAll = false) => {
   const sections = [];
-  const candidates = Array.from(
-    document.querySelectorAll("h1, h2, h3, h4, strong, b")
-  );
+  
+  // Search in all elements including hidden ones (for tabbed interfaces like Ashby)
+  const selector = searchAll 
+    ? "h1, h2, h3, h4, strong, b, [role='heading']"
+    : "h1, h2, h3, h4, strong, b";
+  const candidates = Array.from(document.querySelectorAll(selector));
 
   candidates.forEach((heading) => {
     const headingText = normalizeText(heading.innerText || "").toLowerCase();
@@ -39,9 +47,9 @@ const findJobSections = () => {
     }
     if (JOB_HINTS.some((hint) => headingText.includes(hint))) {
       const container =
-        heading.closest("section, article, div") || heading.parentElement;
+        heading.closest("section, article, div, [role='tabpanel']") || heading.parentElement;
       const text = extractSectionText(container);
-      if (text) {
+      if (text && text.length > 100) {
         sections.push(text);
       }
     }
@@ -50,16 +58,128 @@ const findJobSections = () => {
   return sections;
 };
 
-const extractJobDescription = () => {
-  const sections = findJobSections();
-  if (sections.length > 0) {
-    return sections.join("\n\n").slice(0, MAX_CONTEXT_CHARS);
+// Look for job description in hidden tabs/panels (Ashby, Greenhouse, Lever, etc.)
+const findHiddenJobContent = () => {
+  // Ashby: Look for Overview tab content
+  const ashbyOverview = document.querySelector(
+    '[data-tab="overview"], [aria-labelledby*="overview"], [id*="overview"], ' +
+    '[class*="overview"], [class*="job-description"], [class*="jobDescription"]'
+  );
+  if (ashbyOverview) {
+    const text = extractSectionText(ashbyOverview);
+    if (text && text.length > 200) {
+      return text;
+    }
   }
 
+  // Look in all tab panels (visible or hidden)
+  const tabPanels = document.querySelectorAll(
+    '[role="tabpanel"], [class*="tab-panel"], [class*="tabpanel"], ' +
+    '[class*="TabPanel"], [data-testid*="tab"]'
+  );
+  for (const panel of tabPanels) {
+    const text = extractSectionText(panel);
+    const lowerText = text.toLowerCase();
+    // Check if this panel has job description content
+    if (text.length > 300 && JOB_HINTS.some(hint => lowerText.includes(hint))) {
+      return text;
+    }
+  }
+
+  // Look for hidden elements that might contain job info
+  const hiddenContainers = document.querySelectorAll(
+    '[hidden], [aria-hidden="true"], [style*="display: none"], ' +
+    '[style*="display:none"], .hidden, .hide'
+  );
+  for (const container of hiddenContainers) {
+    const text = extractSectionText(container);
+    const lowerText = text.toLowerCase();
+    if (text.length > 300 && JOB_HINTS.some(hint => lowerText.includes(hint))) {
+      return text;
+    }
+  }
+
+  return null;
+};
+
+const extractJobDescription = () => {
+  // Return cached description if available
+  if (state.cachedJobDescription) {
+    return state.cachedJobDescription;
+  }
+
+  // Try to get from session storage (persists across tab switches)
+  const storageKey = `tfa_job_${window.location.hostname}${window.location.pathname.split('/').slice(0, -1).join('/')}`;
+  const cached = sessionStorage.getItem(storageKey);
+  if (cached && cached.length > 200) {
+    state.cachedJobDescription = cached;
+    return cached;
+  }
+
+  // First try visible sections
+  let sections = findJobSections(false);
+  if (sections.length > 0) {
+    const result = sections.join("\n\n").slice(0, MAX_CONTEXT_CHARS);
+    cacheJobDescription(storageKey, result);
+    return result;
+  }
+
+  // Try hidden tabs/panels (Ashby, etc.)
+  const hiddenContent = findHiddenJobContent();
+  if (hiddenContent) {
+    const result = hiddenContent.slice(0, MAX_CONTEXT_CHARS);
+    cacheJobDescription(storageKey, result);
+    return result;
+  }
+
+  // Search all elements including hidden
+  sections = findJobSections(true);
+  if (sections.length > 0) {
+    const result = sections.join("\n\n").slice(0, MAX_CONTEXT_CHARS);
+    cacheJobDescription(storageKey, result);
+    return result;
+  }
+
+  // Fallback to main content
   const main = document.querySelector("main, article") || document.body;
   const text = extractSectionText(main);
   return text.slice(0, MAX_CONTEXT_CHARS);
 };
+
+const cacheJobDescription = (key, text) => {
+  if (text && text.length > 200) {
+    state.cachedJobDescription = text;
+    try {
+      sessionStorage.setItem(key, text);
+    } catch (e) {
+      // Session storage might be full or disabled
+    }
+  }
+};
+
+// Auto-capture job description when viewing Overview tab
+const captureOnTabSwitch = () => {
+  const observer = new MutationObserver(() => {
+    const visibleContent = findJobSections(false);
+    if (visibleContent.length > 0) {
+      const text = visibleContent.join("\n\n").slice(0, MAX_CONTEXT_CHARS);
+      if (text.length > 300) {
+        const storageKey = `tfa_job_${window.location.hostname}${window.location.pathname.split('/').slice(0, -1).join('/')}`;
+        cacheJobDescription(storageKey, text);
+      }
+    }
+  });
+  
+  observer.observe(document.body, { 
+    childList: true, 
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class', 'hidden', 'aria-hidden', 'style']
+  });
+};
+
+// Start observing for tab switches
+captureOnTabSwitch();
 
 const extractPageContext = (field) => {
   const title = document.title || "";
