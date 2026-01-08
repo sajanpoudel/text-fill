@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Text Fill Assistant Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header>
+        <h1>Text Fill Assistant</h1>
+        <p>Connect your OpenAI key and upload your resume once.</p>
+      </header>
+
+      <section class="card">
+        <h2>OpenAI API Key</h2>
+        <label>
+          <span>API Key</span>
+          <input type="password" id="apiKey" placeholder="sk-..." />
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>Resume</h2>
+        <p class="hint">Upload a PDF or text file. We store extracted text locally in the extension.</p>
+        <input type="file" id="resumeFile" accept=".pdf,.txt" />
+        <textarea id="resumeText" placeholder="Or paste your resume text here..."></textarea>
+      </section>
+
+      <section class="card">
+        <h2>Save</h2>
+        <button id="save">Save Settings</button>
+        <span id="status"></span>
+      </section>
+    </main>
+
+    <script src="options.js"></script>
+  </body>
+</html>
