@@ -33,6 +33,18 @@ header p {
   font-size: 14px;
 }
 
+.logo-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.header-logo {
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+}
+
 /* Cards */
 .card {
   background: #fff;
@@ -217,15 +229,24 @@ select {
   position: relative;
   border: 2px dashed #ddd;
   border-radius: 8px;
-  padding: 20px;
+  padding: 24px 20px;
   text-align: center;
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
 }
 
 .file-upload:hover {
   border-color: #999;
   background: #fafafa;
+}
+
+.file-upload.drag-over {
+  border-color: #111;
+  background: #f5f5f5;
 }
 
 .file-upload input {
@@ -235,9 +256,40 @@ select {
   cursor: pointer;
 }
 
+.file-upload svg {
+  color: #999;
+}
+
 .file-upload span {
   font-size: 13px;
   color: #666;
+}
+
+.file-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.file-info span {
+  color: #333;
+}
+
+.btn-clear {
+  background: none;
+  border: none;
+  color: #999;
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 14px;
+}
+
+.btn-clear:hover {
+  color: #333;
 }
 
 /* Hint text */
@@ -286,4 +338,31 @@ select {
 
 #status.error {
   color: #dc2626;
+}
+
+/* Footer */
+.footer {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  padding: 16px 0;
+  margin-top: 8px;
+}
+
+.footer a {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #666;
+  text-decoration: none;
+  font-size: 13px;
+  transition: color 0.15s ease;
+}
+
+.footer a:hover {
+  color: #111;
+}
+
+.footer svg {
+  opacity: 0.7;
 }

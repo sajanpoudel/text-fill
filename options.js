@@ -12,10 +12,15 @@ const anthropicModelSelect = document.getElementById('anthropicModel');
 const geminiModelSelect = document.getElementById('geminiModel');
 const resumeFileInput = document.getElementById('resumeFile');
 const resumeTextInput = document.getElementById('resumeText');
+const fileUploadArea = document.getElementById('fileUploadArea');
+const uploadLabel = document.getElementById('uploadLabel');
+const fileInfo = document.getElementById('fileInfo');
+const fileName = document.getElementById('fileName');
+const clearFileBtn = document.getElementById('clearFile');
 const saveButton = document.getElementById('save');
 const status = document.getElementById('status');
 
-const MAX_RESUME_CHARS = 6000;
+const MAX_RESUME_CHARS = 8000;
 
 const providerNames = {
   openai: 'OpenAI',
@@ -91,6 +96,7 @@ const loadSettings = async () => {
     'anthropicKey',
     'geminiKey',
     'resumeText',
+    'resumeFileName',
   ]);
 
   activeProvider = data.provider || 'openai';
@@ -110,6 +116,11 @@ const loadSettings = async () => {
   geminiKeyInput.value = data.geminiKey || '';
   resumeTextInput.value = data.resumeText || '';
 
+  // Show file info if we have a saved file name
+  if (data.resumeFileName) {
+    showFileInfo(data.resumeFileName);
+  }
+
   // Set model selections
   if (data.model) {
     if (data.provider === 'openai') openaiModelSelect.value = data.model;
@@ -118,20 +129,102 @@ const loadSettings = async () => {
   }
 };
 
-// File upload handler
+// Show file info
+const showFileInfo = (name) => {
+  fileInfo.style.display = 'flex';
+  fileName.textContent = name;
+  fileUploadArea.style.display = 'none';
+};
+
+// Hide file info
+const hideFileInfo = () => {
+  fileInfo.style.display = 'none';
+  fileUploadArea.style.display = 'flex';
+  resumeFileInput.value = '';
+};
+
+// Clear file button
+clearFileBtn.addEventListener('click', () => {
+  hideFileInfo();
+  resumeTextInput.value = '';
+  chrome.storage.local.remove('resumeFileName');
+  showStatus('Resume cleared.');
+});
+
+// Drag and drop handling
+fileUploadArea.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  fileUploadArea.classList.add('drag-over');
+});
+
+fileUploadArea.addEventListener('dragleave', () => {
+  fileUploadArea.classList.remove('drag-over');
+});
+
+fileUploadArea.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  fileUploadArea.classList.remove('drag-over');
+  
+  const file = e.dataTransfer.files[0];
+  if (file) {
+    await handleFileUpload(file);
+  }
+});
+
+// Handle file upload (both PDF and text)
+const handleFileUpload = async (file) => {
+  const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+  
+  uploadLabel.textContent = 'Processing...';
+  
+  try {
+    let text = '';
+    
+    if (isPDF) {
+      // Use our PDF extractor
+      if (window.PDFExtractor) {
+        text = await window.PDFExtractor.extractText(file);
+        
+        if (!text || text.length < 50) {
+          showStatus('Could not extract text from PDF. Try a text file instead.', true);
+          uploadLabel.textContent = 'Drop PDF or text file here, or click to browse';
+          return;
+        }
+      } else {
+        showStatus('PDF parser not loaded. Please refresh the page.', true);
+        uploadLabel.textContent = 'Drop PDF or text file here, or click to browse';
+        return;
+      }
+    } else {
+      // Plain text file
+      text = await file.text();
+    }
+    
+    // Sanitize and set
+    const sanitized = sanitizeText(text, MAX_RESUME_CHARS);
+    resumeTextInput.value = sanitized;
+    
+    // Show file info
+    showFileInfo(file.name);
+    
+    // Save file name
+    chrome.storage.local.set({ resumeFileName: file.name });
+    
+    showStatus(`Resume loaded: ${sanitized.length} characters extracted.`);
+    
+  } catch (error) {
+    console.error('File processing error:', error);
+    showStatus('Failed to process file: ' + error.message, true);
+    uploadLabel.textContent = 'Drop PDF or text file here, or click to browse';
+  }
+};
+
+// File input change handler
 resumeFileInput.addEventListener('change', async (event) => {
   const file = event.target.files?.[0];
-  if (!file) return;
-
-  if (file.type === 'application/pdf') {
-    showStatus('PDF not supported. Please upload a .txt file.', true);
-    resumeFileInput.value = '';
-    return;
+  if (file) {
+    await handleFileUpload(file);
   }
-
-  const text = await file.text();
-  resumeTextInput.value = sanitizeText(text, MAX_RESUME_CHARS);
-  showStatus('Resume loaded.');
 });
 
 // Save settings

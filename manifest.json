@@ -1,11 +1,22 @@
 {
   "manifest_version": 3,
-  "name": "Text Fill Assistant",
-  "version": "0.1.0",
-  "description": "Fill job application text areas using your resume and job description context.",
+  "name": "CheatResume - Text Fill",
+  "version": "0.2.0",
+  "description": "AI-powered job application assistant. Fill text areas using your resume and job description context.",
+  "icons": {
+    "16": "logo.png",
+    "32": "logo.png",
+    "48": "logo.png",
+    "128": "logo.png"
+  },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Text Fill Assistant"
+    "default_title": "CheatResume - Text Fill",
+    "default_icon": {
+      "16": "logo.png",
+      "32": "logo.png",
+      "48": "logo.png"
+    }
   },
   "options_page": "options.html",
   "permissions": ["storage", "activeTab"],
