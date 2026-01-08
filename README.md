@@ -8,7 +8,7 @@ A Chrome extension that generates contextual responses for job application forms
 
 ## Overview
 
-Text Fill analyzes job postings and uses AI to draft personalized answers for application questions. It extracts job descriptions automatically from platforms like Ashby, Greenhouse, Lever, and Workable, then generates responses tailored to your background.
+Text Fill analyzes job postings and uses AI to draft personalized answers for application questions. It extracts job descriptions automatically from platforms like Ashby, Greenhouse, Lever, Workable and any other, then generates responses tailored to your background.
 
 ## Supported AI Providers
 
