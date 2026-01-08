@@ -153,7 +153,7 @@ const requestAnthropic = async ({ apiKey, model, system, user }) => {
 
 const requestGemini = async ({ apiKey, model, system, user }) => {
   // Combine system and user prompts for Gemini 3
-  const fullPrompt = `${system}\n\n${user}\n\nWrite a detailed response with 2-4 paragraphs.`;
+  const fullPrompt = `${system}\n\n${user}`;
   
   const response = await fetch(
     `${GEMINI_ENDPOINT}/${model}:generateContent?key=${apiKey}`,
@@ -169,7 +169,7 @@ const requestGemini = async ({ apiKey, model, system, user }) => {
           },
         ],
         generationConfig: {
-          maxOutputTokens: 1024,
+          maxOutputTokens: 2048,
           temperature: 0.7,
         },
       }),
@@ -183,18 +183,42 @@ const requestGemini = async ({ apiKey, model, system, user }) => {
 
   const data = await response.json();
   
-  // Extract text from response
-  let answer = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  // Log full response for debugging
+  console.log('=== GEMINI FULL RESPONSE ===');
+  console.log(JSON.stringify(data, null, 2));
+  
+  // Check finish reason for truncation
+  const finishReason = data?.candidates?.[0]?.finishReason;
+  console.log('Finish reason:', finishReason);
+  if (finishReason && finishReason !== 'STOP') {
+    console.warn('Response may be incomplete. Finish reason:', finishReason);
+  }
+  
+  // Extract text - try multiple paths for different API versions
+  let answer = null;
+  
+  // Path 1: Standard candidates path
+  const parts = data?.candidates?.[0]?.content?.parts;
+  if (parts && Array.isArray(parts)) {
+    answer = parts.map(p => p.text || '').join('');
+  }
+  
+  // Path 2: Direct text field (Gemini 3)
+  if (!answer) {
+    answer = data?.text;
+  }
   
   if (!answer) {
-    console.error('Gemini response:', JSON.stringify(data, null, 2));
+    console.error('Gemini response parsing failed:', JSON.stringify(data, null, 2));
     throw new Error('Could not parse Gemini response');
   }
   
-  // Clean up formatting - ensure proper paragraph separation
+  console.log('Extracted answer length:', answer.length, 'chars');
+  
+  // Clean up formatting
   answer = answer
-    .replace(/\*\s*\*\s*\*/g, '\n\n')  // Replace *** with paragraph break
-    .replace(/\n{3,}/g, '\n\n')         // Max 2 newlines
+    .replace(/\*\s*\*\s*\*/g, '\n\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
   
   return answer;
