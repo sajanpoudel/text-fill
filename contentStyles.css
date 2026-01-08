@@ -96,6 +96,39 @@
   border: 1px solid #e2e8f0;
 }
 
+.tfa-context-input {
+  width: 100%;
+  min-height: 80px;
+  max-height: 120px;
+  border-radius: 10px;
+  border: 1px solid #d7dde5;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+  background: #f8fafc;
+  color: #2d3748;
+}
+
+.tfa-context-input::placeholder {
+  color: #94a3b8;
+}
+
+.tfa-context-tip {
+  background: #fef3c7;
+  color: #92400e;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.tfa-hint {
+  font-weight: 400;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
 .tfa-output {
   width: 100%;
   min-height: 160px;

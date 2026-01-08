@@ -89,7 +89,33 @@ const requestOpenAI = async ({ apiKey, model, system, user }) => {
   }
 
   const data = await response.json();
-  return data?.output_text?.trim();
+  
+  // Try multiple possible response fields for different API versions
+  let answer = data?.output_text 
+    || data?.output?.[0]?.content?.[0]?.text
+    || data?.output?.[0]?.text
+    || (Array.isArray(data?.output) && typeof data.output[0] === 'string' ? data.output[0] : null)
+    || data?.choices?.[0]?.message?.content 
+    || data?.text 
+    || data?.content?.[0]?.text;
+  
+  // If answer is still not found, check if output is directly a string
+  if (!answer && typeof data?.output === 'string') {
+    answer = data.output;
+  }
+  
+  // Last resort: stringify the response for debugging
+  if (!answer) {
+    console.log('OpenAI full response:', JSON.stringify(data));
+    throw new Error(`Could not parse API response. Check console for details.`);
+  }
+  
+  // Ensure answer is a string
+  if (typeof answer !== 'string') {
+    answer = String(answer);
+  }
+  
+  return answer.trim();
 };
 
 const requestAnthropic = async ({ apiKey, model, system, user }) => {

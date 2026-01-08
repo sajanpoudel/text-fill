@@ -103,6 +103,117 @@ const findHiddenJobContent = () => {
   return null;
 };
 
+// Find the Overview tab button on platforms like Ashby
+const findOverviewTabButton = () => {
+  // Common selectors for Overview/Job Description tabs
+  const selectors = [
+    'button:has-text("Overview")',
+    'a:has-text("Overview")', 
+    '[role="tab"]:has-text("Overview")',
+    '[data-tab="overview"]',
+    '[aria-controls*="overview"]',
+    'button[class*="tab"]',
+    'a[class*="tab"]',
+  ];
+  
+  // Try to find by text content
+  const allButtons = document.querySelectorAll('button, a, [role="tab"]');
+  for (const btn of allButtons) {
+    const text = btn.textContent?.trim().toLowerCase();
+    if (text === 'overview' || text === 'job description' || text === 'description') {
+      return btn;
+    }
+  }
+  
+  return null;
+};
+
+// Find the Application tab button to switch back
+const findApplicationTabButton = () => {
+  const allButtons = document.querySelectorAll('button, a, [role="tab"]');
+  for (const btn of allButtons) {
+    const text = btn.textContent?.trim().toLowerCase();
+    if (text === 'application' || text === 'apply' || text === 'apply now') {
+      return btn;
+    }
+  }
+  return null;
+};
+
+// Automatically fetch job description by switching tabs
+const autoFetchJobDescription = () => {
+  return new Promise((resolve) => {
+    const overviewBtn = findOverviewTabButton();
+    const applicationBtn = findApplicationTabButton();
+    
+    if (!overviewBtn) {
+      resolve(null);
+      return;
+    }
+    
+    // Remember current scroll position
+    const scrollPos = window.scrollY;
+    
+    // Click Overview tab
+    overviewBtn.click();
+    
+    // Wait for content to load
+    setTimeout(() => {
+      // Extract job description from Overview
+      const sections = findJobSections(false);
+      let jobDescription = null;
+      
+      if (sections.length > 0) {
+        jobDescription = sections.join("\n\n").slice(0, MAX_CONTEXT_CHARS);
+      } else {
+        // Try to get main content
+        const main = document.querySelector('main, article, [role="tabpanel"]');
+        if (main) {
+          jobDescription = extractSectionText(main).slice(0, MAX_CONTEXT_CHARS);
+        }
+      }
+      
+      // Switch back to Application tab
+      if (applicationBtn) {
+        applicationBtn.click();
+      }
+      
+      // Restore scroll position
+      setTimeout(() => {
+        window.scrollTo(0, scrollPos);
+      }, 100);
+      
+      // Cache the job description
+      if (jobDescription && jobDescription.length > 200) {
+        const storageKey = getJobStorageKey();
+        cacheJobDescription(storageKey, jobDescription);
+      }
+      
+      resolve(jobDescription);
+    }, 500); // Wait 500ms for tab content to load
+  });
+};
+
+// Check if content looks like form content (not job description)
+const isFormContent = (text) => {
+  if (!text) return true;
+  const formIndicators = [
+    'upload your resume',
+    'autofill from resume',
+    'full name',
+    'preferred name',
+    'email',
+    'phone number',
+    'submit application',
+    'upload file',
+    'drag and drop',
+    'personal information'
+  ];
+  const lowerText = text.toLowerCase();
+  const matches = formIndicators.filter(indicator => lowerText.includes(indicator));
+  return matches.length >= 3;
+};
+
 // Get unique key for current job posting (uses full path to avoid mixing jobs)
 const getJobStorageKey = () => {
   // Use full pathname - each job has unique URL like /jobs/swe-intern-123
@@ -315,10 +426,27 @@ const closeModal = () => {
   }
 };
 
-const openModal = () => {
+// Open modal - async to allow auto-fetching job description
+const openModal = async () => {
   closeModal();
   if (!state.activeField) {
     return;
+  }
+
+  // First, get the job description (might need to auto-fetch)
+  let contextText = extractJobDescription();
+  
+  // If we got form content instead of job description, try auto-fetching
+  if (isFormContent(contextText)) {
+    // Check if there's an Overview tab we can click
+    const overviewBtn = findOverviewTabButton();
+    if (overviewBtn) {
+      // Auto-fetch from Overview tab
+      const fetched = await autoFetchJobDescription();
+      if (fetched && !isFormContent(fetched)) {
+        contextText = fetched;
+      }
+    }
   }
 
   const modal = document.createElement("div");
@@ -357,9 +485,16 @@ const openModal = () => {
 
   const question = getQuestionText(state.activeField) || "Job application response";
   modal.querySelector(".tfa-question").textContent = question;
-  const contextText = extractJobDescription();
-  modal.querySelector(".tfa-context").textContent =
-    contextText || "No job description text detected.";
+  
+  const contextDiv = modal.querySelector(".tfa-context");
+  
+  // Show the job context (or error if still form content)
+  if (isFormContent(contextText)) {
+    contextDiv.innerHTML = '<span style="color: #b42318;">⚠️ Could not auto-detect job description. Please visit the Overview tab first, then try again.</span>';
+  } else {
+    contextDiv.textContent = contextText || "No job description detected.";
+  }
+  
   const pageContext = extractPageContext(state.activeField);
 
   const output = modal.querySelector(".tfa-output");
@@ -370,6 +505,20 @@ const openModal = () => {
   generateButton.addEventListener("click", async () => {
     error.hidden = true;
     output.value = "";
+    
+    // Check if we have valid job description
+    if (isFormContent(contextText)) {
+      error.hidden = false;
+      error.textContent = "Please visit the Overview tab first to capture the job description, then try again.";
+      return;
+    }
+    
+    if (!contextText || contextText.length < 50) {
+      error.hidden = false;
+      error.textContent = "No job description found. Please visit the job description page first.";
+      return;
+    }
+    
     generateButton.disabled = true;
     generateButton.textContent = "Working...";
 
