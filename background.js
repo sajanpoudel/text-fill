@@ -80,8 +80,6 @@ const requestOpenAI = async ({ apiKey, model, system, user }) => {
       model,
       instructions: system,
       input: user,
-      temperature: 0.5,
-      max_output_tokens: 320,
     }),
   });
 
