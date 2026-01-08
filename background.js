@@ -1,4 +1,4 @@
-const OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions";
+const OPENAI_ENDPOINT = "https://api.openai.com/v1/responses";
 const ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages";
 const GEMINI_ENDPOINT =
   "https://generativelanguage.googleapis.com/v1beta/models";
@@ -78,12 +78,10 @@ const requestOpenAI = async ({ apiKey, model, system, user }) => {
     },
     body: JSON.stringify({
       model,
+      instructions: system,
+      input: user,
       temperature: 0.5,
-      max_tokens: 320,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
+      max_output_tokens: 320,
     }),
   });
 
@@ -93,7 +91,7 @@ const requestOpenAI = async ({ apiKey, model, system, user }) => {
   }
 
   const data = await response.json();
-  return data?.choices?.[0]?.message?.content?.trim();
+  return data?.output_text?.trim();
 };
 
 const requestAnthropic = async ({ apiKey, model, system, user }) => {
@@ -132,10 +130,13 @@ const requestGemini = async ({ apiKey, model, system, user }) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
+        system_instruction: {
+          parts: [{ text: system }],
+        },
         contents: [
           {
             role: "user",
-            parts: [{ text: `${system}\n\n${user}` }],
+            parts: [{ text: user }],
           },
         ],
         generationConfig: {
@@ -189,9 +190,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const activeModel =
         model ||
         (activeProvider === "anthropic"
-          ? "claude-3-5-sonnet-20241022"
+          ? "claude-sonnet-4-5"
           : activeProvider === "gemini"
-            ? "gemini-1.5-pro"
+            ? "gemini-3-pro-preview"
             : "gpt-5-nano");
       const activeMode = mode || "job";
 

@@ -18,16 +18,16 @@ const MAX_GENERAL_CHARS = 6000;
 
 const providerModels = {
   openai: [
-    { value: "gpt-5-nano", label: "gpt-5-nano" },
-    { value: "gpt-4.1-mini", label: "gpt-4.1-mini" },
+    { value: "gpt-5-nano", label: "GPT-5 Nano" },
+    { value: "gpt-5-mini", label: "GPT-5 Mini" },
   ],
   anthropic: [
-    { value: "claude-3-5-sonnet-20241022", label: "claude-3.5-sonnet" },
-    { value: "claude-3-5-haiku-20241022", label: "claude-3.5-haiku" },
+    { value: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
+    { value: "claude-haiku-3-5", label: "Claude Haiku 3.5" },
   ],
   gemini: [
-    { value: "gemini-1.5-pro", label: "gemini-1.5-pro" },
-    { value: "gemini-1.5-flash", label: "gemini-1.5-flash" },
+    { value: "gemini-3-pro-preview", label: "Gemini 3 Pro" },
+    { value: "gemini-3-flash-preview", label: "Gemini 3 Flash" },
   ],
 };
 
@@ -94,9 +94,9 @@ const loadSettings = async () => {
   const activeModel =
     model ||
     (activeProvider === "anthropic"
-      ? "claude-3-5-sonnet-20241022"
+      ? "claude-sonnet-4-5"
       : activeProvider === "gemini"
-        ? "gemini-1.5-pro"
+        ? "gemini-3-pro-preview"
         : "gpt-5-nano");
 
   providerSelect.value = activeProvider;
