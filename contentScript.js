@@ -127,7 +127,12 @@ const ensureButton = () => {
   button.className = "tfa-floating-button";
   button.type = "button";
   button.textContent = "Fill with AI";
-  button.addEventListener("click", openModal);
+  // Use mousedown to capture click before blur hides the button
+  button.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openModal();
+  });
   document.body.appendChild(button);
   state.button = button;
   return button;
@@ -253,9 +258,12 @@ const handleFocus = (event) => {
 };
 
 const handleBlur = () => {
-  if (state.button) {
-    state.button.hidden = true;
-  }
+  // Delay hiding to allow button click to register
+  setTimeout(() => {
+    if (state.button && !state.modal) {
+      state.button.hidden = true;
+    }
+  }, 150);
 };
 
 window.addEventListener("focusin", handleFocus);
