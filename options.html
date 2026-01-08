@@ -14,18 +14,59 @@
       </header>
 
       <section class="card">
-        <h2>OpenAI API Key</h2>
+        <h2>Provider</h2>
         <label>
-          <span>API Key</span>
-          <input type="password" id="apiKey" placeholder="sk-..." />
+          <span>Provider</span>
+          <select id="provider">
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="gemini">Google Gemini</option>
+          </select>
         </label>
+        <label>
+          <span>Model</span>
+          <select id="model"></select>
+        </label>
+        <div class="field-grid">
+          <label>
+            <span>OpenAI API Key</span>
+            <input type="password" id="openaiKey" placeholder="sk-..." />
+          </label>
+          <label>
+            <span>Anthropic API Key</span>
+            <input type="password" id="anthropicKey" placeholder="sk-ant-..." />
+          </label>
+          <label>
+            <span>Gemini API Key</span>
+            <input type="password" id="geminiKey" placeholder="AIza..." />
+          </label>
+        </div>
       </section>
 
       <section class="card">
-        <h2>Resume</h2>
-        <p class="hint">Upload a PDF or text file. We store extracted text locally in the extension.</p>
-        <input type="file" id="resumeFile" accept=".pdf,.txt" />
-        <textarea id="resumeText" placeholder="Or paste your resume text here..."></textarea>
+        <h2>Mode</h2>
+        <label>
+          <span>Mode</span>
+          <select id="mode">
+            <option value="job">Job application</option>
+            <option value="general">General writing</option>
+          </select>
+        </label>
+        <div id="jobSettings">
+          <h3>Resume</h3>
+          <p class="hint">Upload a text file (PDF parsing not supported yet). We store extracted text locally in the extension.</p>
+          <input type="file" id="resumeFile" accept=".txt,.md,.pdf" />
+          <textarea id="resumeText" placeholder="Or paste your resume text here..."></textarea>
+        </div>
+        <div id="generalSettings" class="hidden">
+          <h3>System prompt</h3>
+          <p class="hint">This prompt is used for general writing mode.</p>
+          <textarea id="systemPrompt" placeholder="Describe how the assistant should write..."></textarea>
+          <h3>Reference context</h3>
+          <p class="hint">Optional extra context. Upload a text file or paste it here.</p>
+          <input type="file" id="generalFile" accept=".txt,.md,.pdf" />
+          <textarea id="generalContextText" placeholder="Paste any supporting context..."></textarea>
+        </div>
       </section>
 
       <section class="card">

@@ -1,4 +1,15 @@
-const MAX_CONTEXT_CHARS = 4000;
+const MAX_CONTEXT_CHARS = 5000;
+const MAX_PAGE_CHARS = 6000;
+const JOB_HINTS = [
+  "job description",
+  "responsibilities",
+  "requirements",
+  "qualifications",
+  "what you will do",
+  "what you'll do",
+  "about the role",
+  "about the job",
+];
 
 const state = {
   activeField: null,
@@ -6,10 +17,67 @@ const state = {
   button: null,
 };
 
+const normalizeText = (text) => text.replace(/\s+/g, " ").trim();
+
+const extractSectionText = (element) => {
+  if (!element) {
+    return "";
+  }
+  return normalizeText(element.innerText || "");
+};
+
+const findJobSections = () => {
+  const sections = [];
+  const candidates = Array.from(
+    document.querySelectorAll("h1, h2, h3, h4, strong, b")
+  );
+
+  candidates.forEach((heading) => {
+    const headingText = normalizeText(heading.innerText || "").toLowerCase();
+    if (!headingText) {
+      return;
+    }
+    if (JOB_HINTS.some((hint) => headingText.includes(hint))) {
+      const container =
+        heading.closest("section, article, div") || heading.parentElement;
+      const text = extractSectionText(container);
+      if (text) {
+        sections.push(text);
+      }
+    }
+  });
+
+  return sections;
+};
+
 const extractJobDescription = () => {
+  const sections = findJobSections();
+  if (sections.length > 0) {
+    return sections.join("\n\n").slice(0, MAX_CONTEXT_CHARS);
+  }
+
   const main = document.querySelector("main, article") || document.body;
-  const text = (main?.innerText || "").replace(/\s+/g, " ").trim();
+  const text = extractSectionText(main);
   return text.slice(0, MAX_CONTEXT_CHARS);
+};
+
+const extractPageContext = (field) => {
+  const title = document.title || "";
+  const url = window.location.href || "";
+  const metaDescription = document.querySelector("meta[name='description']")?.content || "";
+  const fieldContainer = field?.closest("section, form, div");
+  const fieldContext = extractSectionText(fieldContainer);
+  const pageText = extractSectionText(document.body);
+
+  const parts = [
+    title ? `Page title: ${title}` : "",
+    url ? `URL: ${url}` : "",
+    metaDescription ? `Meta description: ${metaDescription}` : "",
+    fieldContext ? `Field context: ${fieldContext}` : "",
+    pageText ? `Page text: ${pageText}` : "",
+  ].filter(Boolean);
+
+  return parts.join("\n").slice(0, MAX_PAGE_CHARS);
 };
 
 const getQuestionText = (field) => {
@@ -34,8 +102,20 @@ const getQuestionText = (field) => {
     return field.placeholder.trim();
   }
 
+  const describedBy = field.getAttribute("aria-describedby");
+  if (describedBy) {
+    const described = describedBy
+      .split(" ")
+      .map((id) => document.getElementById(id)?.innerText || "")
+      .join(" ")
+      .trim();
+    if (described) {
+      return described;
+    }
+  }
+
   const parentText = field.closest("section, form, div")?.innerText || "";
-  return parentText.split("\n").slice(0, 3).join(" ").trim();
+  return normalizeText(parentText.split("\n").slice(0, 3).join(" "));
 };
 
 const ensureButton = () => {
@@ -88,6 +168,8 @@ const openModal = () => {
       <div class="tfa-body">
         <label class="tfa-label">Question</label>
         <div class="tfa-question"></div>
+        <label class="tfa-label">Job context</label>
+        <div class="tfa-context"></div>
         <label class="tfa-label">Answer</label>
         <textarea class="tfa-output" placeholder="Generate a response..."></textarea>
         <div class="tfa-error" hidden></div>
@@ -108,6 +190,10 @@ const openModal = () => {
 
   const question = getQuestionText(state.activeField) || "Job application response";
   modal.querySelector(".tfa-question").textContent = question;
+  const contextText = extractJobDescription();
+  modal.querySelector(".tfa-context").textContent =
+    contextText || "No job description text detected.";
+  const pageContext = extractPageContext(state.activeField);
 
   const output = modal.querySelector(".tfa-output");
   const error = modal.querySelector(".tfa-error");
@@ -124,7 +210,8 @@ const openModal = () => {
       type: "generateAnswer",
       question,
       fieldValue: state.activeField.value,
-      jobDescription: extractJobDescription(),
+      jobDescription: contextText,
+      pageContext,
     });
 
     generateButton.disabled = false;

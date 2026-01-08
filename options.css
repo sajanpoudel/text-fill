@@ -41,6 +41,7 @@ label {
 }
 
 input[type="password"],
+select,
 textarea {
   border-radius: 10px;
   border: 1px solid #d7dde5;
@@ -69,6 +70,24 @@ button {
   color: #4a5568;
   font-size: 13px;
   margin: 0;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+#jobSettings,
+#generalSettings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#generalSettings.hidden,
+#jobSettings.hidden {
+  display: none;
 }
 
 #status {
