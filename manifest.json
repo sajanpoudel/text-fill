@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Text Fill Assistant",
+  "version": "0.1.0",
+  "description": "Fill job application text areas using your resume and job description context.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Text Fill Assistant"
+  },
+  "options_page": "options.html",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": [
+    "https://api.openai.com/*",
+    "https://api.anthropic.com/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["contentScript.js"],
+      "css": ["contentStyles.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
