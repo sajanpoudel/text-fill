@@ -20,6 +20,7 @@ const state = {
   modal: null,
   button: null,
   cachedJobDescription: null,
+  currentJobUrl: null, // Track current job URL to detect navigation
 };
 
 const normalizeText = (text) => text.replace(/\s+/g, " ").trim();
@@ -102,14 +103,34 @@ const findHiddenJobContent = () => {
   return null;
 };
 
+// Get unique key for current job posting (uses full path to avoid mixing jobs)
+const getJobStorageKey = () => {
+  // Use full pathname - each job has unique URL like /jobs/swe-intern-123
+  return `tfa_job_${window.location.hostname}${window.location.pathname}`;
+};
+
+// Check if we navigated to a different job page
+const checkUrlChanged = () => {
+  const currentUrl = window.location.href;
+  if (state.currentJobUrl && state.currentJobUrl !== currentUrl) {
+    // URL changed - clear in-memory cache (forces fresh extraction)
+    state.cachedJobDescription = null;
+  }
+  state.currentJobUrl = currentUrl;
+};
+
 const extractJobDescription = () => {
-  // Return cached description if available
+  // Check if URL changed (navigated to different job)
+  checkUrlChanged();
+
+  // Return cached description if available for this job
   if (state.cachedJobDescription) {
     return state.cachedJobDescription;
   }
 
-  // Try to get from session storage (persists across tab switches)
-  const storageKey = `tfa_job_${window.location.hostname}${window.location.pathname.split('/').slice(0, -1).join('/')}`;
+  // Try to get from session storage (persists across Overview/Application tab switches)
+  // Session storage clears when browser tab is closed
+  const storageKey = getJobStorageKey();
   const cached = sessionStorage.getItem(storageKey);
   if (cached && cached.length > 200) {
     state.cachedJobDescription = cached;
@@ -160,11 +181,14 @@ const cacheJobDescription = (key, text) => {
 // Auto-capture job description when viewing Overview tab
 const captureOnTabSwitch = () => {
   const observer = new MutationObserver(() => {
+    // Check for URL changes in SPAs
+    checkUrlChanged();
+    
     const visibleContent = findJobSections(false);
     if (visibleContent.length > 0) {
       const text = visibleContent.join("\n\n").slice(0, MAX_CONTEXT_CHARS);
       if (text.length > 300) {
-        const storageKey = `tfa_job_${window.location.hostname}${window.location.pathname.split('/').slice(0, -1).join('/')}`;
+        const storageKey = getJobStorageKey();
         cacheJobDescription(storageKey, text);
       }
     }
@@ -177,6 +201,24 @@ const captureOnTabSwitch = () => {
     attributeFilter: ['class', 'hidden', 'aria-hidden', 'style']
   });
 };
+
+// Listen for URL changes (for SPAs that don't reload the page)
+let lastUrl = window.location.href;
+const urlObserver = new MutationObserver(() => {
+  if (window.location.href !== lastUrl) {
+    lastUrl = window.location.href;
+    // Clear cache when navigating to different job
+    state.cachedJobDescription = null;
+    state.currentJobUrl = window.location.href;
+  }
+});
+urlObserver.observe(document.body, { childList: true, subtree: true });
+
+// Also listen for popstate (back/forward navigation)
+window.addEventListener('popstate', () => {
+  state.cachedJobDescription = null;
+  state.currentJobUrl = window.location.href;
+});
 
 // Start observing for tab switches
 captureOnTabSwitch();
