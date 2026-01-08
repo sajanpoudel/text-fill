@@ -15,11 +15,23 @@
 
       <!-- Provider Tabs -->
       <section class="card">
-        <h2>AI Provider</h2>
+        <div class="card-header">
+          <h2>AI Provider</h2>
+          <span class="active-badge" id="activeBadge">Active: OpenAI</span>
+        </div>
         <div class="tabs" role="tablist">
-          <button class="tab active" data-provider="openai" role="tab">OpenAI</button>
-          <button class="tab" data-provider="anthropic" role="tab">Anthropic</button>
-          <button class="tab" data-provider="gemini" role="tab">Gemini</button>
+          <button class="tab active" data-provider="openai" role="tab">
+            <span class="tab-name">OpenAI</span>
+            <span class="tab-check">✓</span>
+          </button>
+          <button class="tab" data-provider="anthropic" role="tab">
+            <span class="tab-name">Anthropic</span>
+            <span class="tab-check">✓</span>
+          </button>
+          <button class="tab" data-provider="gemini" role="tab">
+            <span class="tab-name">Gemini</span>
+            <span class="tab-check">✓</span>
+          </button>
         </div>
 
         <!-- OpenAI Panel -->

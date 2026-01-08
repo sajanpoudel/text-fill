@@ -2,6 +2,7 @@
 const tabs = document.querySelectorAll('.tab');
 const panels = document.querySelectorAll('.tab-panel');
 const eyeButtons = document.querySelectorAll('.eye-btn');
+const activeBadge = document.getElementById('activeBadge');
 
 const openaiKeyInput = document.getElementById('openaiKey');
 const anthropicKeyInput = document.getElementById('anthropicKey');
@@ -16,7 +17,18 @@ const status = document.getElementById('status');
 
 const MAX_RESUME_CHARS = 6000;
 
+const providerNames = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic', 
+  gemini: 'Gemini'
+};
+
 let activeProvider = 'openai';
+
+// Update the active badge
+const updateActiveBadge = (provider) => {
+  activeBadge.textContent = `Active: ${providerNames[provider]}`;
+};
 
 // Tab switching
 tabs.forEach(tab => {
@@ -32,6 +44,7 @@ tabs.forEach(tab => {
     document.querySelector(`[data-panel="${provider}"]`).classList.add('active');
     
     activeProvider = provider;
+    updateActiveBadge(provider);
   });
 });
 
@@ -87,6 +100,9 @@ const loadSettings = async () => {
   panels.forEach(p => p.classList.remove('active'));
   document.querySelector(`[data-provider="${activeProvider}"]`).classList.add('active');
   document.querySelector(`[data-panel="${activeProvider}"]`).classList.add('active');
+  
+  // Update badge
+  updateActiveBadge(activeProvider);
 
   // Set values
   openaiKeyInput.value = data.openaiKey || '';

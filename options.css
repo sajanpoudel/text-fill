@@ -53,6 +53,21 @@ header p {
   color: #111;
 }
 
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.active-badge {
+  font-size: 12px;
+  font-weight: 500;
+  color: #fff;
+  background: #111;
+  padding: 4px 10px;
+  border-radius: 20px;
+}
+
 /* Tabs */
 .tabs {
   display: flex;
@@ -73,6 +88,10 @@ header p {
   color: #666;
   cursor: pointer;
   transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
 .tab:last-child {
@@ -86,6 +105,15 @@ header p {
 .tab.active {
   background: #111;
   color: #fff;
+}
+
+.tab-check {
+  display: none;
+  font-size: 12px;
+}
+
+.tab.active .tab-check {
+  display: inline;
 }
 
 /* Tab Panels */
