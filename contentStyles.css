@@ -1,0 +1,130 @@
+.tfa-floating-button {
+  position: absolute;
+  z-index: 2147483647;
+  background: #0b2f3a;
+  color: #fff;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 18px;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+
+.tfa-floating-button[hidden] {
+  display: none;
+}
+
+.tfa-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 20, 30, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2147483647;
+  padding: 24px;
+}
+
+.tfa-card {
+  background: #ffffff;
+  border-radius: 16px;
+  width: min(640px, 94vw);
+  box-shadow: 0 16px 40px rgba(15, 20, 30, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+}
+
+.tfa-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.tfa-header h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #0b2f3a;
+}
+
+.tfa-header p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: #4a5568;
+}
+
+.tfa-close {
+  background: none;
+  border: none;
+  color: #0b2f3a;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.tfa-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tfa-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #4a5568;
+}
+
+.tfa-question {
+  padding: 10px 12px;
+  background: #f5f7fb;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #1a202c;
+}
+
+.tfa-output {
+  width: 100%;
+  min-height: 160px;
+  border-radius: 10px;
+  border: 1px solid #d7dde5;
+  padding: 12px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.tfa-error {
+  background: #fdecea;
+  color: #b42318;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.tfa-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.tfa-secondary,
+.tfa-primary {
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  border: none;
+}
+
+.tfa-secondary {
+  background: #edf2f7;
+  color: #1a202c;
+}
+
+.tfa-primary {
+  background: #0b2f3a;
+  color: #ffffff;
+}
