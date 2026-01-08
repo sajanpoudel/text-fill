@@ -38,7 +38,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["logo.png"],
+      "resources": ["logo.png", "pdf.worker.min.js"],
       "matches": ["<all_urls>"]
     }
   ]
