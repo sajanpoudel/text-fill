@@ -90,29 +90,33 @@ const requestOpenAI = async ({ apiKey, model, system, user }) => {
 
   const data = await response.json();
   
-  // Try multiple possible response fields for different API versions
-  let answer = data?.output_text 
-    || data?.output?.[0]?.content?.[0]?.text
-    || data?.output?.[0]?.text
-    || (Array.isArray(data?.output) && typeof data.output[0] === 'string' ? data.output[0] : null)
-    || data?.choices?.[0]?.message?.content 
-    || data?.text 
-    || data?.content?.[0]?.text;
+  let answer = null;
   
-  // If answer is still not found, check if output is directly a string
-  if (!answer && typeof data?.output === 'string') {
-    answer = data.output;
+  // Primary: output_text convenience property (aggregates all text output)
+  if (typeof data?.output_text === 'string' && data.output_text) {
+    answer = data.output_text;
+  }
+  // Secondary: Parse output array manually
+  // Format: output[].type === "message" -> content[].type === "output_text" -> text
+  else if (Array.isArray(data?.output)) {
+    const textParts = [];
+    for (const item of data.output) {
+      if (item?.type === 'message' && Array.isArray(item?.content)) {
+        for (const content of item.content) {
+          if (content?.type === 'output_text' && typeof content?.text === 'string') {
+            textParts.push(content.text);
+          }
+        }
+      }
+    }
+    if (textParts.length > 0) {
+      answer = textParts.join('\n');
+    }
   }
   
-  // Last resort: stringify the response for debugging
   if (!answer) {
-    console.log('OpenAI full response:', JSON.stringify(data));
-    throw new Error(`Could not parse API response. Check console for details.`);
-  }
-  
-  // Ensure answer is a string
-  if (typeof answer !== 'string') {
-    answer = String(answer);
+    console.error('OpenAI API response:', JSON.stringify(data, null, 2));
+    throw new Error(`Could not parse API response. Check browser console for details.`);
   }
   
   return answer.trim();

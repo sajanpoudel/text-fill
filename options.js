@@ -1,199 +1,157 @@
-const providerSelect = document.getElementById("provider");
-const modelSelect = document.getElementById("model");
-const modeSelect = document.getElementById("mode");
-const openaiKeyInput = document.getElementById("openaiKey");
-const anthropicKeyInput = document.getElementById("anthropicKey");
-const geminiKeyInput = document.getElementById("geminiKey");
-const resumeFileInput = document.getElementById("resumeFile");
-const resumeTextInput = document.getElementById("resumeText");
-const systemPromptInput = document.getElementById("systemPrompt");
-const generalFileInput = document.getElementById("generalFile");
-const generalContextInput = document.getElementById("generalContextText");
-const saveButton = document.getElementById("save");
-const status = document.getElementById("status");
-const jobSettings = document.getElementById("jobSettings");
-const generalSettings = document.getElementById("generalSettings");
+// Elements
+const tabs = document.querySelectorAll('.tab');
+const panels = document.querySelectorAll('.tab-panel');
+const eyeButtons = document.querySelectorAll('.eye-btn');
+
+const openaiKeyInput = document.getElementById('openaiKey');
+const anthropicKeyInput = document.getElementById('anthropicKey');
+const geminiKeyInput = document.getElementById('geminiKey');
+const openaiModelSelect = document.getElementById('openaiModel');
+const anthropicModelSelect = document.getElementById('anthropicModel');
+const geminiModelSelect = document.getElementById('geminiModel');
+const resumeFileInput = document.getElementById('resumeFile');
+const resumeTextInput = document.getElementById('resumeText');
+const saveButton = document.getElementById('save');
+const status = document.getElementById('status');
+
 const MAX_RESUME_CHARS = 6000;
-const MAX_GENERAL_CHARS = 6000;
 
-const providerModels = {
-  openai: [
-    { value: "gpt-5-nano", label: "GPT-5 Nano" },
-    { value: "gpt-5-mini", label: "GPT-5 Mini" },
-  ],
-  anthropic: [
-    { value: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
-    { value: "claude-haiku-3-5", label: "Claude Haiku 3.5" },
-  ],
-  gemini: [
-    { value: "gemini-3-pro-preview", label: "Gemini 3 Pro" },
-    { value: "gemini-3-flash-preview", label: "Gemini 3 Flash" },
-  ],
-};
+let activeProvider = 'openai';
 
+// Tab switching
+tabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    const provider = tab.dataset.provider;
+    
+    // Update active tab
+    tabs.forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    
+    // Update active panel
+    panels.forEach(p => p.classList.remove('active'));
+    document.querySelector(`[data-panel="${provider}"]`).classList.add('active');
+    
+    activeProvider = provider;
+  });
+});
+
+// Eye button toggle
+eyeButtons.forEach(btn => {
+  btn.addEventListener('click', () => {
+    const targetId = btn.dataset.target;
+    const input = document.getElementById(targetId);
+    const eyeOpen = btn.querySelector('.eye-open');
+    const eyeClosed = btn.querySelector('.eye-closed');
+    
+    if (input.type === 'password') {
+      input.type = 'text';
+      eyeOpen.style.display = 'none';
+      eyeClosed.style.display = 'block';
+    } else {
+      input.type = 'password';
+      eyeOpen.style.display = 'block';
+      eyeClosed.style.display = 'none';
+    }
+  });
+});
+
+// Show status message
 const showStatus = (message, isError = false) => {
   status.textContent = message;
-  status.className = isError ? "error" : "success";
+  status.className = isError ? 'error' : 'success';
   setTimeout(() => {
-    status.textContent = "";
-    status.className = "";
+    status.textContent = '';
+    status.className = '';
   }, 3000);
 };
 
+// Sanitize text
 const sanitizeText = (text, maxChars) =>
-  text.replace(/\s+/g, " ").trim().slice(0, maxChars);
+  text.replace(/\s+/g, ' ').trim().slice(0, maxChars);
 
-const renderModels = (provider, selected) => {
-  modelSelect.innerHTML = "";
-  const models = providerModels[provider] || [];
-  models.forEach((model) => {
-    const option = document.createElement("option");
-    option.value = model.value;
-    option.textContent = model.label;
-    if (model.value === selected) {
-      option.selected = true;
-    }
-    modelSelect.appendChild(option);
-  });
-};
-
-const updateModeVisibility = (mode) => {
-  if (mode === "general") {
-    jobSettings.classList.add("hidden");
-    generalSettings.classList.remove("hidden");
-  } else {
-    jobSettings.classList.remove("hidden");
-    generalSettings.classList.add("hidden");
-  }
-};
-
+// Load settings
 const loadSettings = async () => {
-  const {
-    provider,
-    model,
-    mode,
-    openaiKey,
-    anthropicKey,
-    geminiKey,
-    resumeText,
-    systemPrompt,
-    generalContextText,
-  } = await chrome.storage.local.get([
-    "provider",
-    "model",
-    "mode",
-    "openaiKey",
-    "anthropicKey",
-    "geminiKey",
-    "resumeText",
-    "systemPrompt",
-    "generalContextText",
+  const data = await chrome.storage.local.get([
+    'provider',
+    'model',
+    'openaiKey',
+    'anthropicKey',
+    'geminiKey',
+    'resumeText',
   ]);
 
-  const activeProvider = provider || "openai";
-  const activeModel =
-    model ||
-    (activeProvider === "anthropic"
-      ? "claude-sonnet-4-5"
-      : activeProvider === "gemini"
-        ? "gemini-3-pro-preview"
-        : "gpt-5-nano");
+  activeProvider = data.provider || 'openai';
+  
+  // Set active tab
+  tabs.forEach(t => t.classList.remove('active'));
+  panels.forEach(p => p.classList.remove('active'));
+  document.querySelector(`[data-provider="${activeProvider}"]`).classList.add('active');
+  document.querySelector(`[data-panel="${activeProvider}"]`).classList.add('active');
 
-  providerSelect.value = activeProvider;
-  renderModels(activeProvider, activeModel);
-  modeSelect.value = mode || "job";
-  updateModeVisibility(modeSelect.value);
-  openaiKeyInput.value = openaiKey || "";
-  anthropicKeyInput.value = anthropicKey || "";
-  geminiKeyInput.value = geminiKey || "";
-  resumeTextInput.value = resumeText || "";
-  systemPromptInput.value = systemPrompt || "";
-  generalContextInput.value = generalContextText || "";
+  // Set values
+  openaiKeyInput.value = data.openaiKey || '';
+  anthropicKeyInput.value = data.anthropicKey || '';
+  geminiKeyInput.value = data.geminiKey || '';
+  resumeTextInput.value = data.resumeText || '';
+
+  // Set model selections
+  if (data.model) {
+    if (data.provider === 'openai') openaiModelSelect.value = data.model;
+    else if (data.provider === 'anthropic') anthropicModelSelect.value = data.model;
+    else if (data.provider === 'gemini') geminiModelSelect.value = data.model;
+  }
 };
 
-resumeFileInput.addEventListener("change", async (event) => {
+// File upload handler
+resumeFileInput.addEventListener('change', async (event) => {
   const file = event.target.files?.[0];
-  if (!file) {
-    return;
-  }
+  if (!file) return;
 
-  if (file.type === "application/pdf") {
-    showStatus("PDF parsing is not supported yet. Upload a .txt file.", true);
-    resumeFileInput.value = "";
+  if (file.type === 'application/pdf') {
+    showStatus('PDF not supported. Please upload a .txt file.', true);
+    resumeFileInput.value = '';
     return;
   }
 
   const text = await file.text();
   resumeTextInput.value = sanitizeText(text, MAX_RESUME_CHARS);
+  showStatus('Resume loaded.');
 });
 
-generalFileInput.addEventListener("change", async (event) => {
-  const file = event.target.files?.[0];
-  if (!file) {
-    return;
-  }
-
-  if (file.type === "application/pdf") {
-    showStatus("PDF parsing is not supported yet. Upload a .txt file.", true);
-    generalFileInput.value = "";
-    return;
-  }
-
-  const text = await file.text();
-  generalContextInput.value = sanitizeText(text, MAX_GENERAL_CHARS);
-});
-
-providerSelect.addEventListener("change", () => {
-  renderModels(providerSelect.value, null);
-});
-
-modeSelect.addEventListener("change", () => {
-  updateModeVisibility(modeSelect.value);
-});
-
-saveButton.addEventListener("click", async () => {
-  const provider = providerSelect.value;
-  const model = modelSelect.value;
-  const mode = modeSelect.value;
+// Save settings
+saveButton.addEventListener('click', async () => {
   const openaiKey = openaiKeyInput.value.trim();
   const anthropicKey = anthropicKeyInput.value.trim();
   const geminiKey = geminiKeyInput.value.trim();
   const resumeText = sanitizeText(resumeTextInput.value, MAX_RESUME_CHARS);
-  const systemPrompt = systemPromptInput.value.trim();
-  const generalContextText = sanitizeText(
-    generalContextInput.value,
-    MAX_GENERAL_CHARS
-  );
 
+  // Get the model for the active provider
+  let model;
+  if (activeProvider === 'openai') model = openaiModelSelect.value;
+  else if (activeProvider === 'anthropic') model = anthropicModelSelect.value;
+  else if (activeProvider === 'gemini') model = geminiModelSelect.value;
+
+  // Get the active API key
   const activeKey =
-    provider === "anthropic"
-      ? anthropicKey
-      : provider === "gemini"
-        ? geminiKey
-        : openaiKey;
+    activeProvider === 'anthropic' ? anthropicKey :
+    activeProvider === 'gemini' ? geminiKey : openaiKey;
 
   if (!activeKey) {
-    showStatus("API key is required.", true);
-    return;
-  }
-
-  if (mode === "general" && !systemPrompt) {
-    showStatus("System prompt is required for general mode.", true);
+    showStatus('API key is required.', true);
     return;
   }
 
   await chrome.storage.local.set({
-    provider,
+    provider: activeProvider,
     model,
-    mode,
     openaiKey,
     anthropicKey,
     geminiKey,
     resumeText,
-    systemPrompt,
-    generalContextText,
   });
-  showStatus("Saved.");
+
+  showStatus('Settings saved.');
 });
 
+// Initialize
 loadSettings();

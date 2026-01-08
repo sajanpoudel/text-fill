@@ -17,10 +17,10 @@ const JOB_HINTS = [
 
 const state = {
   activeField: null,
-  modal: null,
-  button: null,
+  buttons: new Map(), // Map of field -> button for each text field
   cachedJobDescription: null,
   currentJobUrl: null, // Track current job URL to detect navigation
+  isGenerating: false,
 };
 
 const normalizeText = (text) => text.replace(/\s+/g, " ").trim();
@@ -391,201 +391,196 @@ const getQuestionText = (field) => {
   return normalizeText(parentText.split("\n").slice(0, 3).join(" "));
 };
 
-const ensureButton = () => {
-  if (state.button) {
-    return state.button;
+// Create or get the AI fill button for a specific field
+const getOrCreateButton = (field) => {
+  if (state.buttons.has(field)) {
+    return state.buttons.get(field);
   }
 
   const button = document.createElement("button");
-  button.className = "tfa-floating-button";
+  button.className = "tfa-icon-button";
   button.type = "button";
-  button.textContent = "Fill with AI";
-  // Use mousedown to capture click before blur hides the button
-  button.addEventListener("mousedown", (e) => {
+  button.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>`;
+  button.title = "Fill with AI";
+  
+  button.addEventListener("click", async (e) => {
     e.preventDefault();
     e.stopPropagation();
-    openModal();
+    await generateAndFill(field, button);
   });
-  document.body.appendChild(button);
-  state.button = button;
+
+  state.buttons.set(field, button);
   return button;
 };
 
-const positionButton = (field) => {
+// Position the button inside/near the field
+const positionButton = (field, button) => {
   const rect = field.getBoundingClientRect();
-  const button = ensureButton();
-  button.style.top = `${window.scrollY + rect.top - 12}px`;
-  button.style.left = `${window.scrollX + rect.right - 120}px`;
-  button.hidden = false;
-};
-
-const closeModal = () => {
-  if (state.modal) {
-    state.modal.remove();
-    state.modal = null;
-  }
-};
-
-// Open modal - async to allow auto-fetching job description
-const openModal = async () => {
-  closeModal();
-  if (!state.activeField) {
-    return;
-  }
-
-  // First, get the job description (might need to auto-fetch)
-  let contextText = extractJobDescription();
+  const isTextarea = field.tagName === 'TEXTAREA';
   
-  // If we got form content instead of job description, try auto-fetching
-  if (isFormContent(contextText)) {
-    // Check if there's an Overview tab we can click
-    const overviewBtn = findOverviewTabButton();
-    if (overviewBtn) {
-      // Auto-fetch from Overview tab
-      const fetched = await autoFetchJobDescription();
-      if (fetched && !isFormContent(fetched)) {
-        contextText = fetched;
+  // Position at top-right corner of the field
+  button.style.position = 'fixed';
+  button.style.top = `${rect.top + 8}px`;
+  button.style.left = `${rect.right - 36}px`;
+  button.style.zIndex = '2147483647';
+  
+  if (!button.parentElement) {
+    document.body.appendChild(button);
+  }
+};
+
+// Main function: Generate answer and fill directly
+const generateAndFill = async (field, button) => {
+  if (state.isGenerating) return;
+  state.isGenerating = true;
+  
+  // Show loading state
+  const originalHTML = button.innerHTML;
+  button.innerHTML = `<svg class="tfa-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>`;
+  button.disabled = true;
+  button.title = "Generating...";
+
+  try {
+    // Get job description (auto-fetch if needed)
+    let jobDescription = extractJobDescription();
+    
+    if (isFormContent(jobDescription)) {
+      const overviewBtn = findOverviewTabButton();
+      if (overviewBtn) {
+        const fetched = await autoFetchJobDescription();
+        if (fetched && !isFormContent(fetched)) {
+          jobDescription = fetched;
+        }
       }
     }
-  }
 
-  const modal = document.createElement("div");
-  modal.className = "tfa-modal";
-  modal.innerHTML = `
-    <div class="tfa-card">
-      <div class="tfa-header">
-        <div>
-          <h3>Draft answer</h3>
-          <p>Uses your resume and this page's job description.</p>
-        </div>
-        <button class="tfa-close" type="button">Close</button>
-      </div>
-      <div class="tfa-body">
-        <label class="tfa-label">Question</label>
-        <div class="tfa-question"></div>
-        <label class="tfa-label">Job context</label>
-        <div class="tfa-context"></div>
-        <label class="tfa-label">Answer</label>
-        <textarea class="tfa-output" placeholder="Generate a response..."></textarea>
-        <div class="tfa-error" hidden></div>
-      </div>
-      <div class="tfa-actions">
-        <button class="tfa-secondary" type="button">Generate</button>
-        <button class="tfa-primary" type="button">Insert</button>
-      </div>
-    </div>
-  `;
-
-  modal.querySelector(".tfa-close").addEventListener("click", closeModal);
-  modal.addEventListener("click", (event) => {
-    if (event.target === modal) {
-      closeModal();
-    }
-  });
-
-  const question = getQuestionText(state.activeField) || "Job application response";
-  modal.querySelector(".tfa-question").textContent = question;
-  
-  const contextDiv = modal.querySelector(".tfa-context");
-  
-  // Show the job context (or error if still form content)
-  if (isFormContent(contextText)) {
-    contextDiv.innerHTML = '<span style="color: #b42318;">⚠️ Could not auto-detect job description. Please visit the Overview tab first, then try again.</span>';
-  } else {
-    contextDiv.textContent = contextText || "No job description detected.";
-  }
-  
-  const pageContext = extractPageContext(state.activeField);
-
-  const output = modal.querySelector(".tfa-output");
-  const error = modal.querySelector(".tfa-error");
-  const generateButton = modal.querySelector(".tfa-secondary");
-  const insertButton = modal.querySelector(".tfa-primary");
-
-  generateButton.addEventListener("click", async () => {
-    error.hidden = true;
-    output.value = "";
-    
-    // Check if we have valid job description
-    if (isFormContent(contextText)) {
-      error.hidden = false;
-      error.textContent = "Please visit the Overview tab first to capture the job description, then try again.";
-      return;
-    }
-    
-    if (!contextText || contextText.length < 50) {
-      error.hidden = false;
-      error.textContent = "No job description found. Please visit the job description page first.";
-      return;
-    }
-    
-    generateButton.disabled = true;
-    generateButton.textContent = "Working...";
+    const question = getQuestionText(field) || "Job application response";
+    const pageContext = extractPageContext(field);
 
     const response = await chrome.runtime.sendMessage({
       type: "generateAnswer",
       question,
-      fieldValue: state.activeField.value,
-      jobDescription: contextText,
+      fieldValue: field.value,
+      jobDescription,
       pageContext,
     });
 
-    generateButton.disabled = false;
-    generateButton.textContent = "Generate";
-
     if (!response?.ok) {
-      error.hidden = false;
-      error.textContent = response?.error || "Something went wrong.";
+      showToast(response?.error || "Failed to generate. Check settings.", true);
       return;
     }
 
-    output.value = response.answer;
-  });
+    // Fill the field directly
+    field.value = response.answer;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    
+    // Brief success indication
+    button.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>`;
+    setTimeout(() => {
+      button.innerHTML = originalHTML;
+    }, 1500);
 
-  insertButton.addEventListener("click", () => {
-    if (!output.value.trim()) {
+  } catch (err) {
+    showToast(err.message || "Something went wrong", true);
+    button.innerHTML = originalHTML;
+  } finally {
+    state.isGenerating = false;
+    button.disabled = false;
+    button.title = "Fill with AI";
+  }
+};
+
+// Show a simple toast notification
+const showToast = (message, isError = false) => {
+  const existing = document.querySelector('.tfa-toast');
+  if (existing) existing.remove();
+  
+  const toast = document.createElement('div');
+  toast.className = `tfa-toast ${isError ? 'tfa-toast-error' : ''}`;
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  
+  setTimeout(() => toast.remove(), 4000);
+};
+
+// Scan for text fields and add buttons
+const scanAndAddButtons = () => {
+  const fields = document.querySelectorAll('textarea, input[type="text"]');
+  
+  fields.forEach(field => {
+    // Skip if already has a button or is too small
+    if (state.buttons.has(field)) {
+      positionButton(field, state.buttons.get(field));
       return;
     }
-    state.activeField.value = output.value.trim();
-    state.activeField.dispatchEvent(new Event("input", { bubbles: true }));
-    closeModal();
-  });
-
-  document.body.appendChild(modal);
-  state.modal = modal;
-};
-
-const handleFocus = (event) => {
-  const target = event.target;
-  if (!(target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement)) {
-    return;
-  }
-  if (target instanceof HTMLInputElement && target.type !== "text") {
-    return;
-  }
-
-  state.activeField = target;
-  positionButton(target);
-};
-
-const handleBlur = () => {
-  // Delay hiding to allow button click to register
-  setTimeout(() => {
-    if (state.button && !state.modal) {
-      state.button.hidden = true;
+    
+    const rect = field.getBoundingClientRect();
+    // Only add to visible fields with reasonable size
+    if (rect.width < 100 || rect.height < 20 || rect.top < 0 || rect.bottom > window.innerHeight + 500) {
+      return;
     }
-  }, 150);
+    
+    // Skip fields that look like search boxes or short inputs
+    const isTextarea = field.tagName === 'TEXTAREA';
+    const placeholder = (field.placeholder || '').toLowerCase();
+    const isSearchField = placeholder.includes('search') || placeholder.includes('filter');
+    
+    if (!isTextarea && !isSearchField) {
+      // For input fields, only add if they seem like answer fields
+      const label = getQuestionText(field).toLowerCase();
+      const isLikelyAnswerField = label.length > 20 || 
+        label.includes('why') || 
+        label.includes('what') || 
+        label.includes('describe') ||
+        label.includes('tell us') ||
+        label.includes('explain');
+      if (!isLikelyAnswerField) return;
+    }
+    
+    if (isSearchField) return;
+    
+    const button = getOrCreateButton(field);
+    positionButton(field, button);
+  });
 };
 
-window.addEventListener("focusin", handleFocus);
-window.addEventListener("focusout", handleBlur);
-window.addEventListener("scroll", () => {
-  if (state.activeField) {
-    positionButton(state.activeField);
-  }
-});
-window.addEventListener("resize", () => {
-  if (state.activeField) {
-    positionButton(state.activeField);
-  }
-});
+// Update button positions on scroll/resize
+const updateButtonPositions = () => {
+  state.buttons.forEach((button, field) => {
+    const rect = field.getBoundingClientRect();
+    // Hide if field is not visible
+    if (rect.bottom < 0 || rect.top > window.innerHeight) {
+      button.style.display = 'none';
+    } else {
+      button.style.display = '';
+      positionButton(field, button);
+    }
+  });
+};
+
+// Initial scan and setup observers
+const initializeButtons = () => {
+  scanAndAddButtons();
+  
+  // Re-scan periodically for dynamically loaded content
+  const observer = new MutationObserver(() => {
+    setTimeout(scanAndAddButtons, 100);
+  });
+  
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+  });
+  
+  // Update positions on scroll/resize
+  window.addEventListener('scroll', updateButtonPositions, { passive: true });
+  window.addEventListener('resize', updateButtonPositions, { passive: true });
+};
+
+// Start when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeButtons);
+} else {
+  initializeButtons();
+}

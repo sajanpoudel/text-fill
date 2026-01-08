@@ -3,77 +3,127 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Text Fill Assistant Settings</title>
+    <title>Settings - Text Fill Assistant</title>
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
     <main class="container">
       <header>
         <h1>Text Fill Assistant</h1>
-        <p>Connect your OpenAI key and upload your resume once.</p>
+        <p>Configure your AI provider and upload your resume.</p>
       </header>
 
+      <!-- Provider Tabs -->
       <section class="card">
-        <h2>Provider</h2>
-        <label>
-          <span>Provider</span>
-          <select id="provider">
-            <option value="openai">OpenAI</option>
-            <option value="anthropic">Anthropic (Claude)</option>
-            <option value="gemini">Google Gemini</option>
-          </select>
-        </label>
-        <label>
-          <span>Model</span>
-          <select id="model"></select>
-        </label>
-        <div class="field-grid">
-          <label>
-            <span>OpenAI API Key</span>
-            <input type="password" id="openaiKey" placeholder="sk-..." />
-          </label>
-          <label>
-            <span>Anthropic API Key</span>
-            <input type="password" id="anthropicKey" placeholder="sk-ant-..." />
-          </label>
-          <label>
-            <span>Gemini API Key</span>
-            <input type="password" id="geminiKey" placeholder="AIza..." />
-          </label>
+        <h2>AI Provider</h2>
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-provider="openai" role="tab">OpenAI</button>
+          <button class="tab" data-provider="anthropic" role="tab">Anthropic</button>
+          <button class="tab" data-provider="gemini" role="tab">Gemini</button>
+        </div>
+
+        <!-- OpenAI Panel -->
+        <div class="tab-panel active" data-panel="openai">
+          <div class="field">
+            <label for="openaiKey">API Key</label>
+            <div class="input-wrapper">
+              <input type="password" id="openaiKey" placeholder="sk-proj-..." autocomplete="off" />
+              <button type="button" class="eye-btn" data-target="openaiKey" aria-label="Toggle visibility">
+                <svg class="eye-open" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+                <svg class="eye-closed" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                  <line x1="1" y1="1" x2="23" y2="23"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="openaiModel">Model</label>
+            <select id="openaiModel">
+              <option value="gpt-5-nano">GPT-5 Nano</option>
+              <option value="gpt-5-mini">GPT-5 Mini</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Anthropic Panel -->
+        <div class="tab-panel" data-panel="anthropic">
+          <div class="field">
+            <label for="anthropicKey">API Key</label>
+            <div class="input-wrapper">
+              <input type="password" id="anthropicKey" placeholder="sk-ant-..." autocomplete="off" />
+              <button type="button" class="eye-btn" data-target="anthropicKey" aria-label="Toggle visibility">
+                <svg class="eye-open" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+                <svg class="eye-closed" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                  <line x1="1" y1="1" x2="23" y2="23"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="anthropicModel">Model</label>
+            <select id="anthropicModel">
+              <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
+              <option value="claude-haiku-3-5">Claude Haiku 3.5</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Gemini Panel -->
+        <div class="tab-panel" data-panel="gemini">
+          <div class="field">
+            <label for="geminiKey">API Key</label>
+            <div class="input-wrapper">
+              <input type="password" id="geminiKey" placeholder="AIza..." autocomplete="off" />
+              <button type="button" class="eye-btn" data-target="geminiKey" aria-label="Toggle visibility">
+                <svg class="eye-open" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+                <svg class="eye-closed" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                  <line x1="1" y1="1" x2="23" y2="23"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="geminiModel">Model</label>
+            <select id="geminiModel">
+              <option value="gemini-3-pro-preview">Gemini 3 Pro</option>
+              <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
+            </select>
+          </div>
         </div>
       </section>
 
+      <!-- Resume Section -->
       <section class="card">
-        <h2>Mode</h2>
-        <label>
-          <span>Mode</span>
-          <select id="mode">
-            <option value="job">Job application</option>
-            <option value="general">General writing</option>
-          </select>
-        </label>
-        <div id="jobSettings">
-          <h3>Resume</h3>
-          <p class="hint">Upload a text file (PDF parsing not supported yet). We store extracted text locally in the extension.</p>
-          <input type="file" id="resumeFile" accept=".txt,.md,.pdf" />
-          <textarea id="resumeText" placeholder="Or paste your resume text here..."></textarea>
+        <h2>Your Resume</h2>
+        <p class="hint">Upload a text file or paste your resume. This helps generate personalized answers.</p>
+        <div class="field">
+          <div class="file-upload">
+            <input type="file" id="resumeFile" accept=".txt,.md" />
+            <span>Choose file or drag here</span>
+          </div>
         </div>
-        <div id="generalSettings" class="hidden">
-          <h3>System prompt</h3>
-          <p class="hint">This prompt is used for general writing mode.</p>
-          <textarea id="systemPrompt" placeholder="Describe how the assistant should write..."></textarea>
-          <h3>Reference context</h3>
-          <p class="hint">Optional extra context. Upload a text file or paste it here.</p>
-          <input type="file" id="generalFile" accept=".txt,.md,.pdf" />
-          <textarea id="generalContextText" placeholder="Paste any supporting context..."></textarea>
+        <div class="field">
+          <textarea id="resumeText" placeholder="Or paste your resume text here..." rows="8"></textarea>
         </div>
       </section>
 
-      <section class="card">
-        <h2>Save</h2>
-        <button id="save">Save Settings</button>
+      <!-- Save -->
+      <div class="actions">
+        <button id="save" class="btn-primary">Save Settings</button>
         <span id="status"></span>
-      </section>
+      </div>
     </main>
 
     <script src="options.js"></script>
