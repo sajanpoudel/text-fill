@@ -5,12 +5,14 @@ const GEMINI_ENDPOINT =
 
 const normalizeAnswer = (text) => {
   return text
-    .replace(/[—–]/g, ",")
-    .replace(/\s*,\s*/g, ", ")
-    .replace(/\s{2,}/g, " ")
-    .replace(/\s+\./g, ".")
-    .replace(/\s+\!/g, "!")
-    .replace(/\s+\?/g, "?")
+    .replace(/[—–]/g, ",")           // Replace em/en dashes with commas
+    .replace(/\*\s*\*\s*\*/g, '\n\n') // Replace *** with paragraph break
+    .replace(/\s*,\s*/g, ", ")        // Normalize comma spacing
+    .replace(/\s+\./g, ".")           // Remove space before period
+    .replace(/\s+\!/g, "!")           // Remove space before exclamation
+    .replace(/\s+\?/g, "?")           // Remove space before question mark
+    .replace(/\n{3,}/g, '\n\n')       // Max 2 newlines (one blank line)
+    .replace(/[ \t]+/g, " ")          // Collapse multiple spaces (not newlines)
     .trim();
 };
 
@@ -150,6 +152,9 @@ const requestAnthropic = async ({ apiKey, model, system, user }) => {
 };
 
 const requestGemini = async ({ apiKey, model, system, user }) => {
+  // Combine system and user prompts for Gemini 3
+  const fullPrompt = `${system}\n\n${user}`;
+  
   const response = await fetch(
     `${GEMINI_ENDPOINT}/${model}:generateContent?key=${apiKey}`,
     {
@@ -158,19 +163,11 @@ const requestGemini = async ({ apiKey, model, system, user }) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        system_instruction: {
-          parts: [{ text: system }],
-        },
         contents: [
           {
-            role: "user",
-            parts: [{ text: user }],
+            parts: [{ text: fullPrompt }],
           },
         ],
-        generationConfig: {
-          temperature: 0.5,
-          maxOutputTokens: 320,
-        },
       }),
     }
   );
@@ -181,8 +178,22 @@ const requestGemini = async ({ apiKey, model, system, user }) => {
   }
 
   const data = await response.json();
-  const content = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  return content?.trim();
+  
+  // Extract text from response
+  let answer = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  
+  if (!answer) {
+    console.error('Gemini response:', JSON.stringify(data, null, 2));
+    throw new Error('Could not parse Gemini response');
+  }
+  
+  // Clean up formatting - ensure proper paragraph separation
+  answer = answer
+    .replace(/\*\s*\*\s*\*/g, '\n\n')  // Replace *** with paragraph break
+    .replace(/\n{3,}/g, '\n\n')         // Max 2 newlines
+    .trim();
+  
+  return answer;
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
