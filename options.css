@@ -116,32 +116,34 @@ header p {
 .input-wrapper {
   position: relative;
   display: flex;
+  align-items: center;
 }
 
 .input-wrapper input {
   flex: 1;
-  padding-right: 44px;
+  padding-right: 48px !important;
 }
 
 .eye-btn {
   position: absolute;
-  right: 8px;
+  right: 4px;
   top: 50%;
   transform: translateY(-50%);
-  background: none;
+  background: #fff;
   border: none;
-  padding: 6px;
+  padding: 8px;
   cursor: pointer;
-  color: #999;
+  color: #666;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
-  transition: color 0.15s ease;
+  border-radius: 6px;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .eye-btn:hover {
-  color: #333;
+  color: #111;
+  background: #f0f0f0;
 }
 
 /* Form elements */
