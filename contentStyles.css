@@ -6,20 +6,20 @@
   height: 28px;
   padding: 0;
   border: none;
-  border-radius: 6px;
-  background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%);
-  color: white;
+  border-radius: 50%;
+  background: transparent;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
+  overflow: hidden;
 }
 
 .tfa-icon-button:hover {
   transform: scale(1.1);
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.5);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .tfa-icon-button:active {
@@ -28,12 +28,54 @@
 
 .tfa-icon-button:disabled {
   cursor: wait;
-  opacity: 0.8;
 }
 
-.tfa-icon-button svg {
+/* Logo image */
+.tfa-icon-button .tfa-logo {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
+/* Loading overlay */
+.tfa-icon-button .tfa-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tfa-icon-button .tfa-loading-overlay svg {
   width: 16px;
   height: 16px;
+  color: white;
+}
+
+/* Success checkmark overlay */
+.tfa-icon-button .tfa-success-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(16, 185, 129, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tfa-icon-button .tfa-success-overlay svg {
+  width: 16px;
+  height: 16px;
+  color: white;
 }
 
 /* Spinning animation for loading */

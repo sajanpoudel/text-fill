@@ -391,6 +391,11 @@ const getQuestionText = (field) => {
   return normalizeText(parentText.split("\n").slice(0, 3).join(" "));
 };
 
+// Get the extension's logo URL
+const getLogoUrl = () => {
+  return chrome.runtime.getURL('logo.png');
+};
+
 // Create or get the AI fill button for a specific field
 const getOrCreateButton = (field) => {
   if (state.buttons.has(field)) {
@@ -400,7 +405,7 @@ const getOrCreateButton = (field) => {
   const button = document.createElement("button");
   button.className = "tfa-icon-button";
   button.type = "button";
-  button.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>`;
+  button.innerHTML = `<img src="${getLogoUrl()}" alt="AI Fill" class="tfa-logo" />`;
   button.title = "Fill with AI";
   
   button.addEventListener("click", async (e) => {
@@ -434,9 +439,10 @@ const generateAndFill = async (field, button) => {
   if (state.isGenerating) return;
   state.isGenerating = true;
   
-  // Show loading state
-  const originalHTML = button.innerHTML;
-  button.innerHTML = `<svg class="tfa-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>`;
+  // Show loading overlay over the logo
+  const logoHTML = `<img src="${getLogoUrl()}" alt="AI Fill" class="tfa-logo" />`;
+  const loadingOverlay = `<div class="tfa-loading-overlay"><svg class="tfa-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10"/></svg></div>`;
+  button.innerHTML = logoHTML + loadingOverlay;
   button.disabled = true;
   button.title = "Generating...";
 
@@ -467,6 +473,7 @@ const generateAndFill = async (field, button) => {
 
     if (!response?.ok) {
       showToast(response?.error || "Failed to generate. Check settings.", true);
+      button.innerHTML = logoHTML;
       return;
     }
 
@@ -475,15 +482,16 @@ const generateAndFill = async (field, button) => {
     field.dispatchEvent(new Event("input", { bubbles: true }));
     field.dispatchEvent(new Event("change", { bubbles: true }));
     
-    // Brief success indication
-    button.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>`;
+    // Brief success indication - show checkmark overlay
+    const successOverlay = `<div class="tfa-success-overlay"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg></div>`;
+    button.innerHTML = logoHTML + successOverlay;
     setTimeout(() => {
-      button.innerHTML = originalHTML;
+      button.innerHTML = logoHTML;
     }, 1500);
 
   } catch (err) {
     showToast(err.message || "Something went wrong", true);
-    button.innerHTML = originalHTML;
+    button.innerHTML = logoHTML;
   } finally {
     state.isGenerating = false;
     button.disabled = false;
