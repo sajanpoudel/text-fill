@@ -25,11 +25,11 @@ const buildJobPrompt = ({
 }) => {
   const system = [
     "You are a writing assistant for job applications.",
-    "Write concise, professional, human-sounding answers with specific details.",
-    "Use plain punctuation only. Never use em dashes.",
-    "Avoid generic AI phrasing, disclaimers, or filler.",
-    "Keep the response focused and personalized to the job description and resume.",
-    "Prefer concrete achievements, tools, and outcomes.",
+    "Write professional, human-sounding answers with specific details from the resume.",
+    "Provide 1-2 paragraphs with concrete examples, achievements, and outcomes.",
+    "Use plain punctuation only. Never use em dashes or asterisks.",
+    "Avoid generic AI phrasing, disclaimers, or filler words.",
+    "Personalize the response to the job description and company.",
   ].join(" ");
 
   const user = [
@@ -38,7 +38,7 @@ const buildJobPrompt = ({
     "\nPage context:\n" + (pageContext || "(none provided)"),
     "\nQuestion or prompt:\n" + question,
     "\nCurrent field value (if any):\n" + (fieldValue || "(empty)"),
-    "\nWrite the best possible answer.",
+    "\nWrite the best possible answer. (1-2 paragraphs).",
   ].join("\n\n");
 
   return { system, user };
@@ -153,7 +153,7 @@ const requestAnthropic = async ({ apiKey, model, system, user }) => {
 
 const requestGemini = async ({ apiKey, model, system, user }) => {
   // Combine system and user prompts for Gemini 3
-  const fullPrompt = `${system}\n\n${user}`;
+  const fullPrompt = `${system}\n\n${user}\n\nWrite a detailed response with 2-4 paragraphs.`;
   
   const response = await fetch(
     `${GEMINI_ENDPOINT}/${model}:generateContent?key=${apiKey}`,
@@ -168,6 +168,10 @@ const requestGemini = async ({ apiKey, model, system, user }) => {
             parts: [{ text: fullPrompt }],
           },
         ],
+        generationConfig: {
+          maxOutputTokens: 1024,
+          temperature: 0.7,
+        },
       }),
     }
   );
