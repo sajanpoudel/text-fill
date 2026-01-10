@@ -258,8 +258,33 @@ const isFormContent = (text) => {
 
 // Get unique key for current job posting (uses full path to avoid mixing jobs)
 const getJobStorageKey = () => {
-  // Use full pathname - each job has unique URL like /jobs/swe-intern-123
-  return `tfa_job_${window.location.hostname}${window.location.pathname}`;
+  const hostname = window.location.hostname.toLowerCase();
+  const pathname = window.location.pathname;
+  const search = window.location.search;
+
+  // For Workday: Extract job ID from URL to persist across login/apply flow
+  // Workday URLs look like: /JobID/Software-Engineer/1234567890
+  // Or with query params: ?jobId=1234567890
+  if (hostname.includes('myworkdayjobs.com')) {
+    // Try to extract job ID from path segments
+    const pathSegments = pathname.split('/').filter(Boolean);
+    const jobIdFromPath = pathSegments.find(segment => /^\d{5,}$/.test(segment)); // 5+ digits
+
+    if (jobIdFromPath) {
+      return `tfa_job_workday_${hostname}_${jobIdFromPath}`;
+    }
+
+    // Try to extract from query params
+    const urlParams = new URLSearchParams(search);
+    const jobIdFromQuery = urlParams.get('jobId') || urlParams.get('job_id');
+
+    if (jobIdFromQuery) {
+      return `tfa_job_workday_${hostname}_${jobIdFromQuery}`;
+    }
+  }
+
+  // For other platforms: Use full pathname - each job has unique URL like /jobs/swe-intern-123
+  return `tfa_job_${hostname}${pathname}`;
 };
 
 // Check if we navigated to a different job page
@@ -363,6 +388,9 @@ const urlObserver = new MutationObserver(() => {
     // Clear cache when navigating to different job
     state.cachedJobDescription = null;
     state.currentJobUrl = window.location.href;
+
+    // Re-run proactive caching for new page (important for Workday multi-step)
+    proactivelyCacheJobDescription();
   }
 });
 urlObserver.observe(document.body, { childList: true, subtree: true });
@@ -371,10 +399,114 @@ urlObserver.observe(document.body, { childList: true, subtree: true });
 window.addEventListener('popstate', () => {
   state.cachedJobDescription = null;
   state.currentJobUrl = window.location.href;
+  proactivelyCacheJobDescription();
 });
+
+// Detect known job platforms for proactive caching
+const detectJobPlatform = () => {
+  const hostname = window.location.hostname.toLowerCase();
+  const pathname = window.location.pathname.toLowerCase();
+
+  // Platform detection
+  const platforms = {
+    ashby: hostname.includes('ashbyhq.com') || hostname.includes('jobs.ashbyhq.com'),
+    greenhouse: hostname.includes('greenhouse.io') || hostname.includes('boards.greenhouse.io'),
+    lever: hostname.includes('lever.co') || hostname.includes('jobs.lever.co'),
+    workable: hostname.includes('workable.com') || hostname.includes('apply.workable.com'),
+    workday: hostname.includes('myworkdayjobs.com') || hostname.includes('wd1.myworkdayjobs.com') || hostname.includes('wd5.myworkdayjobs.com'),
+    jobvite: hostname.includes('jobvite.com'),
+    smartrecruiters: hostname.includes('smartrecruiters.com'),
+    icims: hostname.includes('icims.com')
+  };
+
+  for (const [platform, isMatch] of Object.entries(platforms)) {
+    if (isMatch) return platform;
+  }
+
+  return null;
+};
+
+// Proactively cache job description on page load
+const proactivelyCacheJobDescription = async () => {
+  const platform = detectJobPlatform();
+
+  if (!platform) return; // Not a known job platform
+
+  console.log('[TextFill] Detected job platform:', platform);
+
+  // Wait a bit for page to fully load
+  await new Promise(resolve => setTimeout(resolve, 1500));
+
+  // Check if we already have cached description for this URL
+  const storageKey = getJobStorageKey();
+  const cached = sessionStorage.getItem(storageKey);
+
+  if (cached && cached.length > 200) {
+    console.log('[TextFill] Job description already cached');
+    return; // Already cached
+  }
+
+  // For Workday: Check if on job details page (before Apply button)
+  if (platform === 'workday') {
+    const isJobDetailsPage = document.querySelector('[data-automation-id="jobPostingDescription"]') ||
+                              document.querySelector('.jobdescription') ||
+                              document.querySelector('#job-description') ||
+                              document.querySelector('[data-automation-id="jobPostingHeader"]') ||
+                              document.querySelector('.css-1tnvnpa') || // Workday job description container
+                              document.querySelector('[aria-label*="Job Description"]');
+
+    // Also check if Apply button exists (confirms it's the job details page)
+    const hasApplyButton = document.querySelector('[data-automation-id="applyButton"]') ||
+                           document.querySelector('button[title*="Apply"]') ||
+                           Array.from(document.querySelectorAll('button')).find(btn =>
+                             btn.textContent.toLowerCase().includes('apply')
+                           );
+
+    if (isJobDetailsPage || hasApplyButton) {
+      console.log('[TextFill] Workday job details page detected - caching description');
+      const description = extractJobDescription();
+      if (description && description.length > 200) {
+        cacheJobDescription(storageKey, description);
+        console.log('[TextFill] Cached Workday job description:', description.length, 'chars');
+        return;
+      }
+    }
+  }
+
+  // For Ashby/Greenhouse/Lever: Auto-fetch from Overview tab
+  if (platform === 'ashby' || platform === 'greenhouse' || platform === 'lever') {
+    const overviewBtn = findOverviewTabButton();
+
+    if (overviewBtn) {
+      console.log('[TextFill] Found Overview tab - auto-fetching job description');
+      const fetched = await autoFetchJobDescription();
+
+      if (fetched && fetched.length > 200) {
+        console.log('[TextFill] Proactively cached job description:', fetched.length, 'chars');
+        return;
+      }
+    }
+  }
+
+  // Fallback: Try to extract from current page
+  const description = extractJobDescription();
+  if (description && description.length > 200 && !isFormContent(description)) {
+    cacheJobDescription(storageKey, description);
+    console.log('[TextFill] Cached job description from page:', description.length, 'chars');
+  }
+};
 
 // Start observing for tab switches
 captureOnTabSwitch();
+
+// Proactively cache job description if on a known job platform
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    proactivelyCacheJobDescription();
+  });
+} else {
+  proactivelyCacheJobDescription();
+}
 
 const extractPageContext = (field) => {
   const title = document.title || "";
