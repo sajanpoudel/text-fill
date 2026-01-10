@@ -356,51 +356,49 @@ const cacheJobDescription = (key, text) => {
   }
 };
 
-// Auto-capture job description when viewing Overview tab
-const captureOnTabSwitch = () => {
-  const observer = new MutationObserver(() => {
-    // Check for URL changes in SPAs
-    checkUrlChanged();
-    
-    const visibleContent = findJobSections(false);
-    if (visibleContent.length > 0) {
-      const text = visibleContent.join("\n\n").slice(0, MAX_CONTEXT_CHARS);
-      if (text.length > 300) {
-        const storageKey = getJobStorageKey();
-        cacheJobDescription(storageKey, text);
-      }
-    }
-  });
-  
-  observer.observe(document.body, { 
-    childList: true, 
-    subtree: true,
-    attributes: true,
-    attributeFilter: ['class', 'hidden', 'aria-hidden', 'style']
-  });
+// Track URL changes for SPA navigation (defined early, used later)
+let lastUrl = window.location.href;
+
+// Proper URL change detection using history API interception
+const setupUrlChangeDetection = () => {
+  // Intercept pushState and replaceState for SPA navigation
+  const originalPushState = history.pushState;
+  const originalReplaceState = history.replaceState;
+
+  history.pushState = function(...args) {
+    originalPushState.apply(this, args);
+    handleUrlChange();
+  };
+
+  history.replaceState = function(...args) {
+    originalReplaceState.apply(this, args);
+    handleUrlChange();
+  };
+
+  // Listen for popstate (back/forward navigation)
+  window.addEventListener('popstate', handleUrlChange);
+  window.addEventListener('hashchange', handleUrlChange);
 };
 
-// Listen for URL changes (for SPAs that don't reload the page)
-let lastUrl = window.location.href;
-const urlObserver = new MutationObserver(() => {
-  if (window.location.href !== lastUrl) {
-    lastUrl = window.location.href;
-    // Clear cache when navigating to different job
+// Handle URL changes efficiently
+const handleUrlChange = () => {
+  const currentUrl = window.location.href;
+  if (currentUrl !== lastUrl) {
+    lastUrl = currentUrl;
     state.cachedJobDescription = null;
-    state.currentJobUrl = window.location.href;
+    state.currentJobUrl = currentUrl;
 
     // Re-run proactive caching for new page (important for Workday multi-step)
-    proactivelyCacheJobDescription();
-  }
-});
-urlObserver.observe(document.body, { childList: true, subtree: true });
+    if (typeof proactivelyCacheJobDescription === 'function') {
+      proactivelyCacheJobDescription();
+    }
 
-// Also listen for popstate (back/forward navigation)
-window.addEventListener('popstate', () => {
-  state.cachedJobDescription = null;
-  state.currentJobUrl = window.location.href;
-  proactivelyCacheJobDescription();
-});
+    // Rescan for new fields
+    if (typeof scheduleScan === 'function') {
+      scheduleScan();
+    }
+  }
+};
 
 // Detect known job platforms for proactive caching
 const detectJobPlatform = () => {
@@ -495,18 +493,6 @@ const proactivelyCacheJobDescription = async () => {
     console.log('[TextFill] Cached job description from page:', description.length, 'chars');
   }
 };
-
-// Start observing for tab switches
-captureOnTabSwitch();
-
-// Proactively cache job description if on a known job platform
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    proactivelyCacheJobDescription();
-  });
-} else {
-  proactivelyCacheJobDescription();
-}
 
 const extractPageContext = (field) => {
   const title = document.title || "";
@@ -937,19 +923,21 @@ const initializeButtons = () => {
     }
   });
 
-  // Observe with specific filters to reduce noise
-  state.observer.observe(document.body, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'contenteditable', 'role'] // Only watch relevant attributes
-  });
+  // Observe with specific filters to reduce noise (only if document.body exists)
+  if (document.body) {
+    state.observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'contenteditable', 'role'] // Only watch relevant attributes
+    });
+  }
 
   // Disconnect observer when page is hidden to save resources
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       state.observer?.disconnect();
-    } else {
+    } else if (document.body) {
       state.observer?.observe(document.body, {
         childList: true,
         subtree: true,
@@ -964,13 +952,6 @@ const initializeButtons = () => {
   window.addEventListener('scroll', updateButtonPositions, { passive: true });
   document.addEventListener('scroll', updateButtonPositions, { passive: true, capture: true });
   window.addEventListener('resize', updateButtonPositions, { passive: true });
-
-  // React/SPA detection: Watch for DOM changes specific to frameworks
-  // Also rescan on common SPA navigation events
-  window.addEventListener('popstate', scheduleScan);
-  window.addEventListener('pushstate', scheduleScan);
-  window.addEventListener('replacestate', scheduleScan);
-  window.addEventListener('hashchange', scheduleScan);
 
   // Detect React/Vue state changes via input events
   document.addEventListener('input', (e) => {
@@ -988,9 +969,21 @@ chrome.storage.onChanged.addListener((changes) => {
   }
 });
 
+// Initialize everything when DOM is ready
+const initializeExtension = () => {
+  // Set up URL change detection (no DOM dependency)
+  setupUrlChangeDetection();
+
+  // Initialize buttons (requires document.body)
+  initializeButtons();
+
+  // Proactively cache job descriptions on known platforms
+  proactivelyCacheJobDescription();
+};
+
 // Start when DOM is ready
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initializeButtons);
+  document.addEventListener('DOMContentLoaded', initializeExtension);
 } else {
-  initializeButtons();
+  initializeExtension();
 }
