@@ -815,34 +815,109 @@ const generateAndFill = async (field, button) => {
       return;
     }
 
+    // Apply character limit for LinkedIn messages (3000 char limit)
+    let answerText = response.answer;
+    const hostname = window.location.hostname.toLowerCase();
+    if (hostname.includes('linkedin.com') && answerText.length > 2900) {
+      // Truncate at sentence boundary if possible, leave buffer for safety
+      const truncated = answerText.substring(0, 2900);
+      const lastSentence = Math.max(
+        truncated.lastIndexOf('. '),
+        truncated.lastIndexOf('! '),
+        truncated.lastIndexOf('? ')
+      );
+      answerText = lastSentence > 2000 ? truncated.substring(0, lastSentence + 1) : truncated;
+    }
+
     if (field.isContentEditable) {
-      field.textContent = response.answer;
+      // For LinkedIn/Quill editors, need special handling
+      // Find the actual editable element (may be nested ql-editor)
+      let targetField = field;
+      const qlEditor = field.querySelector('.ql-editor') ||
+                       (field.classList.contains('ql-editor') ? field : null);
+      if (qlEditor) {
+        targetField = qlEditor;
+      }
+
+      // Focus the field first
+      targetField.focus();
+
+      // Select all existing content
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(targetField);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Try execCommand first (works with many rich text editors)
+      const execSuccess = document.execCommand('insertText', false, answerText);
+
+      if (!execSuccess) {
+        // Fallback: Clear and create proper paragraph structure
+        targetField.innerHTML = '';
+        const p = document.createElement('p');
+        p.textContent = answerText;
+        targetField.appendChild(p);
+      }
+
+      // Move cursor to end
+      range.selectNodeContents(targetField);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
     } else {
       const nativeInputSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
       const nativeTextareaSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
 
       if (field.tagName === 'TEXTAREA' && nativeTextareaSetter) {
-        nativeTextareaSetter.call(field, response.answer);
+        nativeTextareaSetter.call(field, answerText);
       } else if (field.tagName === 'INPUT' && nativeInputSetter) {
-        nativeInputSetter.call(field, response.answer);
+        nativeInputSetter.call(field, answerText);
       } else {
-        field.value = response.answer;
+        field.value = answerText;
       }
     }
 
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-    field.dispatchEvent(new Event("change", { bubbles: true }));
-    field.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: 'insertText' }));
-
+    // Dispatch events in proper order for React/Vue/Angular frameworks
+    // beforeinput is critical for contenteditable change detection
     if (field.isContentEditable) {
-      field.dispatchEvent(new Event("textInput", { bubbles: true }));
-      field.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
+      field.dispatchEvent(new InputEvent("beforeinput", {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertText',
+        data: answerText
+      }));
     }
 
+    field.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: answerText
+    }));
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+
+    if (field.isContentEditable) {
+      // Additional events for rich text editors
+      field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: 'Unidentified' }));
+      field.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: 'Unidentified' }));
+    }
+
+    // Blur and refocus to trigger validation and enable send button
     field.dispatchEvent(new Event("blur", { bubbles: true }));
     setTimeout(() => {
+      field.focus();
       field.dispatchEvent(new Event("focus", { bubbles: true }));
-    }, 10);
+
+      // For LinkedIn, also try to trigger the form state update
+      if (hostname.includes('linkedin.com')) {
+        const form = field.closest('form') || field.closest('.msg-form');
+        if (form) {
+          form.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      }
+    }, 50);
 
     setButtonSuccess(button);
 
