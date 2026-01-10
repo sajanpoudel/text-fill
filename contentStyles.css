@@ -1,6 +1,6 @@
 /* AI Fill Icon Button */
 .tfa-icon-button {
-  position: fixed;
+  position: absolute;
   z-index: 2147483647;
   width: 28px;
   height: 28px;

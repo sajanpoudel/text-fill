@@ -33,7 +33,8 @@
       "matches": ["<all_urls>"],
       "js": ["contentScript.js"],
       "css": ["contentStyles.css"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
   "web_accessible_resources": [

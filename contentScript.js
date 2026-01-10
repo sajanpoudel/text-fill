@@ -21,6 +21,7 @@ const state = {
   cachedJobDescription: null,
   currentJobUrl: null, // Track current job URL to detect navigation
   isGenerating: false,
+  activeMode: "job",
 };
 
 const normalizeText = (text) => text.replace(/\s+/g, " ").trim();
@@ -371,8 +372,13 @@ const getQuestionText = (field) => {
     return label.innerText.trim();
   }
 
-  if (field.placeholder) {
-    return field.placeholder.trim();
+  const placeholder =
+    field.placeholder ||
+    field.getAttribute("data-placeholder") ||
+    field.getAttribute("aria-placeholder") ||
+    "";
+  if (placeholder) {
+    return placeholder.trim();
   }
 
   const describedBy = field.getAttribute("aria-describedby");
@@ -389,6 +395,13 @@ const getQuestionText = (field) => {
 
   const parentText = field.closest("section, form, div")?.innerText || "";
   return normalizeText(parentText.split("\n").slice(0, 3).join(" "));
+};
+
+const getFieldValue = (field) => {
+  if (field?.isContentEditable) {
+    return field.textContent || "";
+  }
+  return field?.value || "";
 };
 
 // Get the extension's logo URL
@@ -421,16 +434,74 @@ const getOrCreateButton = (field) => {
 // Position the button inside/near the field
 const positionButton = (field, button) => {
   const rect = field.getBoundingClientRect();
-  const isTextarea = field.tagName === 'TEXTAREA';
-  
+  if (!rect.width || !rect.height) {
+    button.style.display = "none";
+    return;
+  }
+
+  const top = rect.top + window.scrollY + 6;
+  const left = rect.right + window.scrollX - 32;
+
   // Position at top-right corner of the field
-  button.style.position = 'fixed';
-  button.style.top = `${rect.top + 8}px`;
-  button.style.left = `${rect.right - 36}px`;
-  button.style.zIndex = '2147483647';
-  
+  button.style.position = "absolute";
+  button.style.top = `${Math.max(top, 0)}px`;
+  button.style.left = `${Math.max(left, 0)}px`;
+  button.style.zIndex = "2147483647";
+
   if (!button.parentElement) {
     document.body.appendChild(button);
+  }
+};
+
+const isEditableField = (field) => {
+  if (!field) return false;
+  if (field.disabled || field.readOnly || field.getAttribute("aria-disabled") === "true") {
+    return false;
+  }
+  if (field.isContentEditable) {
+    return true;
+  }
+  return field.tagName === "TEXTAREA" || field.tagName === "INPUT";
+};
+
+const isVisibleField = (field) => {
+  if (!field || !field.getClientRects().length) {
+    return false;
+  }
+  const style = window.getComputedStyle(field);
+  return style.visibility !== "hidden" && style.display !== "none";
+};
+
+const isSearchField = (field) => {
+  const placeholder = (field.placeholder || field.getAttribute("aria-placeholder") || "").toLowerCase();
+  const name = (field.name || "").toLowerCase();
+  return placeholder.includes("search") || placeholder.includes("filter") || name.includes("search");
+};
+
+const isLikelyPersonalInfoField = (field) => {
+  const autocomplete = (field.autocomplete || "").toLowerCase();
+  const name = (field.name || "").toLowerCase();
+  const id = (field.id || "").toLowerCase();
+  const combined = `${autocomplete} ${name} ${id}`;
+  return (
+    combined.includes("email") ||
+    combined.includes("tel") ||
+    combined.includes("phone") ||
+    combined.includes("given-name") ||
+    combined.includes("family-name") ||
+    combined.includes("full-name") ||
+    combined.includes("address") ||
+    combined.includes("postal") ||
+    combined.includes("zip")
+  );
+};
+
+const loadActiveMode = async () => {
+  try {
+    const data = await chrome.storage.local.get(["mode"]);
+    state.activeMode = data.mode || "job";
+  } catch (error) {
+    state.activeMode = "job";
   }
 };
 
@@ -466,7 +537,7 @@ const generateAndFill = async (field, button) => {
     const response = await chrome.runtime.sendMessage({
       type: "generateAnswer",
       question,
-      fieldValue: field.value,
+      fieldValue: getFieldValue(field),
       jobDescription,
       pageContext,
     });
@@ -478,7 +549,11 @@ const generateAndFill = async (field, button) => {
     }
 
     // Fill the field directly
-    field.value = response.answer;
+    if (field.isContentEditable) {
+      field.textContent = response.answer;
+    } else {
+      field.value = response.answer;
+    }
     field.dispatchEvent(new Event("input", { bubbles: true }));
     field.dispatchEvent(new Event("change", { bubbles: true }));
     
@@ -514,40 +589,34 @@ const showToast = (message, isError = false) => {
 
 // Scan for text fields and add buttons
 const scanAndAddButtons = () => {
-  const fields = document.querySelectorAll('textarea, input[type="text"]');
-  
-  fields.forEach(field => {
+  const fields = document.querySelectorAll(
+    'textarea, input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="tel"], input:not([type]), [contenteditable="true"], [contenteditable=""]'
+  );
+
+  fields.forEach((field) => {
+    if (!isEditableField(field) || !isVisibleField(field)) {
+      return;
+    }
+
     // Skip if already has a button or is too small
     if (state.buttons.has(field)) {
       positionButton(field, state.buttons.get(field));
       return;
     }
-    
+
     const rect = field.getBoundingClientRect();
-    // Only add to visible fields with reasonable size
-    if (rect.width < 100 || rect.height < 20 || rect.top < 0 || rect.bottom > window.innerHeight + 500) {
+    // Only add to fields with reasonable size
+    if (rect.width < 100 || rect.height < 20) {
       return;
     }
-    
-    // Skip fields that look like search boxes or short inputs
-    const isTextarea = field.tagName === 'TEXTAREA';
-    const placeholder = (field.placeholder || '').toLowerCase();
-    const isSearchField = placeholder.includes('search') || placeholder.includes('filter');
-    
-    if (!isTextarea && !isSearchField) {
-      // For input fields, only add if they seem like answer fields
-      const label = getQuestionText(field).toLowerCase();
-      const isLikelyAnswerField = label.length > 20 || 
-        label.includes('why') || 
-        label.includes('what') || 
-        label.includes('describe') ||
-        label.includes('tell us') ||
-        label.includes('explain');
-      if (!isLikelyAnswerField) return;
+
+    if (isSearchField(field)) return;
+
+    const isTextarea = field.tagName === "TEXTAREA" || field.isContentEditable;
+    if (state.activeMode === "job" && !isTextarea && isLikelyPersonalInfoField(field)) {
+      return;
     }
-    
-    if (isSearchField) return;
-    
+
     const button = getOrCreateButton(field);
     positionButton(field, button);
   });
@@ -558,7 +627,7 @@ const updateButtonPositions = () => {
   state.buttons.forEach((button, field) => {
     const rect = field.getBoundingClientRect();
     // Hide if field is not visible
-    if (rect.bottom < 0 || rect.top > window.innerHeight) {
+    if (!isVisibleField(field) || rect.bottom < 0 || rect.top > window.innerHeight) {
       button.style.display = 'none';
     } else {
       button.style.display = '';
@@ -569,7 +638,7 @@ const updateButtonPositions = () => {
 
 // Initial scan and setup observers
 const initializeButtons = () => {
-  scanAndAddButtons();
+  loadActiveMode().then(scanAndAddButtons);
   
   // Re-scan periodically for dynamically loaded content
   const observer = new MutationObserver(() => {
@@ -583,8 +652,16 @@ const initializeButtons = () => {
   
   // Update positions on scroll/resize
   window.addEventListener('scroll', updateButtonPositions, { passive: true });
+  document.addEventListener('scroll', updateButtonPositions, { passive: true, capture: true });
   window.addEventListener('resize', updateButtonPositions, { passive: true });
 };
+
+chrome.storage.onChanged.addListener((changes) => {
+  if (changes.mode) {
+    state.activeMode = changes.mode.newValue || "job";
+    scanAndAddButtons();
+  }
+});
 
 // Start when DOM is ready
 if (document.readyState === 'loading') {

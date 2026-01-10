@@ -1,8 +1,11 @@
 // Elements
-const tabs = document.querySelectorAll('.tab');
-const panels = document.querySelectorAll('.tab-panel');
+const providerTabs = document.querySelectorAll('.provider-tab');
+const providerPanels = document.querySelectorAll('.provider-panel');
+const modeTabs = document.querySelectorAll('.mode-tab');
+const modePanels = document.querySelectorAll('.mode-panel');
 const eyeButtons = document.querySelectorAll('.eye-btn');
 const activeBadge = document.getElementById('activeBadge');
+const modeBadge = document.getElementById('modeBadge');
 
 const openaiKeyInput = document.getElementById('openaiKey');
 const anthropicKeyInput = document.getElementById('anthropicKey');
@@ -17,6 +20,14 @@ const uploadLabel = document.getElementById('uploadLabel');
 const fileInfo = document.getElementById('fileInfo');
 const fileName = document.getElementById('fileName');
 const clearFileBtn = document.getElementById('clearFile');
+const generalFileInput = document.getElementById('generalFile');
+const generalTextInput = document.getElementById('generalText');
+const generalUploadArea = document.getElementById('generalUploadArea');
+const generalUploadLabel = document.getElementById('generalUploadLabel');
+const generalFileInfo = document.getElementById('generalFileInfo');
+const generalFileName = document.getElementById('generalFileName');
+const clearGeneralFileBtn = document.getElementById('clearGeneralFile');
+const systemPromptInput = document.getElementById('systemPrompt');
 const saveButton = document.getElementById('save');
 const status = document.getElementById('status');
 
@@ -29,27 +40,48 @@ const providerNames = {
 };
 
 let activeProvider = 'openai';
+let activeMode = 'job';
 
 // Update the active badge
 const updateActiveBadge = (provider) => {
   activeBadge.textContent = `Active: ${providerNames[provider]}`;
 };
 
-// Tab switching
-tabs.forEach(tab => {
+const updateModeBadge = (mode) => {
+  modeBadge.textContent = `Active: ${mode === 'general' ? 'General' : 'Job'}`;
+};
+
+// Provider tab switching
+providerTabs.forEach(tab => {
   tab.addEventListener('click', () => {
     const provider = tab.dataset.provider;
     
     // Update active tab
-    tabs.forEach(t => t.classList.remove('active'));
+    providerTabs.forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
     
     // Update active panel
-    panels.forEach(p => p.classList.remove('active'));
+    providerPanels.forEach(p => p.classList.remove('active'));
     document.querySelector(`[data-panel="${provider}"]`).classList.add('active');
     
     activeProvider = provider;
     updateActiveBadge(provider);
+  });
+});
+
+// Mode tab switching
+modeTabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    const mode = tab.dataset.mode;
+
+    modeTabs.forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+
+    modePanels.forEach(p => p.classList.remove('active'));
+    document.querySelector(`.mode-panel[data-panel="${mode}"]`).classList.add('active');
+
+    activeMode = mode;
+    updateModeBadge(mode);
   });
 });
 
@@ -92,33 +124,49 @@ const loadSettings = async () => {
   const data = await chrome.storage.local.get([
     'provider',
     'model',
+    'mode',
     'openaiKey',
     'anthropicKey',
     'geminiKey',
     'resumeText',
     'resumeFileName',
+    'generalContextText',
+    'generalFileName',
+    'systemPrompt',
   ]);
 
   activeProvider = data.provider || 'openai';
+  activeMode = data.mode || 'job';
   
   // Set active tab
-  tabs.forEach(t => t.classList.remove('active'));
-  panels.forEach(p => p.classList.remove('active'));
+  providerTabs.forEach(t => t.classList.remove('active'));
+  providerPanels.forEach(p => p.classList.remove('active'));
   document.querySelector(`[data-provider="${activeProvider}"]`).classList.add('active');
-  document.querySelector(`[data-panel="${activeProvider}"]`).classList.add('active');
+  document.querySelector(`.provider-panel[data-panel="${activeProvider}"]`).classList.add('active');
+
+  modeTabs.forEach(t => t.classList.remove('active'));
+  modePanels.forEach(p => p.classList.remove('active'));
+  document.querySelector(`[data-mode="${activeMode}"]`).classList.add('active');
+  document.querySelector(`.mode-panel[data-panel="${activeMode}"]`).classList.add('active');
   
   // Update badge
   updateActiveBadge(activeProvider);
+  updateModeBadge(activeMode);
 
   // Set values
   openaiKeyInput.value = data.openaiKey || '';
   anthropicKeyInput.value = data.anthropicKey || '';
   geminiKeyInput.value = data.geminiKey || '';
   resumeTextInput.value = data.resumeText || '';
+  generalTextInput.value = data.generalContextText || '';
+  systemPromptInput.value = data.systemPrompt || '';
 
   // Show file info if we have a saved file name
   if (data.resumeFileName) {
     showFileInfo(data.resumeFileName);
+  }
+  if (data.generalFileName) {
+    showGeneralFileInfo(data.generalFileName);
   }
 
   // Set model selections
@@ -143,6 +191,18 @@ const hideFileInfo = () => {
   resumeFileInput.value = '';
 };
 
+const showGeneralFileInfo = (name) => {
+  generalFileInfo.style.display = 'flex';
+  generalFileName.textContent = name;
+  generalUploadArea.style.display = 'none';
+};
+
+const hideGeneralFileInfo = () => {
+  generalFileInfo.style.display = 'none';
+  generalUploadArea.style.display = 'flex';
+  generalFileInput.value = '';
+};
+
 // Clear file button
 clearFileBtn.addEventListener('click', () => {
   hideFileInfo();
@@ -151,31 +211,48 @@ clearFileBtn.addEventListener('click', () => {
   showStatus('Resume cleared.');
 });
 
+clearGeneralFileBtn.addEventListener('click', () => {
+  hideGeneralFileInfo();
+  generalTextInput.value = '';
+  chrome.storage.local.remove('generalFileName');
+  showStatus('General context cleared.');
+});
+
 // Drag and drop handling
-fileUploadArea.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  fileUploadArea.classList.add('drag-over');
-});
+const setupDragAndDrop = (area, onDrop) => {
+  area.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    area.classList.add('drag-over');
+  });
 
-fileUploadArea.addEventListener('dragleave', () => {
-  fileUploadArea.classList.remove('drag-over');
-});
+  area.addEventListener('dragleave', () => {
+    area.classList.remove('drag-over');
+  });
 
-fileUploadArea.addEventListener('drop', async (e) => {
-  e.preventDefault();
-  fileUploadArea.classList.remove('drag-over');
-  
-  const file = e.dataTransfer.files[0];
-  if (file) {
-    await handleFileUpload(file);
-  }
-});
+  area.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    area.classList.remove('drag-over');
+
+    const file = e.dataTransfer.files[0];
+    if (file) {
+      await onDrop(file);
+    }
+  });
+};
 
 // Handle file upload (both PDF and text)
-const handleFileUpload = async (file) => {
+const handleFileUpload = async ({
+  file,
+  uploadLabelElement,
+  textInput,
+  showInfo,
+  fileNameKey,
+  maxChars,
+  successLabel,
+}) => {
   const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
   
-  uploadLabel.textContent = 'Processing...';
+  uploadLabelElement.textContent = 'Processing...';
   
   try {
     let text = '';
@@ -187,12 +264,12 @@ const handleFileUpload = async (file) => {
         
         if (!text || text.length < 50) {
           showStatus('Could not extract text from PDF. Try a text file instead.', true);
-          uploadLabel.textContent = 'Drop PDF or text file here, or click to browse';
+          uploadLabelElement.textContent = 'Drop PDF or text file here, or click to browse';
           return;
         }
       } else {
         showStatus('PDF parser not loaded. Please refresh the page.', true);
-        uploadLabel.textContent = 'Drop PDF or text file here, or click to browse';
+        uploadLabelElement.textContent = 'Drop PDF or text file here, or click to browse';
         return;
       }
     } else {
@@ -201,21 +278,21 @@ const handleFileUpload = async (file) => {
     }
     
     // Sanitize and set
-    const sanitized = sanitizeText(text, MAX_RESUME_CHARS);
-    resumeTextInput.value = sanitized;
+    const sanitized = sanitizeText(text, maxChars);
+    textInput.value = sanitized;
     
     // Show file info
-    showFileInfo(file.name);
+    showInfo(file.name);
     
     // Save file name
-    chrome.storage.local.set({ resumeFileName: file.name });
+    chrome.storage.local.set({ [fileNameKey]: file.name });
     
-    showStatus(`Resume loaded: ${sanitized.length} characters extracted.`);
+    showStatus(`${successLabel} loaded: ${sanitized.length} characters extracted.`);
     
   } catch (error) {
     console.error('File processing error:', error);
     showStatus('Failed to process file: ' + error.message, true);
-    uploadLabel.textContent = 'Drop PDF or text file here, or click to browse';
+    uploadLabelElement.textContent = 'Drop PDF or text file here, or click to browse';
   }
 };
 
@@ -223,8 +300,55 @@ const handleFileUpload = async (file) => {
 resumeFileInput.addEventListener('change', async (event) => {
   const file = event.target.files?.[0];
   if (file) {
-    await handleFileUpload(file);
+    await handleFileUpload({
+      file,
+      uploadLabelElement: uploadLabel,
+      textInput: resumeTextInput,
+      showInfo: showFileInfo,
+      fileNameKey: 'resumeFileName',
+      maxChars: MAX_RESUME_CHARS,
+      successLabel: 'Resume',
+    });
   }
+});
+
+generalFileInput.addEventListener('change', async (event) => {
+  const file = event.target.files?.[0];
+  if (file) {
+    await handleFileUpload({
+      file,
+      uploadLabelElement: generalUploadLabel,
+      textInput: generalTextInput,
+      showInfo: showGeneralFileInfo,
+      fileNameKey: 'generalFileName',
+      maxChars: MAX_RESUME_CHARS,
+      successLabel: 'General context',
+    });
+  }
+});
+
+setupDragAndDrop(fileUploadArea, async (file) => {
+  await handleFileUpload({
+    file,
+    uploadLabelElement: uploadLabel,
+    textInput: resumeTextInput,
+    showInfo: showFileInfo,
+    fileNameKey: 'resumeFileName',
+    maxChars: MAX_RESUME_CHARS,
+    successLabel: 'Resume',
+  });
+});
+
+setupDragAndDrop(generalUploadArea, async (file) => {
+  await handleFileUpload({
+    file,
+    uploadLabelElement: generalUploadLabel,
+    textInput: generalTextInput,
+    showInfo: showGeneralFileInfo,
+    fileNameKey: 'generalFileName',
+    maxChars: MAX_RESUME_CHARS,
+    successLabel: 'General context',
+  });
 });
 
 // Save settings
@@ -233,6 +357,8 @@ saveButton.addEventListener('click', async () => {
   const anthropicKey = anthropicKeyInput.value.trim();
   const geminiKey = geminiKeyInput.value.trim();
   const resumeText = sanitizeText(resumeTextInput.value, MAX_RESUME_CHARS);
+  const generalContextText = sanitizeText(generalTextInput.value, MAX_RESUME_CHARS);
+  const systemPrompt = sanitizeText(systemPromptInput.value, MAX_RESUME_CHARS);
 
   // Get the model for the active provider
   let model;
@@ -253,10 +379,13 @@ saveButton.addEventListener('click', async () => {
   await chrome.storage.local.set({
     provider: activeProvider,
     model,
+    mode: activeMode,
     openaiKey,
     anthropicKey,
     geminiKey,
     resumeText,
+    generalContextText,
+    systemPrompt,
   });
 
   showStatus('Settings saved.');
