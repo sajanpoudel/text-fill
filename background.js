@@ -130,6 +130,7 @@ const SOCIAL_STYLE_PROMPTS = {
 
 const buildSocialPrompt = ({
   socialStyle,
+  socialContext,
   pageContext,
   question,
   fieldValue,
@@ -147,6 +148,7 @@ const buildSocialPrompt = ({
   ].join(" ");
 
   const user = [
+    "Social context:\n" + (socialContext || "(none provided)"),
     "Page context:\n" + (pageContext || "(none provided)"),
     "\nField or prompt:\n" + question,
     "\nExisting content (if any):\n" + (fieldValue || "(empty)"),
@@ -361,6 +363,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         socialStyle,
         systemPrompt,
         generalContextText,
+        socialContextText,
         resumeText,
         openaiKey,
         anthropicKey,
@@ -372,6 +375,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         "socialStyle",
         "systemPrompt",
         "generalContextText",
+        "socialContextText",
         "resumeText",
         "openaiKey",
         "anthropicKey",
@@ -416,6 +420,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (activeMode === "social") {
         promptPayload = buildSocialPrompt({
           socialStyle: socialStyle || "genz",
+          socialContext: socialContextText,
           pageContext: message.pageContext,
           question: message.question,
           fieldValue: message.fieldValue,

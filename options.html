@@ -205,6 +205,25 @@
             <textarea id="systemPrompt" placeholder="e.g., Write concise replies in a friendly, professional tone." rows="4"></textarea>
           </div>
         </div>
+
+        <div class="tab-panel mode-panel" data-panel="social">
+          <h2>Social Context (Social Mode)</h2>
+          <p class="hint">Upload a PDF or text file, or paste background details to help with social posts and replies.</p>
+          <div class="field">
+            <div class="file-upload" id="socialUploadArea">
+              <input type="file" id="socialFile" accept=".pdf,.txt,.md" />
+              <span id="socialUploadLabel">Drop PDF or text file here, or click to browse</span>
+            </div>
+            <div id="socialFileInfo" class="file-info" style="display: none;">
+              <span id="socialFileName"></span>
+              <button type="button" id="clearSocialFile" class="btn-clear">Clear</button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="socialText">Social Context Text</label>
+            <textarea id="socialText" placeholder="Paste context for social media posts and comments..." rows="8"></textarea>
+          </div>
+        </div>
       </section>
 
       <!-- Save -->

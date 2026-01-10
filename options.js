@@ -27,6 +27,13 @@ const generalUploadLabel = document.getElementById('generalUploadLabel');
 const generalFileInfo = document.getElementById('generalFileInfo');
 const generalFileName = document.getElementById('generalFileName');
 const clearGeneralFileBtn = document.getElementById('clearGeneralFile');
+const socialFileInput = document.getElementById('socialFile');
+const socialTextInput = document.getElementById('socialText');
+const socialUploadArea = document.getElementById('socialUploadArea');
+const socialUploadLabel = document.getElementById('socialUploadLabel');
+const socialFileInfo = document.getElementById('socialFileInfo');
+const socialFileName = document.getElementById('socialFileName');
+const clearSocialFileBtn = document.getElementById('clearSocialFile');
 const systemPromptInput = document.getElementById('systemPrompt');
 const saveButton = document.getElementById('save');
 const status = document.getElementById('status');
@@ -154,6 +161,8 @@ const loadSettings = async () => {
     'resumeFileName',
     'generalContextText',
     'generalFileName',
+    'socialContextText',
+    'socialFileName',
     'systemPrompt',
   ]);
 
@@ -188,6 +197,7 @@ const loadSettings = async () => {
   geminiKeyInput.value = data.geminiKey || '';
   resumeTextInput.value = data.resumeText || '';
   generalTextInput.value = data.generalContextText || '';
+  socialTextInput.value = data.socialContextText || '';
   systemPromptInput.value = data.systemPrompt || '';
 
   // Show file info if we have a saved file name
@@ -196,6 +206,9 @@ const loadSettings = async () => {
   }
   if (data.generalFileName) {
     showGeneralFileInfo(data.generalFileName);
+  }
+  if (data.socialFileName) {
+    showSocialFileInfo(data.socialFileName);
   }
 
   // Set model selections
@@ -232,6 +245,18 @@ const hideGeneralFileInfo = () => {
   generalFileInput.value = '';
 };
 
+const showSocialFileInfo = (name) => {
+  socialFileInfo.style.display = 'flex';
+  socialFileName.textContent = name;
+  socialUploadArea.style.display = 'none';
+};
+
+const hideSocialFileInfo = () => {
+  socialFileInfo.style.display = 'none';
+  socialUploadArea.style.display = 'flex';
+  socialFileInput.value = '';
+};
+
 // Clear file button
 clearFileBtn.addEventListener('click', () => {
   hideFileInfo();
@@ -245,6 +270,13 @@ clearGeneralFileBtn.addEventListener('click', () => {
   generalTextInput.value = '';
   chrome.storage.local.remove('generalFileName');
   showStatus('General context cleared.');
+});
+
+clearSocialFileBtn.addEventListener('click', () => {
+  hideSocialFileInfo();
+  socialTextInput.value = '';
+  chrome.storage.local.remove('socialFileName');
+  showStatus('Social context cleared.');
 });
 
 // Drag and drop handling
@@ -356,6 +388,21 @@ generalFileInput.addEventListener('change', async (event) => {
   }
 });
 
+socialFileInput.addEventListener('change', async (event) => {
+  const file = event.target.files?.[0];
+  if (file) {
+    await handleFileUpload({
+      file,
+      uploadLabelElement: socialUploadLabel,
+      textInput: socialTextInput,
+      showInfo: showSocialFileInfo,
+      fileNameKey: 'socialFileName',
+      maxChars: MAX_RESUME_CHARS,
+      successLabel: 'Social context',
+    });
+  }
+});
+
 setupDragAndDrop(fileUploadArea, async (file) => {
   await handleFileUpload({
     file,
@@ -380,6 +427,18 @@ setupDragAndDrop(generalUploadArea, async (file) => {
   });
 });
 
+setupDragAndDrop(socialUploadArea, async (file) => {
+  await handleFileUpload({
+    file,
+    uploadLabelElement: socialUploadLabel,
+    textInput: socialTextInput,
+    showInfo: showSocialFileInfo,
+    fileNameKey: 'socialFileName',
+    maxChars: MAX_RESUME_CHARS,
+    successLabel: 'Social context',
+  });
+});
+
 // Save settings
 saveButton.addEventListener('click', async () => {
   const openaiKey = openaiKeyInput.value.trim();
@@ -387,6 +446,7 @@ saveButton.addEventListener('click', async () => {
   const geminiKey = geminiKeyInput.value.trim();
   const resumeText = sanitizeText(resumeTextInput.value, MAX_RESUME_CHARS);
   const generalContextText = sanitizeText(generalTextInput.value, MAX_RESUME_CHARS);
+  const socialContextText = sanitizeText(socialTextInput.value, MAX_RESUME_CHARS);
   const systemPrompt = sanitizeText(systemPromptInput.value, MAX_RESUME_CHARS);
 
   // Get the model for the active provider
@@ -415,6 +475,7 @@ saveButton.addEventListener('click', async () => {
     geminiKey,
     resumeText,
     generalContextText,
+    socialContextText,
     systemPrompt,
   });
 
