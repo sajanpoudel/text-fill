@@ -25,22 +25,22 @@
           <span class="active-badge" id="activeBadge">Active: OpenAI</span>
         </div>
         <div class="tabs" role="tablist">
-          <button class="tab active" data-provider="openai" role="tab">
+          <button class="tab provider-tab active" data-provider="openai" role="tab">
             <span class="tab-name">OpenAI</span>
             <span class="tab-check">✓</span>
           </button>
-          <button class="tab" data-provider="anthropic" role="tab">
+          <button class="tab provider-tab" data-provider="anthropic" role="tab">
             <span class="tab-name">Anthropic</span>
             <span class="tab-check">✓</span>
           </button>
-          <button class="tab" data-provider="gemini" role="tab">
+          <button class="tab provider-tab" data-provider="gemini" role="tab">
             <span class="tab-name">Gemini</span>
             <span class="tab-check">✓</span>
           </button>
         </div>
 
         <!-- OpenAI Panel -->
-        <div class="tab-panel active" data-panel="openai">
+        <div class="tab-panel provider-panel active" data-panel="openai">
           <div class="field">
             <label for="openaiKey">API Key</label>
             <div class="input-wrapper">
@@ -67,7 +67,7 @@
         </div>
 
         <!-- Anthropic Panel -->
-        <div class="tab-panel" data-panel="anthropic">
+        <div class="tab-panel provider-panel" data-panel="anthropic">
           <div class="field">
             <label for="anthropicKey">API Key</label>
             <div class="input-wrapper">
@@ -94,7 +94,7 @@
         </div>
 
         <!-- Gemini Panel -->
-        <div class="tab-panel" data-panel="gemini">
+        <div class="tab-panel provider-panel" data-panel="gemini">
           <div class="field">
             <label for="geminiKey">API Key</label>
             <div class="input-wrapper">
@@ -121,28 +121,76 @@
         </div>
       </section>
 
-      <!-- Resume Section -->
+      <!-- Mode Tabs -->
       <section class="card">
-        <h2>Your Resume</h2>
-        <p class="hint">Upload a PDF or text file, or paste your resume. This helps generate personalized answers.</p>
-        <div class="field">
-          <div class="file-upload" id="fileUploadArea">
-            <input type="file" id="resumeFile" accept=".pdf,.txt,.md" />
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            <span id="uploadLabel">Drop PDF or text file here, or click to browse</span>
+        <div class="card-header">
+          <h2>Active Mode</h2>
+          <span class="active-badge" id="modeBadge">Active: Job</span>
+        </div>
+        <div class="tabs" role="tablist">
+          <button class="tab mode-tab active" data-mode="job" role="tab">
+            <span class="tab-name">Job</span>
+            <span class="tab-check">✓</span>
+          </button>
+          <button class="tab mode-tab" data-mode="general" role="tab">
+            <span class="tab-name">General</span>
+            <span class="tab-check">✓</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- Context Section -->
+      <section class="card">
+        <div class="tab-panel mode-panel active" data-panel="job">
+          <h2>Your Resume (Job Mode)</h2>
+          <p class="hint">Upload a PDF or text file, or paste your resume. This helps generate personalized answers.</p>
+          <div class="field">
+            <div class="file-upload" id="fileUploadArea">
+              <input type="file" id="resumeFile" accept=".pdf,.txt,.md" />
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <span id="uploadLabel">Drop PDF or text file here, or click to browse</span>
+            </div>
+            <div id="fileInfo" class="file-info" style="display: none;">
+              <span id="fileName"></span>
+              <button type="button" id="clearFile" class="btn-clear">✕</button>
+            </div>
           </div>
-          <div id="fileInfo" class="file-info" style="display: none;">
-            <span id="fileName"></span>
-            <button type="button" id="clearFile" class="btn-clear">✕</button>
+          <div class="field">
+            <label for="resumeText">Resume Text</label>
+            <textarea id="resumeText" placeholder="Or paste your resume text here..." rows="8"></textarea>
           </div>
         </div>
-        <div class="field">
-          <label for="resumeText">Resume Text</label>
-          <textarea id="resumeText" placeholder="Or paste your resume text here..." rows="8"></textarea>
+
+        <div class="tab-panel mode-panel" data-panel="general">
+          <h2>General Context (General Mode)</h2>
+          <p class="hint">Upload a PDF or text file, or paste any info to answer messages, emails, and forms anywhere.</p>
+          <div class="field">
+            <div class="file-upload" id="generalUploadArea">
+              <input type="file" id="generalFile" accept=".pdf,.txt,.md" />
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <span id="generalUploadLabel">Drop PDF or text file here, or click to browse</span>
+            </div>
+            <div id="generalFileInfo" class="file-info" style="display: none;">
+              <span id="generalFileName"></span>
+              <button type="button" id="clearGeneralFile" class="btn-clear">✕</button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="generalText">General Context Text</label>
+            <textarea id="generalText" placeholder="Paste context for emails, messages, and general forms..." rows="8"></textarea>
+          </div>
+          <div class="field">
+            <label for="systemPrompt">Custom System Prompt (Optional)</label>
+            <textarea id="systemPrompt" placeholder="e.g., Write concise replies in a friendly, professional tone." rows="4"></textarea>
+          </div>
         </div>
       </section>
 
