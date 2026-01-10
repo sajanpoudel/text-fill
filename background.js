@@ -87,6 +87,75 @@ const buildGeneralPrompt = ({
   return { system, user };
 };
 
+const SOCIAL_STYLE_PROMPTS = {
+  genz: [
+    "You write punchy, viral social media content that hits different.",
+    "Keep it short, snappy, and scroll-stopping. Think X, TikTok, Instagram comments.",
+    "Use lowercase for casual vibes. No periods at the end of short takes.",
+    "Be real, be bold, be memorable. Hot takes welcome.",
+    "Match the energy: hype what deserves hype, call out what needs calling out.",
+    "Use internet-native language naturally (not forced): lowkey, ngl, fr, iykyk, no cap.",
+    "One-liners hit harder than paragraphs. Brevity is everything.",
+    "Sound like someone with opinions, not a brand trying to be relatable.",
+    "Reactions should feel instant and genuine, like typing in the moment.",
+    "Skip the pleasantries. Get straight to the point."
+  ].join(" "),
+
+  casual: [
+    "You write friendly, conversational social media replies.",
+    "Sound like a real person chatting with friends online.",
+    "Keep it warm and approachable. Use natural language.",
+    "Match the vibe of the conversation. Be genuine.",
+    "Short and sweet works best. Nobody wants an essay in the comments.",
+    "Use contractions, sentence fragments when natural.",
+    "React authentically. Agree, disagree, or add your take.",
+    "Skip formal greetings. Jump into the conversation.",
+    "Emojis optional but keep them minimal if used.",
+    "Write how you'd actually text a friend about this."
+  ].join(" "),
+
+  professional: [
+    "You write polished, credible social media content for professional contexts.",
+    "Think LinkedIn comments, industry discussions, thought leadership replies.",
+    "Be insightful and add value to the conversation.",
+    "Maintain authority while staying conversational. Not stiff, not casual.",
+    "Lead with your expertise or a fresh perspective.",
+    "Keep it concise but substantive. Quality over quantity.",
+    "Use complete sentences and proper punctuation.",
+    "Build on the original post with relevant insights or experiences.",
+    "Sound like a respected peer, not a corporate account.",
+    "End with something memorable: a key takeaway, question, or call to action."
+  ].join(" ")
+};
+
+const buildSocialPrompt = ({
+  socialStyle,
+  pageContext,
+  question,
+  fieldValue,
+}) => {
+  const stylePrompt = SOCIAL_STYLE_PROMPTS[socialStyle] || SOCIAL_STYLE_PROMPTS.genz;
+
+  const system = [
+    "You are a social media writing assistant.",
+    stylePrompt,
+    "Never use hashtags unless the user specifically asks.",
+    "Never start with 'I' when possible. Vary your openings.",
+    "Match response length to context: replies are short, posts can be longer.",
+    "Avoid: generic phrases, corporate speak, try-hard humor, forced relatability.",
+    "Read the room. Match the tone of what you're replying to."
+  ].join(" ");
+
+  const user = [
+    "Page context:\n" + (pageContext || "(none provided)"),
+    "\nField or prompt:\n" + question,
+    "\nExisting content (if any):\n" + (fieldValue || "(empty)"),
+    "\nWrite a response that fits this social context perfectly."
+  ].join("\n\n");
+
+  return { system, user };
+};
+
 const sanitizeError = (errorText) => {
   const firstLine = errorText.split('\n')[0];
   return firstLine.replace(/sk-[a-zA-Z0-9]+/g, 'sk-***').substring(0, 200);
@@ -284,6 +353,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         provider,
         model,
         mode,
+        socialStyle,
         systemPrompt,
         generalContextText,
         resumeText,
@@ -294,6 +364,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         "provider",
         "model",
         "mode",
+        "socialStyle",
         "systemPrompt",
         "generalContextText",
         "resumeText",
@@ -336,22 +407,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
-      const promptPayload =
-        activeMode === "general"
-          ? buildGeneralPrompt({
-              systemPrompt,
-              generalContext: generalContextText,
-              pageContext: message.pageContext,
-              question: message.question,
-              fieldValue: message.fieldValue,
-            })
-          : buildJobPrompt({
-              resumeText,
-              jobDescription: message.jobDescription,
-              pageContext: message.pageContext,
-              question: message.question,
-              fieldValue: message.fieldValue,
-            });
+      let promptPayload;
+      if (activeMode === "social") {
+        promptPayload = buildSocialPrompt({
+          socialStyle: socialStyle || "genz",
+          pageContext: message.pageContext,
+          question: message.question,
+          fieldValue: message.fieldValue,
+        });
+      } else if (activeMode === "general") {
+        promptPayload = buildGeneralPrompt({
+          systemPrompt,
+          generalContext: generalContextText,
+          pageContext: message.pageContext,
+          question: message.question,
+          fieldValue: message.fieldValue,
+        });
+      } else {
+        promptPayload = buildJobPrompt({
+          resumeText,
+          jobDescription: message.jobDescription,
+          pageContext: message.pageContext,
+          question: message.question,
+          fieldValue: message.fieldValue,
+        });
+      }
 
       let answer = "";
       if (activeProvider === "anthropic") {

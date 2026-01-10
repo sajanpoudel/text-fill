@@ -25,18 +25,64 @@ const PLATFORM_SELECTORS = {
     'div.editable[role="textbox"]'
   ],
   linkedin: [
+    // Messages
     'div.msg-form__contenteditable',
-    'div[contenteditable="true"][role="textbox"]',
     'div.msg-form__msg-content-container',
+    // Comments and replies
     'div.ql-editor[contenteditable="true"]',
-    'div[data-placeholder*="message"]'
+    'div[data-placeholder*="Add a comment"]',
+    'div[data-placeholder*="comment"]',
+    'div[aria-label*="Add a comment"]',
+    'div[aria-label*="Text editor"]',
+    'div.comments-comment-box__form-container [contenteditable="true"]',
+    'div.comments-comment-texteditor [contenteditable="true"]',
+    'div.feed-shared-update-v2__comments-container [contenteditable="true"]',
+    // Posts
+    'div[data-placeholder*="Start a post"]',
+    'div[aria-label*="Start a post"]',
+    'div.share-creation-state__text-editor [contenteditable="true"]',
+    // General contenteditable
+    'div[contenteditable="true"][role="textbox"]'
   ],
   facebook: [
     'div[contenteditable="true"][role="textbox"]',
     'div[aria-label*="Message"]',
     'div[aria-label*="Write a comment"]',
     'div[aria-label*="Write a reply"]',
+    'div[aria-label*="Write a public comment"]',
     'div.notranslate[contenteditable="true"]'
+  ],
+  twitter: [
+    'div[data-testid="tweetTextarea_0"]',
+    'div[data-testid="tweetTextarea_0_label"]',
+    'div[aria-label*="Post text"]',
+    'div[aria-label*="Tweet text"]',
+    'div[aria-label*="Add another Tweet"]',
+    'div[aria-label*="Reply"]',
+    'div[role="textbox"][data-block="true"]',
+    'div.public-DraftEditor-content[contenteditable="true"]',
+    'div.DraftEditor-root [contenteditable="true"]'
+  ],
+  threads: [
+    'div[contenteditable="true"][role="textbox"]',
+    'div[aria-label*="Reply"]',
+    'div[aria-label*="Start a thread"]'
+  ],
+  instagram: [
+    'textarea[aria-label*="Add a comment"]',
+    'textarea[placeholder*="Add a comment"]',
+    'div[contenteditable="true"][role="textbox"]'
+  ],
+  youtube: [
+    'div[contenteditable="true"]#contenteditable-root',
+    'div[aria-label*="Add a comment"]',
+    'div[aria-label*="Add a public comment"]',
+    'div#placeholder-area'
+  ],
+  reddit: [
+    'div[contenteditable="true"][role="textbox"]',
+    'textarea[placeholder*="What are your thoughts"]',
+    'div.public-DraftEditor-content[contenteditable="true"]'
   ],
   general: [
     'textarea',
@@ -47,23 +93,24 @@ const PLATFORM_SELECTORS = {
     '[contenteditable="true"]',
     '[contenteditable=""]',
     '[role="textbox"]',
-    'div.ql-editor', // Quill editor
-    'div.tox-edit-area', // TinyMCE
-    'div.CodeMirror-code' // CodeMirror
+    'div.ql-editor',
+    'div.tox-edit-area',
+    'div.CodeMirror-code'
   ]
 };
 
 const state = {
   activeField: null,
-  buttons: new Map(), // Map of field -> button for each text field
+  buttons: new Map(),
   cachedJobDescription: null,
-  currentJobUrl: null, // Track current job URL to detect navigation
+  currentJobUrl: null,
   isGenerating: false,
   activeMode: "general",
-  scanScheduled: false, // Debounce flag
-  observer: null, // MutationObserver instance
-  idleCallbackId: null, // requestIdleCallback ID
-  scrollTicking: false, // Throttle flag for scroll updates
+  activeSocialStyle: "genz",
+  scanScheduled: false,
+  observer: null,
+  idleCallbackId: null,
+  scrollTicking: false,
 };
 
 const normalizeText = (text) => text.replace(/\s+/g, " ").trim();
@@ -703,10 +750,12 @@ const isLikelyPersonalInfoField = (field) => {
 
 const loadActiveMode = async () => {
   try {
-    const data = await chrome.storage.local.get(["mode"]);
+    const data = await chrome.storage.local.get(["mode", "socialStyle"]);
     state.activeMode = data.mode || "general";
+    state.activeSocialStyle = data.socialStyle || "genz";
   } catch (error) {
     state.activeMode = "general";
+    state.activeSocialStyle = "genz";
   }
 };
 
@@ -962,6 +1011,16 @@ const getPlatformSelectors = () => {
     selectors = [...PLATFORM_SELECTORS.linkedin, ...PLATFORM_SELECTORS.general];
   } else if (hostname.includes("facebook.com") || hostname.includes("messenger.com")) {
     selectors = [...PLATFORM_SELECTORS.facebook, ...PLATFORM_SELECTORS.general];
+  } else if (hostname.includes("twitter.com") || hostname.includes("x.com")) {
+    selectors = [...PLATFORM_SELECTORS.twitter, ...PLATFORM_SELECTORS.general];
+  } else if (hostname.includes("threads.net")) {
+    selectors = [...PLATFORM_SELECTORS.threads, ...PLATFORM_SELECTORS.general];
+  } else if (hostname.includes("instagram.com")) {
+    selectors = [...PLATFORM_SELECTORS.instagram, ...PLATFORM_SELECTORS.general];
+  } else if (hostname.includes("youtube.com")) {
+    selectors = [...PLATFORM_SELECTORS.youtube, ...PLATFORM_SELECTORS.general];
+  } else if (hostname.includes("reddit.com")) {
+    selectors = [...PLATFORM_SELECTORS.reddit, ...PLATFORM_SELECTORS.general];
   } else {
     selectors = PLATFORM_SELECTORS.general;
   }
@@ -969,18 +1028,21 @@ const getPlatformSelectors = () => {
   return selectors.join(", ");
 };
 
-// Check if field is a messaging/composition field (whitelist for general mode)
+// Check if field is a messaging/social/composition field
 const isMessagingField = (field) => {
   const ariaLabel = (field.getAttribute("aria-label") || "").toLowerCase();
   const placeholder = (field.placeholder || field.getAttribute("data-placeholder") || "").toLowerCase();
   const role = (field.getAttribute("role") || "").toLowerCase();
+  const className = (field.className || "").toLowerCase();
+  const testId = (field.getAttribute("data-testid") || "").toLowerCase();
 
   const messagingPatterns = [
     "message", "compose", "write", "reply", "comment",
-    "post", "chat", "conversation", "note", "memo"
+    "post", "chat", "conversation", "note", "memo",
+    "tweet", "thread", "status", "update", "share"
   ];
 
-  const combined = `${ariaLabel} ${placeholder} ${role}`;
+  const combined = `${ariaLabel} ${placeholder} ${role} ${className} ${testId}`;
   return messagingPatterns.some(pattern => combined.includes(pattern));
 };
 
@@ -1156,6 +1218,9 @@ chrome.storage.onChanged.addListener((changes) => {
   if (changes.mode) {
     state.activeMode = changes.mode.newValue || "general";
     scheduleScan();
+  }
+  if (changes.socialStyle) {
+    state.activeSocialStyle = changes.socialStyle.newValue || "genz";
   }
 });
 
