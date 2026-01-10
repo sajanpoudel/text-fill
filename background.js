@@ -261,7 +261,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           : activeProvider === "gemini"
             ? "gemini-3-pro-preview"
             : "gpt-5-nano");
-      const activeMode = mode || "job";
+      const activeMode = mode || "general";
 
       const apiKey =
         activeProvider === "anthropic"

@@ -40,7 +40,7 @@ const providerNames = {
 };
 
 let activeProvider = 'openai';
-let activeMode = 'job';
+let activeMode = 'general';
 
 // Update the active badge
 const updateActiveBadge = (provider) => {
@@ -136,7 +136,7 @@ const loadSettings = async () => {
   ]);
 
   activeProvider = data.provider || 'openai';
-  activeMode = data.mode || 'job';
+  activeMode = data.mode || 'general';
   
   // Set active tab
   providerTabs.forEach(t => t.classList.remove('active'));

@@ -15,13 +15,54 @@ const JOB_HINTS = [
   "what we're looking for",
 ];
 
+// Platform-specific selectors for better detection
+const PLATFORM_SELECTORS = {
+  gmail: [
+    'div[aria-label*="Message Body"]',
+    'div[contenteditable="true"][aria-label*="Compose"]',
+    'div[g_editable="true"]',
+    'div[role="textbox"][aria-label*="Message"]',
+    'div.editable[role="textbox"]'
+  ],
+  linkedin: [
+    'div.msg-form__contenteditable',
+    'div[contenteditable="true"][role="textbox"]',
+    'div.msg-form__msg-content-container',
+    'div.ql-editor[contenteditable="true"]',
+    'div[data-placeholder*="message"]'
+  ],
+  facebook: [
+    'div[contenteditable="true"][role="textbox"]',
+    'div[aria-label*="Message"]',
+    'div[aria-label*="Write a comment"]',
+    'div[aria-label*="Write a reply"]',
+    'div.notranslate[contenteditable="true"]'
+  ],
+  general: [
+    'textarea',
+    'input[type="text"]',
+    'input[type="search"]',
+    'input[type="url"]',
+    'input:not([type])',
+    '[contenteditable="true"]',
+    '[contenteditable=""]',
+    '[role="textbox"]',
+    'div.ql-editor', // Quill editor
+    'div.tox-edit-area', // TinyMCE
+    'div.CodeMirror-code' // CodeMirror
+  ]
+};
+
 const state = {
   activeField: null,
   buttons: new Map(), // Map of field -> button for each text field
   cachedJobDescription: null,
   currentJobUrl: null, // Track current job URL to detect navigation
   isGenerating: false,
-  activeMode: "job",
+  activeMode: "general",
+  scanScheduled: false, // Debounce flag
+  observer: null, // MutationObserver instance
+  idleCallbackId: null, // requestIdleCallback ID
 };
 
 const normalizeText = (text) => text.replace(/\s+/g, " ").trim();
@@ -479,29 +520,43 @@ const isSearchField = (field) => {
 };
 
 const isLikelyPersonalInfoField = (field) => {
+  // GLOBALLY exclude personal info fields (name, email, phone, address, etc.)
   const autocomplete = (field.autocomplete || "").toLowerCase();
   const name = (field.name || "").toLowerCase();
   const id = (field.id || "").toLowerCase();
-  const combined = `${autocomplete} ${name} ${id}`;
-  return (
-    combined.includes("email") ||
-    combined.includes("tel") ||
-    combined.includes("phone") ||
-    combined.includes("given-name") ||
-    combined.includes("family-name") ||
-    combined.includes("full-name") ||
-    combined.includes("address") ||
-    combined.includes("postal") ||
-    combined.includes("zip")
-  );
+  const type = (field.type || "").toLowerCase();
+  const placeholder = (field.placeholder || field.getAttribute("aria-placeholder") || "").toLowerCase();
+  const ariaLabel = (field.getAttribute("aria-label") || "").toLowerCase();
+
+  const combined = `${autocomplete} ${name} ${id} ${placeholder} ${ariaLabel}`;
+
+  // Exclude if type is personal
+  if (type === "email" || type === "tel" || type === "password" || type === "number") {
+    return true;
+  }
+
+  // Comprehensive list of personal info patterns
+  const personalPatterns = [
+    "email", "e-mail", "mail",
+    "phone", "tel", "telephone", "mobile", "cell",
+    "name", "first-name", "last-name", "given-name", "family-name", "full-name", "firstname", "lastname",
+    "address", "street", "city", "state", "zip", "postal", "country",
+    "password", "pwd", "pass",
+    "ssn", "social-security",
+    "dob", "birth", "birthday",
+    "credit", "card", "cvv", "expir",
+    "salary", "compensation", "wage"
+  ];
+
+  return personalPatterns.some(pattern => combined.includes(pattern));
 };
 
 const loadActiveMode = async () => {
   try {
     const data = await chrome.storage.local.get(["mode"]);
-    state.activeMode = data.mode || "job";
+    state.activeMode = data.mode || "general";
   } catch (error) {
-    state.activeMode = "job";
+    state.activeMode = "general";
   }
 };
 
@@ -548,14 +603,39 @@ const generateAndFill = async (field, button) => {
       return;
     }
 
-    // Fill the field directly
+    // Fill the field directly with framework-compatible event triggering
     if (field.isContentEditable) {
       field.textContent = response.answer;
     } else {
-      field.value = response.answer;
+      // Use native setter to bypass React's input tracking
+      const nativeInputSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+      const nativeTextareaSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+
+      if (field.tagName === 'TEXTAREA' && nativeTextareaSetter) {
+        nativeTextareaSetter.call(field, response.answer);
+      } else if (field.tagName === 'INPUT' && nativeInputSetter) {
+        nativeInputSetter.call(field, response.answer);
+      } else {
+        field.value = response.answer;
+      }
     }
+
+    // Trigger comprehensive events for React/Vue/Angular compatibility
     field.dispatchEvent(new Event("input", { bubbles: true }));
     field.dispatchEvent(new Event("change", { bubbles: true }));
+    field.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: 'insertText' }));
+
+    // For contenteditable (used in Gmail, Facebook, etc.)
+    if (field.isContentEditable) {
+      field.dispatchEvent(new Event("textInput", { bubbles: true }));
+      field.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
+    }
+
+    // Trigger blur/focus to ensure validation
+    field.dispatchEvent(new Event("blur", { bubbles: true }));
+    setTimeout(() => {
+      field.dispatchEvent(new Event("focus", { bubbles: true }));
+    }, 10);
     
     // Brief success indication - show checkmark overlay
     const successOverlay = `<div class="tfa-success-overlay"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg></div>`;
@@ -587,18 +667,53 @@ const showToast = (message, isError = false) => {
   setTimeout(() => toast.remove(), 4000);
 };
 
+// Get platform-optimized selectors
+const getPlatformSelectors = () => {
+  const hostname = window.location.hostname.toLowerCase();
+  let selectors = [];
+
+  // Platform-specific selectors
+  if (hostname.includes("mail.google.com")) {
+    selectors = [...PLATFORM_SELECTORS.gmail, ...PLATFORM_SELECTORS.general];
+  } else if (hostname.includes("linkedin.com")) {
+    selectors = [...PLATFORM_SELECTORS.linkedin, ...PLATFORM_SELECTORS.general];
+  } else if (hostname.includes("facebook.com") || hostname.includes("messenger.com")) {
+    selectors = [...PLATFORM_SELECTORS.facebook, ...PLATFORM_SELECTORS.general];
+  } else {
+    selectors = PLATFORM_SELECTORS.general;
+  }
+
+  return selectors.join(", ");
+};
+
+// Check if field is a messaging/composition field (whitelist for general mode)
+const isMessagingField = (field) => {
+  const ariaLabel = (field.getAttribute("aria-label") || "").toLowerCase();
+  const placeholder = (field.placeholder || field.getAttribute("data-placeholder") || "").toLowerCase();
+  const role = (field.getAttribute("role") || "").toLowerCase();
+
+  const messagingPatterns = [
+    "message", "compose", "write", "reply", "comment",
+    "post", "chat", "conversation", "note", "memo"
+  ];
+
+  const combined = `${ariaLabel} ${placeholder} ${role}`;
+  return messagingPatterns.some(pattern => combined.includes(pattern));
+};
+
 // Scan for text fields and add buttons
 const scanAndAddButtons = () => {
-  const fields = document.querySelectorAll(
-    'textarea, input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="tel"], input:not([type]), [contenteditable="true"], [contenteditable=""]'
-  );
+  state.scanScheduled = false; // Clear debounce flag
+
+  const selector = getPlatformSelectors();
+  const fields = document.querySelectorAll(selector);
 
   fields.forEach((field) => {
     if (!isEditableField(field) || !isVisibleField(field)) {
       return;
     }
 
-    // Skip if already has a button or is too small
+    // Skip if already has a button
     if (state.buttons.has(field)) {
       positionButton(field, state.buttons.get(field));
       return;
@@ -610,11 +725,20 @@ const scanAndAddButtons = () => {
       return;
     }
 
+    // Skip search fields
     if (isSearchField(field)) return;
 
-    const isTextarea = field.tagName === "TEXTAREA" || field.isContentEditable;
-    if (state.activeMode === "job" && !isTextarea && isLikelyPersonalInfoField(field)) {
+    // GLOBALLY exclude personal info fields (not mode-dependent)
+    if (isLikelyPersonalInfoField(field)) {
       return;
+    }
+
+    // For small input fields in general mode, only show if it's a messaging field
+    const isTextarea = field.tagName === "TEXTAREA" || field.isContentEditable;
+    if (state.activeMode === "general" && !isTextarea && rect.height < 50) {
+      if (!isMessagingField(field)) {
+        return; // Skip small non-messaging fields
+      }
     }
 
     const button = getOrCreateButton(field);
@@ -636,30 +760,99 @@ const updateButtonPositions = () => {
   });
 };
 
+// Debounced scan with requestIdleCallback for performance
+const scheduleScan = () => {
+  if (state.scanScheduled) return; // Already scheduled
+  state.scanScheduled = true;
+
+  // Use requestIdleCallback for non-critical scanning (better performance)
+  if ('requestIdleCallback' in window) {
+    state.idleCallbackId = requestIdleCallback(() => {
+      scanAndAddButtons();
+    }, { timeout: 2000 }); // Max 2s wait
+  } else {
+    // Fallback for browsers without requestIdleCallback
+    setTimeout(scanAndAddButtons, 150);
+  }
+};
+
 // Initial scan and setup observers
 const initializeButtons = () => {
   loadActiveMode().then(scanAndAddButtons);
-  
-  // Re-scan periodically for dynamically loaded content
-  const observer = new MutationObserver(() => {
-    setTimeout(scanAndAddButtons, 100);
+
+  // Advanced MutationObserver with optimizations
+  state.observer = new MutationObserver((mutations) => {
+    // Check if any mutation actually added/removed elements or changed attributes
+    let shouldScan = false;
+
+    for (const mutation of mutations) {
+      if (mutation.type === 'childList' && (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)) {
+        shouldScan = true;
+        break;
+      }
+      if (mutation.type === 'attributes' && mutation.attributeName) {
+        const attrName = mutation.attributeName;
+        // Only care about visibility/state changes
+        if (attrName === 'class' || attrName === 'style' || attrName === 'hidden' || attrName === 'aria-hidden') {
+          shouldScan = true;
+          break;
+        }
+      }
+    }
+
+    if (shouldScan) {
+      scheduleScan();
+    }
   });
-  
-  observer.observe(document.body, {
+
+  // Observe with specific filters to reduce noise
+  state.observer.observe(document.body, {
     childList: true,
     subtree: true,
+    attributes: true,
+    attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'contenteditable', 'role'] // Only watch relevant attributes
   });
-  
-  // Update positions on scroll/resize
+
+  // Disconnect observer when page is hidden to save resources
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      state.observer?.disconnect();
+    } else {
+      state.observer?.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'contenteditable', 'role']
+      });
+      scheduleScan(); // Rescan when page becomes visible
+    }
+  });
+
+  // Update positions on scroll/resize with passive listeners
   window.addEventListener('scroll', updateButtonPositions, { passive: true });
   document.addEventListener('scroll', updateButtonPositions, { passive: true, capture: true });
   window.addEventListener('resize', updateButtonPositions, { passive: true });
+
+  // React/SPA detection: Watch for DOM changes specific to frameworks
+  // Also rescan on common SPA navigation events
+  window.addEventListener('popstate', scheduleScan);
+  window.addEventListener('pushstate', scheduleScan);
+  window.addEventListener('replacestate', scheduleScan);
+  window.addEventListener('hashchange', scheduleScan);
+
+  // Detect React/Vue state changes via input events
+  document.addEventListener('input', (e) => {
+    // React may render new fields on input, schedule rescan
+    if (e.target?.matches?.('input, textarea, [contenteditable="true"]')) {
+      scheduleScan();
+    }
+  }, { passive: true, capture: true });
 };
 
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.mode) {
-    state.activeMode = changes.mode.newValue || "job";
-    scanAndAddButtons();
+    state.activeMode = changes.mode.newValue || "general";
+    scheduleScan();
   }
 });
 
