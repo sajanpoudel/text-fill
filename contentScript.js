@@ -63,15 +63,39 @@ const state = {
   scanScheduled: false, // Debounce flag
   observer: null, // MutationObserver instance
   idleCallbackId: null, // requestIdleCallback ID
+  scrollTicking: false, // Throttle flag for scroll updates
 };
 
 const normalizeText = (text) => text.replace(/\s+/g, " ").trim();
 
-const extractSectionText = (element) => {
+const getFromSessionStorage = (key) => {
+  try {
+    return sessionStorage.getItem(key);
+  } catch (e) {
+    console.warn('[TextFill] SessionStorage access denied:', e.message);
+    return null;
+  }
+};
+
+const setToSessionStorage = (key, value) => {
+  try {
+    sessionStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    console.warn('[TextFill] SessionStorage write failed:', e.message);
+    return false;
+  }
+};
+
+const extractSectionText = (element, maxLength = Infinity) => {
   if (!element) {
     return "";
   }
-  return normalizeText(element.innerText || "");
+  let text = element.innerText || "";
+  if (text.length > maxLength) {
+    text = text.substring(0, maxLength);
+  }
+  return normalizeText(text);
 };
 
 const findJobSections = (searchAll = false) => {
@@ -145,28 +169,21 @@ const findHiddenJobContent = () => {
   return null;
 };
 
-// Find the Overview tab button on platforms like Ashby
 const findOverviewTabButton = () => {
-  // Common selectors for Overview/Job Description tabs
-  const selectors = [
-    'button:has-text("Overview")',
-    'a:has-text("Overview")', 
-    '[role="tab"]:has-text("Overview")',
-    '[data-tab="overview"]',
-    '[aria-controls*="overview"]',
-    'button[class*="tab"]',
-    'a[class*="tab"]',
-  ];
-  
-  // Try to find by text content
-  const allButtons = document.querySelectorAll('button, a, [role="tab"]');
-  for (const btn of allButtons) {
+  const directMatch = document.querySelector(
+    '[data-tab="overview"], [aria-controls*="overview"], ' +
+    'button[aria-label*="Overview" i], [role="tab"][aria-label*="Overview" i]'
+  );
+  if (directMatch) return directMatch;
+
+  const tabButtons = document.querySelectorAll('[role="tab"], button[class*="tab"], a[class*="tab"]');
+  for (const btn of tabButtons) {
     const text = btn.textContent?.trim().toLowerCase();
     if (text === 'overview' || text === 'job description' || text === 'description') {
       return btn;
     }
   }
-  
+
   return null;
 };
 
@@ -182,57 +199,67 @@ const findApplicationTabButton = () => {
   return null;
 };
 
-// Automatically fetch job description by switching tabs
 const autoFetchJobDescription = () => {
   return new Promise((resolve) => {
     const overviewBtn = findOverviewTabButton();
     const applicationBtn = findApplicationTabButton();
-    
+
     if (!overviewBtn) {
       resolve(null);
       return;
     }
-    
-    // Remember current scroll position
+
     const scrollPos = window.scrollY;
-    
-    // Click Overview tab
     overviewBtn.click();
-    
-    // Wait for content to load
-    setTimeout(() => {
-      // Extract job description from Overview
+
+    const extractAndResolve = () => {
       const sections = findJobSections(false);
       let jobDescription = null;
-      
+
       if (sections.length > 0) {
         jobDescription = sections.join("\n\n").slice(0, MAX_CONTEXT_CHARS);
       } else {
-        // Try to get main content
-        const main = document.querySelector('main, article, [role="tabpanel"]');
+        const main = document.querySelector('main, article, [role="tabpanel"]:not([hidden])');
         if (main) {
-          jobDescription = extractSectionText(main).slice(0, MAX_CONTEXT_CHARS);
+          jobDescription = extractSectionText(main, MAX_CONTEXT_CHARS);
         }
       }
-      
-      // Switch back to Application tab
+
       if (applicationBtn) {
         applicationBtn.click();
       }
-      
-      // Restore scroll position
+
       setTimeout(() => {
         window.scrollTo(0, scrollPos);
       }, 100);
-      
-      // Cache the job description
+
       if (jobDescription && jobDescription.length > 200) {
         const storageKey = getJobStorageKey();
         cacheJobDescription(storageKey, jobDescription);
       }
-      
+
       resolve(jobDescription);
-    }, 500); // Wait 500ms for tab content to load
+    };
+
+    const targetPanel = document.querySelector('[role="tabpanel"]:not([hidden])');
+    if (!targetPanel) {
+      setTimeout(extractAndResolve, 500);
+      return;
+    }
+
+    const observer = new MutationObserver(() => {
+      if (targetPanel.textContent.length > 500) {
+        observer.disconnect();
+        extractAndResolve();
+      }
+    });
+
+    observer.observe(targetPanel, { childList: true, subtree: true });
+
+    setTimeout(() => {
+      observer.disconnect();
+      extractAndResolve();
+    }, 2000);
   });
 };
 
@@ -306,10 +333,8 @@ const extractJobDescription = () => {
     return state.cachedJobDescription;
   }
 
-  // Try to get from session storage (persists across Overview/Application tab switches)
-  // Session storage clears when browser tab is closed
   const storageKey = getJobStorageKey();
-  const cached = sessionStorage.getItem(storageKey);
+  const cached = getFromSessionStorage(storageKey);
   if (cached && cached.length > 200) {
     state.cachedJobDescription = cached;
     return cached;
@@ -348,11 +373,7 @@ const extractJobDescription = () => {
 const cacheJobDescription = (key, text) => {
   if (text && text.length > 200) {
     state.cachedJobDescription = text;
-    try {
-      sessionStorage.setItem(key, text);
-    } catch (e) {
-      // Session storage might be full or disabled
-    }
+    setToSessionStorage(key, text);
   }
 };
 
@@ -424,25 +445,23 @@ const detectJobPlatform = () => {
   return null;
 };
 
-// Proactively cache job description on page load
 const proactivelyCacheJobDescription = async () => {
-  const platform = detectJobPlatform();
+  try {
+    const platform = detectJobPlatform();
 
-  if (!platform) return; // Not a known job platform
+    if (!platform) return;
 
-  console.log('[TextFill] Detected job platform:', platform);
+    console.log('[TextFill] Detected job platform:', platform);
 
-  // Wait a bit for page to fully load
-  await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise(resolve => setTimeout(resolve, 1500));
 
-  // Check if we already have cached description for this URL
-  const storageKey = getJobStorageKey();
-  const cached = sessionStorage.getItem(storageKey);
+    const storageKey = getJobStorageKey();
+    const cached = getFromSessionStorage(storageKey);
 
-  if (cached && cached.length > 200) {
-    console.log('[TextFill] Job description already cached');
-    return; // Already cached
-  }
+    if (cached && cached.length > 200) {
+      console.log('[TextFill] Job description already cached');
+      return;
+    }
 
   // For Workday: Check if on job details page (before Apply button)
   if (platform === 'workday') {
@@ -486,11 +505,13 @@ const proactivelyCacheJobDescription = async () => {
     }
   }
 
-  // Fallback: Try to extract from current page
-  const description = extractJobDescription();
-  if (description && description.length > 200 && !isFormContent(description)) {
-    cacheJobDescription(storageKey, description);
-    console.log('[TextFill] Cached job description from page:', description.length, 'chars');
+    const description = extractJobDescription();
+    if (description && description.length > 200 && !isFormContent(description)) {
+      cacheJobDescription(storageKey, description);
+      console.log('[TextFill] Cached job description from page:', description.length, 'chars');
+    }
+  } catch (error) {
+    console.error('[TextFill] Proactive caching failed:', error.message);
   }
 };
 
@@ -499,8 +520,8 @@ const extractPageContext = (field) => {
   const url = window.location.href || "";
   const metaDescription = document.querySelector("meta[name='description']")?.content || "";
   const fieldContainer = field?.closest("section, form, div");
-  const fieldContext = extractSectionText(fieldContainer);
-  const pageText = extractSectionText(document.body);
+  const fieldContext = extractSectionText(fieldContainer, 2000);
+  const pageText = extractSectionText(document.body, MAX_PAGE_CHARS);
 
   const parts = [
     title ? `Page title: ${title}` : "",
@@ -514,11 +535,18 @@ const extractPageContext = (field) => {
 };
 
 const getQuestionText = (field) => {
-  const aria = field.getAttribute("aria-label") || field.getAttribute("aria-labelledby");
-  if (aria) {
-    const labelled = aria
-      .split(" ")
+  const ariaLabel = field.getAttribute("aria-label");
+  if (ariaLabel) {
+    return ariaLabel.trim();
+  }
+
+  const ariaLabelledBy = field.getAttribute("aria-labelledby");
+  if (ariaLabelledBy) {
+    const labelled = ariaLabelledBy
+      .split(/\s+/)
+      .filter(id => id)
       .map((id) => document.getElementById(id)?.innerText || "")
+      .filter(text => text)
       .join(" ")
       .trim();
     if (labelled) {
@@ -568,7 +596,6 @@ const getLogoUrl = () => {
   return chrome.runtime.getURL('logo.png');
 };
 
-// Create or get the AI fill button for a specific field
 const getOrCreateButton = (field) => {
   if (state.buttons.has(field)) {
     return state.buttons.get(field);
@@ -577,9 +604,14 @@ const getOrCreateButton = (field) => {
   const button = document.createElement("button");
   button.className = "tfa-icon-button";
   button.type = "button";
-  button.innerHTML = `<img src="${getLogoUrl()}" alt="AI Fill" class="tfa-logo" />`;
   button.title = "Fill with AI";
-  
+
+  const img = document.createElement("img");
+  img.src = getLogoUrl();
+  img.alt = "AI Fill";
+  img.className = "tfa-logo";
+  button.appendChild(img);
+
   button.addEventListener("click", async (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -678,17 +710,79 @@ const loadActiveMode = async () => {
   }
 };
 
-// Main function: Generate answer and fill directly
-const generateAndFill = async (field, button) => {
-  if (state.isGenerating) return;
-  state.isGenerating = true;
-  
-  // Show loading overlay over the logo
-  const logoHTML = `<img src="${getLogoUrl()}" alt="AI Fill" class="tfa-logo" />`;
-  const loadingOverlay = `<div class="tfa-loading-overlay"><svg class="tfa-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10"/></svg></div>`;
-  button.innerHTML = logoHTML + loadingOverlay;
+const setButtonLoading = (button) => {
   button.disabled = true;
   button.title = "Generating...";
+
+  const overlay = document.createElement("div");
+  overlay.className = "tfa-loading-overlay";
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "tfa-spin");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+
+  const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  circle.setAttribute("cx", "12");
+  circle.setAttribute("cy", "12");
+  circle.setAttribute("r", "10");
+  circle.setAttribute("stroke-opacity", "0.3");
+
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M12 2a10 10 0 0 1 10 10");
+
+  svg.appendChild(circle);
+  svg.appendChild(path);
+  overlay.appendChild(svg);
+  button.appendChild(overlay);
+};
+
+const setButtonSuccess = (button) => {
+  const overlay = button.querySelector(".tfa-loading-overlay");
+  if (overlay) overlay.remove();
+
+  const successOverlay = document.createElement("div");
+  successOverlay.className = "tfa-success-overlay";
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2.5");
+
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M20 6L9 17l-5-5");
+
+  svg.appendChild(path);
+  successOverlay.appendChild(svg);
+  button.appendChild(successOverlay);
+
+  setTimeout(() => {
+    if (successOverlay.parentElement) {
+      successOverlay.remove();
+    }
+  }, 1500);
+};
+
+const resetButton = (button) => {
+  const overlay = button.querySelector(".tfa-loading-overlay, .tfa-success-overlay");
+  if (overlay) overlay.remove();
+
+  button.disabled = false;
+  button.title = "Fill with AI";
+};
+
+const generateAndFill = async (field, button) => {
+  if (state.isGenerating || button.dataset.generating === 'true') return;
+
+  button.dataset.generating = 'true';
+  state.isGenerating = true;
+
+  setButtonLoading(button);
 
   try {
     // Get job description (auto-fetch if needed)
@@ -717,15 +811,13 @@ const generateAndFill = async (field, button) => {
 
     if (!response?.ok) {
       showToast(response?.error || "Failed to generate. Check settings.", true);
-      button.innerHTML = logoHTML;
+      resetButton(button);
       return;
     }
 
-    // Fill the field directly with framework-compatible event triggering
     if (field.isContentEditable) {
       field.textContent = response.answer;
     } else {
-      // Use native setter to bypass React's input tracking
       const nativeInputSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
       const nativeTextareaSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
 
@@ -738,51 +830,49 @@ const generateAndFill = async (field, button) => {
       }
     }
 
-    // Trigger comprehensive events for React/Vue/Angular compatibility
     field.dispatchEvent(new Event("input", { bubbles: true }));
     field.dispatchEvent(new Event("change", { bubbles: true }));
     field.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: 'insertText' }));
 
-    // For contenteditable (used in Gmail, Facebook, etc.)
     if (field.isContentEditable) {
       field.dispatchEvent(new Event("textInput", { bubbles: true }));
       field.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
     }
 
-    // Trigger blur/focus to ensure validation
     field.dispatchEvent(new Event("blur", { bubbles: true }));
     setTimeout(() => {
       field.dispatchEvent(new Event("focus", { bubbles: true }));
     }, 10);
-    
-    // Brief success indication - show checkmark overlay
-    const successOverlay = `<div class="tfa-success-overlay"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg></div>`;
-    button.innerHTML = logoHTML + successOverlay;
-    setTimeout(() => {
-      button.innerHTML = logoHTML;
-    }, 1500);
+
+    setButtonSuccess(button);
 
   } catch (err) {
     showToast(err.message || "Something went wrong", true);
-    button.innerHTML = logoHTML;
+    resetButton(button);
   } finally {
+    delete button.dataset.generating;
     state.isGenerating = false;
-    button.disabled = false;
-    button.title = "Fill with AI";
   }
 };
 
-// Show a simple toast notification
 const showToast = (message, isError = false) => {
   const existing = document.querySelector('.tfa-toast');
   if (existing) existing.remove();
-  
+
   const toast = document.createElement('div');
   toast.className = `tfa-toast ${isError ? 'tfa-toast-error' : ''}`;
   toast.textContent = message;
   document.body.appendChild(toast);
-  
-  setTimeout(() => toast.remove(), 4000);
+
+  setTimeout(() => {
+    try {
+      if (toast && toast.parentElement) {
+        toast.remove();
+      }
+    } catch (e) {
+      // Ignore - page might have unloaded
+    }
+  }, 4000);
 };
 
 // Get platform-optimized selectors
@@ -864,33 +954,58 @@ const scanAndAddButtons = () => {
   });
 };
 
-// Update button positions on scroll/resize
 const updateButtonPositions = () => {
+  if (state.scrollTicking) return;
+
+  state.scrollTicking = true;
+
+  requestAnimationFrame(() => {
+    const positions = [];
+
+    state.buttons.forEach((button, field) => {
+      const rect = field.getBoundingClientRect();
+      const visible = isVisibleField(field) && rect.bottom >= 0 && rect.top <= window.innerHeight;
+      positions.push({ button, field, rect, visible });
+    });
+
+    positions.forEach(({ button, field, rect, visible }) => {
+      if (!visible) {
+        button.style.display = 'none';
+      } else {
+        button.style.display = '';
+        positionButton(field, button);
+      }
+    });
+
+    state.scrollTicking = false;
+  });
+};
+
+const cleanupOrphanedButtons = () => {
   state.buttons.forEach((button, field) => {
-    const rect = field.getBoundingClientRect();
-    // Hide if field is not visible
-    if (!isVisibleField(field) || rect.bottom < 0 || rect.top > window.innerHeight) {
-      button.style.display = 'none';
-    } else {
-      button.style.display = '';
-      positionButton(field, button);
+    if (!document.contains(field)) {
+      if (button.parentElement) {
+        button.remove();
+      }
+      state.buttons.delete(field);
     }
   });
 };
 
-// Debounced scan with requestIdleCallback for performance
 const scheduleScan = () => {
-  if (state.scanScheduled) return; // Already scheduled
+  if (state.scanScheduled) return;
   state.scanScheduled = true;
 
-  // Use requestIdleCallback for non-critical scanning (better performance)
   if ('requestIdleCallback' in window) {
     state.idleCallbackId = requestIdleCallback(() => {
       scanAndAddButtons();
-    }, { timeout: 2000 }); // Max 2s wait
+      cleanupOrphanedButtons();
+    }, { timeout: 2000 });
   } else {
-    // Fallback for browsers without requestIdleCallback
-    setTimeout(scanAndAddButtons, 150);
+    setTimeout(() => {
+      scanAndAddButtons();
+      cleanupOrphanedButtons();
+    }, 150);
   }
 };
 

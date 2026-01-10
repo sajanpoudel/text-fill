@@ -87,24 +87,36 @@ const buildGeneralPrompt = ({
   return { system, user };
 };
 
-const requestOpenAI = async ({ apiKey, model, system, user }) => {
-  const response = await fetch(OPENAI_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      instructions: system,
-      input: user,
-    }),
-  });
+const sanitizeError = (errorText) => {
+  const firstLine = errorText.split('\n')[0];
+  return firstLine.replace(/sk-[a-zA-Z0-9]+/g, 'sk-***').substring(0, 200);
+};
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`OpenAI request failed: ${errorText}`);
-  }
+const requestOpenAI = async ({ apiKey, model, system, user }) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const response = await fetch(OPENAI_ENDPOINT, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        instructions: system,
+        input: user,
+      }),
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`OpenAI request failed: ${sanitizeError(errorText)}`);
+    }
 
   const data = await response.json();
   
@@ -132,112 +144,133 @@ const requestOpenAI = async ({ apiKey, model, system, user }) => {
     }
   }
   
-  if (!answer) {
-    console.error('OpenAI API response:', JSON.stringify(data, null, 2));
-    throw new Error(`Could not parse API response. Check browser console for details.`);
+    if (!answer) {
+      console.error('OpenAI API response:', JSON.stringify(data, null, 2));
+      throw new Error(`Could not parse API response. Check browser console for details.`);
+    }
+
+    return answer.trim();
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') {
+      throw new Error('Request timed out after 30 seconds');
+    }
+    throw err;
   }
-  
-  return answer.trim();
 };
 
 const requestAnthropic = async ({ apiKey, model, system, user }) => {
-  const response = await fetch(ANTHROPIC_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0.5,
-      max_tokens: 320,
-      system,
-      messages: [{ role: "user", content: user }],
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Anthropic request failed: ${errorText}`);
+  try {
+    const response = await fetch(ANTHROPIC_ENDPOINT, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.5,
+        max_tokens: 1024,
+        system,
+        messages: [{ role: "user", content: user }],
+      }),
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Anthropic request failed: ${sanitizeError(errorText)}`);
+    }
+
+    const data = await response.json();
+    const content = data?.content?.[0]?.text;
+    return content?.trim();
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') {
+      throw new Error('Request timed out after 30 seconds');
+    }
+    throw err;
   }
-
-  const data = await response.json();
-  const content = data?.content?.[0]?.text;
-  return content?.trim();
 };
 
 const requestGemini = async ({ apiKey, model, system, user }) => {
-  // Combine system and user prompts for Gemini 3
   const fullPrompt = `${system}\n\n${user}`;
-  
-  const response = await fetch(
-    `${GEMINI_ENDPOINT}/${model}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [{ text: fullPrompt }],
-          },
-        ],
-        generationConfig: {
-          maxOutputTokens: 2048,
-          temperature: 0.7,
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const response = await fetch(
+      `${GEMINI_ENDPOINT}/${model}:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
         },
-      }),
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [{ text: fullPrompt }],
+            },
+          ],
+          generationConfig: {
+            maxOutputTokens: 2048,
+            temperature: 0.7,
+          },
+        }),
+      }
+    );
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Gemini request failed: ${sanitizeError(errorText)}`);
     }
-  );
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Gemini request failed: ${errorText}`);
-  }
+    const data = await response.json();
 
-  const data = await response.json();
-  
-  // Log full response for debugging
-  console.log('=== GEMINI FULL RESPONSE ===');
-  console.log(JSON.stringify(data, null, 2));
-  
-  // Check finish reason for truncation
-  const finishReason = data?.candidates?.[0]?.finishReason;
-  console.log('Finish reason:', finishReason);
-  if (finishReason && finishReason !== 'STOP') {
-    console.warn('Response may be incomplete. Finish reason:', finishReason);
+    const finishReason = data?.candidates?.[0]?.finishReason;
+    if (finishReason && finishReason !== 'STOP') {
+      console.warn('[TextFill] Gemini response may be incomplete. Finish reason:', finishReason);
+    }
+
+    let answer = null;
+
+    const parts = data?.candidates?.[0]?.content?.parts;
+    if (parts && Array.isArray(parts)) {
+      answer = parts.map(p => p.text || '').join('');
+    }
+
+    if (!answer) {
+      answer = data?.text;
+    }
+
+    if (!answer) {
+      console.error('[TextFill] Gemini response parsing failed:', JSON.stringify(data, null, 2));
+      throw new Error('Could not parse Gemini response');
+    }
+
+    answer = answer
+      .replace(/\*\s*\*\s*\*/g, '\n\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    return answer;
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') {
+      throw new Error('Request timed out after 30 seconds');
+    }
+    throw err;
   }
-  
-  // Extract text - try multiple paths for different API versions
-  let answer = null;
-  
-  // Path 1: Standard candidates path
-  const parts = data?.candidates?.[0]?.content?.parts;
-  if (parts && Array.isArray(parts)) {
-    answer = parts.map(p => p.text || '').join('');
-  }
-  
-  // Path 2: Direct text field (Gemini 3)
-  if (!answer) {
-    answer = data?.text;
-  }
-  
-  if (!answer) {
-    console.error('Gemini response parsing failed:', JSON.stringify(data, null, 2));
-    throw new Error('Could not parse Gemini response');
-  }
-  
-  console.log('Extracted answer length:', answer.length, 'chars');
-  
-  // Clean up formatting
-  answer = answer
-    .replace(/\*\s*\*\s*\*/g, '\n\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-  
-  return answer;
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
