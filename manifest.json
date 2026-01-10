@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "CheatResume - Text Fill",
   "version": "0.2.0",
-  "description": "AI-powered job application assistant. Fill text areas using your resume and job description context.",
+  "description": "AI-powered writing assistant for emails, messages, forms, and job applications. Fill any text field with context-aware responses.",
   "icons": {
     "16": "logo.png",
     "32": "logo.png",
