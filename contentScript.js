@@ -582,17 +582,23 @@ const extractPageContext = (field) => {
 };
 
 const getQuestionText = (field) => {
+  if (!(field instanceof Element)) {
+    return "";
+  }
+
   const ariaLabel = field.getAttribute("aria-label");
   if (ariaLabel) {
     return ariaLabel.trim();
   }
 
   const ariaLabelledBy = field.getAttribute("aria-labelledby");
-  if (ariaLabelledBy) {
+  if (typeof ariaLabelledBy === "string" && ariaLabelledBy.trim()) {
     const labelled = ariaLabelledBy
+      .trim()
       .split(/\s+/)
-      .filter(id => id)
-      .map((id) => document.getElementById(id)?.innerText || "")
+      .map((id) => document.getElementById(id))
+      .filter((element) => element && typeof element.textContent === "string")
+      .map((element) => element.textContent.trim())
       .filter(text => text)
       .join(" ")
       .trim();
