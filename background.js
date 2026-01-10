@@ -343,6 +343,11 @@ const requestGemini = async ({ apiKey, model, system, user }) => {
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "openSettings") {
+    chrome.runtime.openOptionsPage();
+    return false;
+  }
+
   if (message?.type !== "generateAnswer") {
     return false;
   }

@@ -651,7 +651,7 @@ const getOrCreateButton = (field) => {
   const button = document.createElement("button");
   button.className = "tfa-icon-button";
   button.type = "button";
-  button.title = "Fill with AI";
+  button.title = "Fill with AI (right-click for settings)";
 
   const img = document.createElement("img");
   img.src = getLogoUrl();
@@ -659,10 +659,23 @@ const getOrCreateButton = (field) => {
   img.className = "tfa-logo";
   button.appendChild(img);
 
+  // Style indicator for social mode
+  const styleIndicator = document.createElement("span");
+  styleIndicator.className = "tfa-style-indicator";
+  button.appendChild(styleIndicator);
+
+  // Left click: generate
   button.addEventListener("click", async (e) => {
     e.preventDefault();
     e.stopPropagation();
     await generateAndFill(field, button);
+  });
+
+  // Right click: open settings
+  button.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    chrome.runtime.sendMessage({ type: "openSettings" });
   });
 
   state.buttons.set(field, button);
@@ -685,6 +698,18 @@ const positionButton = (field, button) => {
   button.style.top = `${Math.max(top, 0)}px`;
   button.style.left = `${Math.max(left, 0)}px`;
   button.style.zIndex = "2147483647";
+
+  // Update style indicator for social mode
+  if (state.activeMode === "social") {
+    const styleMap = { genz: "G", casual: "C", professional: "P" };
+    button.dataset.style = state.activeSocialStyle;
+    const indicator = button.querySelector(".tfa-style-indicator");
+    if (indicator) {
+      indicator.textContent = styleMap[state.activeSocialStyle] || "G";
+    }
+  } else {
+    delete button.dataset.style;
+  }
 
   if (!button.parentElement) {
     document.body.appendChild(button);
@@ -1218,11 +1243,29 @@ chrome.storage.onChanged.addListener((changes) => {
   if (changes.mode) {
     state.activeMode = changes.mode.newValue || "general";
     scheduleScan();
+    updateButtonStyles();
   }
   if (changes.socialStyle) {
     state.activeSocialStyle = changes.socialStyle.newValue || "genz";
+    updateButtonStyles();
   }
 });
+
+// Update all button style indicators
+const updateButtonStyles = () => {
+  const styleMap = { genz: "G", casual: "C", professional: "P" };
+  state.buttons.forEach((button) => {
+    if (state.activeMode === "social") {
+      button.dataset.style = state.activeSocialStyle;
+      const indicator = button.querySelector(".tfa-style-indicator");
+      if (indicator) {
+        indicator.textContent = styleMap[state.activeSocialStyle] || "G";
+      }
+    } else {
+      delete button.dataset.style;
+    }
+  });
+};
 
 // Initialize everything when DOM is ready
 const initializeExtension = () => {
