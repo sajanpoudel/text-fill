@@ -88,6 +88,30 @@
   animation: tfa-spin 1s linear infinite;
 }
 
+/* Style indicator for social mode */
+.tfa-style-indicator {
+  display: none;
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 12px;
+  height: 12px;
+  background: #111;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 600;
+  font-family: system-ui, -apple-system, sans-serif;
+  border-radius: 50%;
+  line-height: 12px;
+  text-align: center;
+}
+
+.tfa-icon-button[data-style="genz"] .tfa-style-indicator,
+.tfa-icon-button[data-style="casual"] .tfa-style-indicator,
+.tfa-icon-button[data-style="professional"] .tfa-style-indicator {
+  display: block;
+}
+
 /* Toast notifications */
 .tfa-toast {
   position: fixed;

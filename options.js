@@ -30,6 +30,8 @@ const clearGeneralFileBtn = document.getElementById('clearGeneralFile');
 const systemPromptInput = document.getElementById('systemPrompt');
 const saveButton = document.getElementById('save');
 const status = document.getElementById('status');
+const socialStyleSelector = document.getElementById('socialStyleSelector');
+const styleTabs = document.querySelectorAll('.style-tab');
 
 const MAX_RESUME_CHARS = 8000;
 
@@ -41,6 +43,7 @@ const providerNames = {
 
 let activeProvider = 'openai';
 let activeMode = 'general';
+let activeSocialStyle = 'genz';
 
 // Update the active badge
 const updateActiveBadge = (provider) => {
@@ -48,7 +51,14 @@ const updateActiveBadge = (provider) => {
 };
 
 const updateModeBadge = (mode) => {
-  modeBadge.textContent = `Active: ${mode === 'general' ? 'General' : 'Job'}`;
+  const modeNames = { job: 'Job', general: 'General', social: 'Social' };
+  modeBadge.textContent = `Active: ${modeNames[mode] || 'General'}`;
+};
+
+const updateStyleSelector = (mode) => {
+  if (socialStyleSelector) {
+    socialStyleSelector.style.display = mode === 'social' ? 'block' : 'none';
+  }
 };
 
 // Provider tab switching
@@ -78,10 +88,21 @@ modeTabs.forEach(tab => {
     tab.classList.add('active');
 
     modePanels.forEach(p => p.classList.remove('active'));
-    document.querySelector(`.mode-panel[data-panel="${mode}"]`).classList.add('active');
+    const modePanel = document.querySelector(`.mode-panel[data-panel="${mode}"]`);
+    if (modePanel) modePanel.classList.add('active');
 
     activeMode = mode;
     updateModeBadge(mode);
+    updateStyleSelector(mode);
+  });
+});
+
+// Style tab switching (for Social mode)
+styleTabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    styleTabs.forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    activeSocialStyle = tab.dataset.style;
   });
 });
 
@@ -125,6 +146,7 @@ const loadSettings = async () => {
     'provider',
     'model',
     'mode',
+    'socialStyle',
     'openaiKey',
     'anthropicKey',
     'geminiKey',
@@ -137,6 +159,7 @@ const loadSettings = async () => {
 
   activeProvider = data.provider || 'openai';
   activeMode = data.mode || 'general';
+  activeSocialStyle = data.socialStyle || 'genz';
   
   // Set active tab
   providerTabs.forEach(t => t.classList.remove('active'));
@@ -149,9 +172,15 @@ const loadSettings = async () => {
   document.querySelector(`[data-mode="${activeMode}"]`).classList.add('active');
   document.querySelector(`.mode-panel[data-panel="${activeMode}"]`).classList.add('active');
   
-  // Update badge
+  // Update badges and style selector
   updateActiveBadge(activeProvider);
   updateModeBadge(activeMode);
+  updateStyleSelector(activeMode);
+
+  // Set active style tab
+  styleTabs.forEach(t => t.classList.remove('active'));
+  const activeStyleTab = document.querySelector(`[data-style="${activeSocialStyle}"]`);
+  if (activeStyleTab) activeStyleTab.classList.add('active');
 
   // Set values
   openaiKeyInput.value = data.openaiKey || '';
@@ -380,6 +409,7 @@ saveButton.addEventListener('click', async () => {
     provider: activeProvider,
     model,
     mode: activeMode,
+    socialStyle: activeSocialStyle,
     openaiKey,
     anthropicKey,
     geminiKey,
