@@ -1,14 +1,13 @@
 # CheatResume - Text Fill
 
-A Chrome extension that generates contextual responses for job application forms using your resume and the job description.
-
+A Chrome extension that generates contextual responses for job applications, general forms, and social media prompts using your provided context and the current page.
 ## How It Works
 
 ![CheatResume Text Fill Demo](cheatresume-extension-text-fill.gif)
 
 ## Overview
 
-Text Fill analyzes job postings and uses AI to draft personalized answers for application questions. It extracts job descriptions automatically from platforms like Ashby, Greenhouse, Lever, Workable and any other, then generates responses tailored to your background.
+Text Fill analyzes the current page and uses AI to draft responses for job applications, general forms, and social media prompts. It extracts job descriptions automatically from platforms like Ashby, Greenhouse, Lever, Workable and more, then generates responses tailored to your background and selected mode.
 
 ## Supported AI Providers
 
@@ -30,6 +29,7 @@ Text Fill analyzes job postings and uses AI to draft personalized answers for ap
 3. Choose your AI provider and model
 4. Enter the corresponding API key
 5. Upload your resume (PDF or text file) or paste the content directly
+6. Add general context for emails and forms, and social context for posts or comments if needed
 
 ### API Keys
 
@@ -40,7 +40,7 @@ Obtain keys from:
 
 ## Usage
 
-1. Navigate to any job application page
+1. Navigate to any form or social media page with a text field
 2. Locate a text field (textarea or text input)
 3. Click the circular button that appears on the field
 4. Wait for the AI to generate and insert the response
