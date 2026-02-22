@@ -1,4 +1,4 @@
-# CheatResume - Text Fill
+# Text Fill
 
 A Chrome extension that generates contextual responses for job applications, general forms, and social media prompts using your provided context and the current page.
 ## How It Works
