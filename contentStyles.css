@@ -1,4 +1,4 @@
-/* AI Fill Icon Button */
+/* ── AI Fill Icon Button ─────────────────────────────────────────────────── */
 .tfa-icon-button {
   position: absolute;
   z-index: 2147483647;
@@ -14,12 +14,12 @@
   justify-content: center;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
-  overflow: hidden;
+  overflow: visible; /* allow dot indicator to show outside */
 }
 
 .tfa-icon-button:hover {
-  transform: scale(1.1);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transform: scale(1.12);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
 }
 
 .tfa-icon-button:active {
@@ -36,6 +36,7 @@
   height: 28px;
   object-fit: cover;
   border-radius: 50%;
+  display: block;
 }
 
 /* Loading overlay */
@@ -66,7 +67,7 @@
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: rgba(16, 185, 129, 0.9);
+  background: rgba(16, 185, 129, 0.92);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -78,41 +79,204 @@
   color: white;
 }
 
-/* Spinning animation for loading */
+/* Spin animation */
 @keyframes tfa-spin {
   from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  to   { transform: rotate(360deg); }
 }
 
 .tfa-spin {
-  animation: tfa-spin 1s linear infinite;
+  animation: tfa-spin 0.85s linear infinite;
 }
 
-/* Style indicator for social mode */
-.tfa-style-indicator {
-  display: none;
+/* Context-captured indicator dot */
+.tfa-context-dot {
   position: absolute;
   bottom: -2px;
   right: -2px;
-  width: 12px;
-  height: 12px;
-  background: #111;
-  color: #fff;
-  font-size: 8px;
-  font-weight: 600;
-  font-family: system-ui, -apple-system, sans-serif;
+  width: 9px;
+  height: 9px;
+  background: #3b82f6;
+  border: 2px solid #fff;
   border-radius: 50%;
-  line-height: 12px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ── Quick-Action Modal ──────────────────────────────────────────────────── */
+.tfa-modal {
+  position: absolute;
+  z-index: 2147483646;
+  width: 224px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 12px;
+  box-shadow:
+    0 4px 6px rgba(0, 0, 0, 0.05),
+    0 10px 30px rgba(0, 0, 0, 0.14);
+  overflow: hidden;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  animation: tfa-modal-in 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes tfa-modal-in {
+  from { opacity: 0; transform: translateY(-5px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Instruction text input */
+.tfa-modal-input-row {
+  padding: 0;
+}
+
+.tfa-modal-input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid #f0f0f0;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #111;
+  background: #fafafa;
+  outline: none;
+  box-sizing: border-box;
+  border-radius: 0;
+}
+
+.tfa-modal-input::placeholder {
+  color: #bbb;
+  font-style: italic;
+}
+
+.tfa-modal-input:focus {
+  background: #fff;
+  border-bottom-color: #e0e0e0;
+}
+
+/* Actions wrapper */
+.tfa-modal-actions {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Individual action button */
+.tfa-modal-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  font-family: inherit;
+  color: #333;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s ease;
+  white-space: nowrap;
+}
+
+.tfa-modal-btn:hover {
+  background: #f5f5f5;
+}
+
+.tfa-modal-btn:active {
+  background: #ececec;
+}
+
+/* Primary: Generate */
+.tfa-modal-btn-primary {
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.tfa-modal-btn-primary:hover {
+  background: #eff6ff;
+}
+
+/* Secondary: context actions */
+.tfa-modal-btn-secondary {
+  color: #666;
+  font-size: 12px;
+}
+
+.tfa-modal-btn-secondary:hover {
+  background: #f5f5f5;
+}
+
+/* Icon column */
+.tfa-modal-icon {
+  font-size: 13px;
+  width: 18px;
   text-align: center;
+  flex-shrink: 0;
+  line-height: 1;
 }
 
-.tfa-icon-button[data-style="genz"] .tfa-style-indicator,
-.tfa-icon-button[data-style="casual"] .tfa-style-indicator,
-.tfa-icon-button[data-style="professional"] .tfa-style-indicator {
-  display: block;
+/* Separator between main actions and context section */
+.tfa-modal-sep {
+  height: 1px;
+  background: #f0f0f0;
+  margin: 2px 0;
 }
 
-/* Toast notifications */
+/* Settings button */
+.tfa-modal-btn-settings {
+  color: #888;
+  font-size: 12px;
+}
+
+.tfa-modal-btn-settings:hover {
+  background: #f5f5f5;
+  color: #444;
+}
+
+/* ── Dark mode (detected via JS data-dark attribute or OS preference) ──── */
+@media (prefers-color-scheme: dark) {
+  .tfa-modal:not([data-dark="0"]) {
+    background: #1c1c1e;
+    border-color: rgba(255, 255, 255, 0.1);
+    color: #f0f0f0;
+  }
+  .tfa-modal:not([data-dark="0"]) .tfa-modal-input {
+    background: #2c2c2e;
+    color: #f0f0f0;
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+  }
+  .tfa-modal:not([data-dark="0"]) .tfa-modal-input::placeholder { color: #666; }
+  .tfa-modal:not([data-dark="0"]) .tfa-modal-btn              { color: #ccc; }
+  .tfa-modal:not([data-dark="0"]) .tfa-modal-btn:hover        { background: rgba(255,255,255,0.07); }
+  .tfa-modal:not([data-dark="0"]) .tfa-modal-btn-primary      { color: #60a5fa; }
+  .tfa-modal:not([data-dark="0"]) .tfa-modal-btn-primary:hover{ background: rgba(96,165,250,0.1); }
+  .tfa-modal:not([data-dark="0"]) .tfa-modal-btn-secondary    { color: #888; }
+  .tfa-modal:not([data-dark="0"]) .tfa-modal-btn-settings     { color: #666; }
+  .tfa-modal:not([data-dark="0"]) .tfa-modal-sep              { background: rgba(255,255,255,0.07); }
+}
+
+/* Explicit dark when JS detects dark page background */
+.tfa-modal[data-dark="1"] {
+  background: #1c1c1e;
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #f0f0f0;
+}
+.tfa-modal[data-dark="1"] .tfa-modal-input {
+  background: #2c2c2e;
+  color: #f0f0f0;
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+.tfa-modal[data-dark="1"] .tfa-modal-input:focus     { background: #333; border-bottom-color: rgba(255,255,255,0.14); }
+.tfa-modal[data-dark="1"] .tfa-modal-input::placeholder { color: #555; }
+.tfa-modal[data-dark="1"] .tfa-modal-btn             { color: #ccc; }
+.tfa-modal[data-dark="1"] .tfa-modal-btn:hover       { background: rgba(255,255,255,0.07); }
+.tfa-modal[data-dark="1"] .tfa-modal-btn:active      { background: rgba(255,255,255,0.12); }
+.tfa-modal[data-dark="1"] .tfa-modal-btn-primary     { color: #60a5fa; font-weight: 600; }
+.tfa-modal[data-dark="1"] .tfa-modal-btn-primary:hover { background: rgba(96,165,250,0.12); }
+.tfa-modal[data-dark="1"] .tfa-modal-btn-secondary   { color: #888; }
+.tfa-modal[data-dark="1"] .tfa-modal-btn-settings    { color: #666; }
+.tfa-modal[data-dark="1"] .tfa-modal-sep             { background: rgba(255,255,255,0.07); }
+
+/* ── Toast Notifications ─────────────────────────────────────────────────── */
 .tfa-toast {
   position: fixed;
   bottom: 24px;
@@ -121,12 +285,14 @@
   z-index: 2147483647;
   background: #1e293b;
   color: white;
-  padding: 12px 20px;
+  padding: 10px 18px;
   border-radius: 10px;
-  font-size: 14px;
-  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
-  animation: tfa-toast-in 0.3s ease;
+  animation: tfa-toast-in 0.25s ease;
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 .tfa-toast-error {
@@ -136,7 +302,7 @@
 @keyframes tfa-toast-in {
   from {
     opacity: 0;
-    transform: translateX(-50%) translateY(20px);
+    transform: translateX(-50%) translateY(12px);
   }
   to {
     opacity: 1;

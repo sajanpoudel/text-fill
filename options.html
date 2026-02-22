@@ -3,57 +3,54 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Settings - CheatResume Text Fill</title>
+    <title>Settings — Text Fill</title>
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
     <main class="container">
-      <header>
-        <div class="logo-header">
-          <img src="logo.png" alt="CheatResume" class="header-logo" />
-          <div>
-            <h1>CheatResume - Text Fill</h1>
-            <p>AI-powered job application assistant</p>
-          </div>
+
+      <header class="app-header">
+        <img src="logo.png" alt="Text Fill" class="header-logo" />
+        <div class="header-text">
+          <h1>Text Fill</h1>
+          <p>AI writing assistant — works everywhere</p>
         </div>
       </header>
 
-      <!-- Provider Tabs -->
+      <!-- How it works -->
+      <div class="info-banner">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <span>
+          <strong>Single-click</strong> the icon for the action menu &mdash;
+          <strong>double-click</strong> to generate instantly.
+          Contexts are applied automatically based on the site you're on.
+        </span>
+      </div>
+
+      <!-- AI Provider -->
       <section class="card">
         <div class="card-header">
           <h2>AI Provider</h2>
-          <span class="active-badge" id="activeBadge">Active: OpenAI</span>
+          <span class="active-badge" id="activeBadge">OpenAI</span>
         </div>
         <div class="tabs" role="tablist">
-          <button class="tab provider-tab active" data-provider="openai" role="tab">
-            <span class="tab-name">OpenAI</span>
-            <span class="tab-check">✓</span>
-          </button>
-          <button class="tab provider-tab" data-provider="anthropic" role="tab">
-            <span class="tab-name">Anthropic</span>
-            <span class="tab-check">✓</span>
-          </button>
-          <button class="tab provider-tab" data-provider="gemini" role="tab">
-            <span class="tab-name">Gemini</span>
-            <span class="tab-check">✓</span>
-          </button>
+          <button class="tab provider-tab active" data-provider="openai" role="tab">OpenAI</button>
+          <button class="tab provider-tab" data-provider="anthropic" role="tab">Anthropic</button>
+          <button class="tab provider-tab" data-provider="gemini" role="tab">Gemini</button>
         </div>
 
-        <!-- OpenAI Panel -->
         <div class="tab-panel provider-panel active" data-panel="openai">
           <div class="field">
             <label for="openaiKey">API Key</label>
             <div class="input-wrapper">
               <input type="password" id="openaiKey" placeholder="sk-proj-..." autocomplete="off" />
               <button type="button" class="eye-btn" data-target="openaiKey" aria-label="Toggle visibility">
-                <svg class="eye-open" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                  <circle cx="12" cy="12" r="3"/>
-                </svg>
-                <svg class="eye-closed" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none">
-                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                  <line x1="1" y1="1" x2="23" y2="23"/>
-                </svg>
+                <svg class="eye-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                <svg class="eye-closed" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
               </button>
             </div>
           </div>
@@ -66,21 +63,14 @@
           </div>
         </div>
 
-        <!-- Anthropic Panel -->
         <div class="tab-panel provider-panel" data-panel="anthropic">
           <div class="field">
             <label for="anthropicKey">API Key</label>
             <div class="input-wrapper">
               <input type="password" id="anthropicKey" placeholder="sk-ant-..." autocomplete="off" />
               <button type="button" class="eye-btn" data-target="anthropicKey" aria-label="Toggle visibility">
-                <svg class="eye-open" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                  <circle cx="12" cy="12" r="3"/>
-                </svg>
-                <svg class="eye-closed" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none">
-                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                  <line x1="1" y1="1" x2="23" y2="23"/>
-                </svg>
+                <svg class="eye-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                <svg class="eye-closed" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
               </button>
             </div>
           </div>
@@ -93,21 +83,14 @@
           </div>
         </div>
 
-        <!-- Gemini Panel -->
         <div class="tab-panel provider-panel" data-panel="gemini">
           <div class="field">
             <label for="geminiKey">API Key</label>
             <div class="input-wrapper">
               <input type="password" id="geminiKey" placeholder="AIza..." autocomplete="off" />
               <button type="button" class="eye-btn" data-target="geminiKey" aria-label="Toggle visibility">
-                <svg class="eye-open" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                  <circle cx="12" cy="12" r="3"/>
-                </svg>
-                <svg class="eye-closed" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none">
-                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                  <line x1="1" y1="1" x2="23" y2="23"/>
-                </svg>
+                <svg class="eye-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                <svg class="eye-closed" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
               </button>
             </div>
           </div>
@@ -121,109 +104,124 @@
         </div>
       </section>
 
-      <!-- Mode Tabs -->
-      <section class="card">
+      <!-- Structured Contexts -->
+      <section class="card ctx-card">
         <div class="card-header">
-          <h2>Active Mode</h2>
-          <span class="active-badge" id="modeBadge">Active: Job</span>
+          <h2>Your Contexts</h2>
+          <span class="auto-badge">Auto-selected by site</span>
         </div>
-        <div class="tabs" role="tablist">
-          <button class="tab mode-tab active" data-mode="job" role="tab">
-            <span class="tab-name">Job</span>
-            <span class="tab-check">✓</span>
+        <p class="hint">
+          Add info for different parts of your life. The extension picks the right context automatically — you never have to switch modes.
+        </p>
+
+        <!-- Career & Work -->
+        <div class="ctx-accordion open" data-ctx="work">
+          <button class="ctx-header" type="button" aria-expanded="true">
+            <div class="ctx-header-left">
+              <span class="ctx-dot ctx-dot-work"></span>
+              <div>
+                <span class="ctx-title">Career &amp; Work</span>
+                <div class="ctx-where">
+                  <span class="ctx-chip">LinkedIn</span>
+                  <span class="ctx-chip">Job boards</span>
+                  <span class="ctx-chip">Gmail</span>
+                  <span class="ctx-chip">Slack</span>
+                  <span class="ctx-chip">Notion</span>
+                </div>
+              </div>
+            </div>
+            <svg class="ctx-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
           </button>
-          <button class="tab mode-tab" data-mode="general" role="tab">
-            <span class="tab-name">General</span>
-            <span class="tab-check">✓</span>
-          </button>
-          <button class="tab mode-tab" data-mode="social" role="tab">
-            <span class="tab-name">Social</span>
-            <span class="tab-check">✓</span>
-          </button>
+          <div class="ctx-body">
+            <div class="file-upload" id="workUploadArea">
+              <input type="file" id="workFile" accept=".pdf,.txt,.md" />
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <span id="workUploadLabel">Drop PDF or text file, or click to browse</span>
+            </div>
+            <div id="workFileInfo" class="file-info" style="display:none">
+              <span id="workFileName"></span>
+              <button type="button" id="clearWorkFile" class="btn-clear">✕</button>
+            </div>
+            <textarea id="workText" placeholder="Resume, skills, job history, achievements, company info you work at..." rows="7"></textarea>
+          </div>
         </div>
 
-        <!-- Social Style Selector -->
-        <div class="style-selector" id="socialStyleSelector" style="display: none;">
-          <div class="style-tabs" role="tablist">
-            <button class="style-tab active" data-style="genz" role="tab">GenZ</button>
-            <button class="style-tab" data-style="casual" role="tab">Casual</button>
-            <button class="style-tab" data-style="professional" role="tab">Professional</button>
+        <!-- Social & Personal -->
+        <div class="ctx-accordion" data-ctx="social">
+          <button class="ctx-header" type="button" aria-expanded="false">
+            <div class="ctx-header-left">
+              <span class="ctx-dot ctx-dot-social"></span>
+              <div>
+                <span class="ctx-title">Social &amp; Personal</span>
+                <div class="ctx-where">
+                  <span class="ctx-chip">Twitter/X</span>
+                  <span class="ctx-chip">Instagram</span>
+                  <span class="ctx-chip">Facebook</span>
+                  <span class="ctx-chip">Reddit</span>
+                  <span class="ctx-chip">Messenger</span>
+                  <span class="ctx-chip">Discord</span>
+                </div>
+              </div>
+            </div>
+            <svg class="ctx-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </button>
+          <div class="ctx-body">
+            <div class="file-upload" id="socialUploadArea">
+              <input type="file" id="socialFile" accept=".pdf,.txt,.md" />
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <span id="socialUploadLabel">Drop PDF or text file, or click to browse</span>
+            </div>
+            <div id="socialFileInfo" class="file-info" style="display:none">
+              <span id="socialFileName"></span>
+              <button type="button" id="clearSocialFile" class="btn-clear">✕</button>
+            </div>
+            <textarea id="socialText" placeholder="Interests, hobbies, personality, how you like to interact online, topics you care about..." rows="5"></textarea>
+          </div>
+        </div>
+
+        <!-- Always Active -->
+        <div class="ctx-accordion" data-ctx="always">
+          <button class="ctx-header" type="button" aria-expanded="false">
+            <div class="ctx-header-left">
+              <span class="ctx-dot ctx-dot-always"></span>
+              <div>
+                <span class="ctx-title">Always Active</span>
+                <div class="ctx-where">
+                  <span class="ctx-chip ctx-chip-all">Every platform</span>
+                </div>
+              </div>
+            </div>
+            <svg class="ctx-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </button>
+          <div class="ctx-body">
+            <textarea id="alwaysText" placeholder="Facts or preferences that apply everywhere — e.g. name, location, preferred tone, things to always/never say..." rows="4"></textarea>
           </div>
         </div>
       </section>
 
-      <!-- Context Section -->
+      <!-- Custom System Prompt -->
       <section class="card">
-        <div class="tab-panel mode-panel active" data-panel="job">
-          <h2>Your Resume (Job Mode)</h2>
-          <p class="hint">Upload a PDF or text file, or paste your resume. This helps generate personalized answers.</p>
-          <div class="field">
-            <div class="file-upload" id="fileUploadArea">
-              <input type="file" id="resumeFile" accept=".pdf,.txt,.md" />
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
-              <span id="uploadLabel">Drop PDF or text file here, or click to browse</span>
-            </div>
-            <div id="fileInfo" class="file-info" style="display: none;">
-              <span id="fileName"></span>
-              <button type="button" id="clearFile" class="btn-clear">✕</button>
-            </div>
-          </div>
-          <div class="field">
-            <label for="resumeText">Resume Text</label>
-            <textarea id="resumeText" placeholder="Or paste your resume text here..." rows="8"></textarea>
+        <div class="prompt-header">
+          <div>
+            <h2>Custom System Prompt <span class="optional-label">optional</span></h2>
+            <p class="hint">Completely overrides the default AI instructions. Leave empty unless you want full control.</p>
           </div>
         </div>
-
-        <div class="tab-panel mode-panel" data-panel="general">
-          <h2>General Context (General Mode)</h2>
-          <p class="hint">Upload a PDF or text file, or paste any info to answer messages, emails, and forms anywhere.</p>
-          <div class="field">
-            <div class="file-upload" id="generalUploadArea">
-              <input type="file" id="generalFile" accept=".pdf,.txt,.md" />
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
-              <span id="generalUploadLabel">Drop PDF or text file here, or click to browse</span>
-            </div>
-            <div id="generalFileInfo" class="file-info" style="display: none;">
-              <span id="generalFileName"></span>
-              <button type="button" id="clearGeneralFile" class="btn-clear">✕</button>
-            </div>
-          </div>
-          <div class="field">
-            <label for="generalText">General Context Text</label>
-            <textarea id="generalText" placeholder="Paste context for emails, messages, and general forms..." rows="8"></textarea>
-          </div>
-          <div class="field">
-            <label for="systemPrompt">Custom System Prompt (Optional)</label>
-            <textarea id="systemPrompt" placeholder="e.g., Write concise replies in a friendly, professional tone." rows="4"></textarea>
-          </div>
-        </div>
-
-        <div class="tab-panel mode-panel" data-panel="social">
-          <h2>Social Context (Social Mode)</h2>
-          <p class="hint">Upload a PDF or text file, or paste background details to help with social posts and replies.</p>
-          <div class="field">
-            <div class="file-upload" id="socialUploadArea">
-              <input type="file" id="socialFile" accept=".pdf,.txt,.md" />
-              <span id="socialUploadLabel">Drop PDF or text file here, or click to browse</span>
-            </div>
-            <div id="socialFileInfo" class="file-info" style="display: none;">
-              <span id="socialFileName"></span>
-              <button type="button" id="clearSocialFile" class="btn-clear">Clear</button>
-            </div>
-          </div>
-          <div class="field">
-            <label for="socialText">Social Context Text</label>
-            <textarea id="socialText" placeholder="Paste context for social media posts and comments..." rows="8"></textarea>
-          </div>
-        </div>
+        <textarea id="systemPrompt" placeholder="e.g., Always write in a direct, confident tone. Never use bullet points. Mirror the style of the conversation." rows="3"></textarea>
       </section>
 
       <!-- Save -->
@@ -232,20 +230,13 @@
         <span id="status"></span>
       </div>
 
-      <!-- Footer Links -->
       <footer class="footer">
         <a href="https://www.cheatresume.com/" target="_blank" rel="noopener">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="2" y1="12" x2="22" y2="12"/>
-            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-          </svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
           Website
         </a>
         <a href="https://github.com/sajanpoudel/text-fill" target="_blank" rel="noopener">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
-          </svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
           GitHub
         </a>
       </footer>

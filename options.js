@@ -1,486 +1,264 @@
-// Elements
-const providerTabs = document.querySelectorAll('.provider-tab');
+// ── Elements ──────────────────────────────────────────────────────────────────
+const providerTabs   = document.querySelectorAll('.provider-tab');
 const providerPanels = document.querySelectorAll('.provider-panel');
-const modeTabs = document.querySelectorAll('.mode-tab');
-const modePanels = document.querySelectorAll('.mode-panel');
-const eyeButtons = document.querySelectorAll('.eye-btn');
-const activeBadge = document.getElementById('activeBadge');
-const modeBadge = document.getElementById('modeBadge');
+const eyeButtons     = document.querySelectorAll('.eye-btn');
+const activeBadge    = document.getElementById('activeBadge');
 
-const openaiKeyInput = document.getElementById('openaiKey');
-const anthropicKeyInput = document.getElementById('anthropicKey');
-const geminiKeyInput = document.getElementById('geminiKey');
-const openaiModelSelect = document.getElementById('openaiModel');
-const anthropicModelSelect = document.getElementById('anthropicModel');
-const geminiModelSelect = document.getElementById('geminiModel');
-const resumeFileInput = document.getElementById('resumeFile');
-const resumeTextInput = document.getElementById('resumeText');
-const fileUploadArea = document.getElementById('fileUploadArea');
-const uploadLabel = document.getElementById('uploadLabel');
-const fileInfo = document.getElementById('fileInfo');
-const fileName = document.getElementById('fileName');
-const clearFileBtn = document.getElementById('clearFile');
-const generalFileInput = document.getElementById('generalFile');
-const generalTextInput = document.getElementById('generalText');
-const generalUploadArea = document.getElementById('generalUploadArea');
-const generalUploadLabel = document.getElementById('generalUploadLabel');
-const generalFileInfo = document.getElementById('generalFileInfo');
-const generalFileName = document.getElementById('generalFileName');
-const clearGeneralFileBtn = document.getElementById('clearGeneralFile');
-const socialFileInput = document.getElementById('socialFile');
-const socialTextInput = document.getElementById('socialText');
-const socialUploadArea = document.getElementById('socialUploadArea');
+const openaiKeyInput      = document.getElementById('openaiKey');
+const anthropicKeyInput   = document.getElementById('anthropicKey');
+const geminiKeyInput      = document.getElementById('geminiKey');
+const openaiModelSelect   = document.getElementById('openaiModel');
+const anthropicModelSelect= document.getElementById('anthropicModel');
+const geminiModelSelect   = document.getElementById('geminiModel');
+
+// Context inputs — Career & Work
+const workFileInput   = document.getElementById('workFile');
+const workTextInput   = document.getElementById('workText');
+const workUploadArea  = document.getElementById('workUploadArea');
+const workUploadLabel = document.getElementById('workUploadLabel');
+const workFileInfo    = document.getElementById('workFileInfo');
+const workFileName    = document.getElementById('workFileName');
+const clearWorkBtn    = document.getElementById('clearWorkFile');
+
+// Context inputs — Social & Personal
+const socialFileInput   = document.getElementById('socialFile');
+const socialTextInput   = document.getElementById('socialText');
+const socialUploadArea  = document.getElementById('socialUploadArea');
 const socialUploadLabel = document.getElementById('socialUploadLabel');
-const socialFileInfo = document.getElementById('socialFileInfo');
-const socialFileName = document.getElementById('socialFileName');
-const clearSocialFileBtn = document.getElementById('clearSocialFile');
+const socialFileInfo    = document.getElementById('socialFileInfo');
+const socialFileName    = document.getElementById('socialFileName');
+const clearSocialBtn    = document.getElementById('clearSocialFile');
+
+// Context inputs — Always Active
+const alwaysTextInput = document.getElementById('alwaysText');
+
 const systemPromptInput = document.getElementById('systemPrompt');
-const saveButton = document.getElementById('save');
-const status = document.getElementById('status');
-const socialStyleSelector = document.getElementById('socialStyleSelector');
-const styleTabs = document.querySelectorAll('.style-tab');
+const saveButton        = document.getElementById('save');
+const statusEl          = document.getElementById('status');
 
-const MAX_RESUME_CHARS = 8000;
-
-const providerNames = {
-  openai: 'OpenAI',
-  anthropic: 'Anthropic', 
-  gemini: 'Gemini'
-};
-
+const MAX_CHARS = 8000;
 let activeProvider = 'openai';
-let activeMode = 'general';
-let activeSocialStyle = 'genz';
 
-// Update the active badge
-const updateActiveBadge = (provider) => {
-  activeBadge.textContent = `Active: ${providerNames[provider]}`;
-};
-
-const updateModeBadge = (mode) => {
-  const modeNames = { job: 'Job', general: 'General', social: 'Social' };
-  modeBadge.textContent = `Active: ${modeNames[mode] || 'General'}`;
-};
-
-const updateStyleSelector = (mode) => {
-  if (socialStyleSelector) {
-    socialStyleSelector.style.display = mode === 'social' ? 'block' : 'none';
-  }
-};
-
-// Provider tab switching
-providerTabs.forEach(tab => {
+// ── Provider tabs ─────────────────────────────────────────────────────────────
+providerTabs.forEach((tab) => {
   tab.addEventListener('click', () => {
-    const provider = tab.dataset.provider;
-    
-    // Update active tab
-    providerTabs.forEach(t => t.classList.remove('active'));
+    const p = tab.dataset.provider;
+    providerTabs.forEach((t) => t.classList.remove('active'));
     tab.classList.add('active');
-    
-    // Update active panel
-    providerPanels.forEach(p => p.classList.remove('active'));
-    document.querySelector(`[data-panel="${provider}"]`).classList.add('active');
-    
-    activeProvider = provider;
-    updateActiveBadge(provider);
+    providerPanels.forEach((panel) => panel.classList.remove('active'));
+    document.querySelector(`.provider-panel[data-panel="${p}"]`).classList.add('active');
+    activeProvider = p;
+    activeBadge.textContent = { openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini' }[p] || p;
   });
 });
 
-// Mode tab switching
-modeTabs.forEach(tab => {
-  tab.addEventListener('click', () => {
-    const mode = tab.dataset.mode;
-
-    modeTabs.forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-
-    modePanels.forEach(p => p.classList.remove('active'));
-    const modePanel = document.querySelector(`.mode-panel[data-panel="${mode}"]`);
-    if (modePanel) modePanel.classList.add('active');
-
-    activeMode = mode;
-    updateModeBadge(mode);
-    updateStyleSelector(mode);
-  });
-});
-
-// Style tab switching (for Social mode)
-styleTabs.forEach(tab => {
-  tab.addEventListener('click', () => {
-    styleTabs.forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    activeSocialStyle = tab.dataset.style;
-  });
-});
-
-// Eye button toggle
-eyeButtons.forEach(btn => {
+// ── Eye buttons ───────────────────────────────────────────────────────────────
+eyeButtons.forEach((btn) => {
   btn.addEventListener('click', () => {
-    const targetId = btn.dataset.target;
-    const input = document.getElementById(targetId);
-    const eyeOpen = btn.querySelector('.eye-open');
-    const eyeClosed = btn.querySelector('.eye-closed');
-    
+    const input    = document.getElementById(btn.dataset.target);
+    const eyeOpen  = btn.querySelector('.eye-open');
+    const eyeClosed= btn.querySelector('.eye-closed');
     if (input.type === 'password') {
       input.type = 'text';
-      eyeOpen.style.display = 'none';
+      eyeOpen.style.display  = 'none';
       eyeClosed.style.display = 'block';
     } else {
       input.type = 'password';
-      eyeOpen.style.display = 'block';
+      eyeOpen.style.display  = 'block';
       eyeClosed.style.display = 'none';
     }
   });
 });
 
-// Show status message
-const showStatus = (message, isError = false) => {
-  status.textContent = message;
-  status.className = isError ? 'error' : 'success';
-  setTimeout(() => {
-    status.textContent = '';
-    status.className = '';
-  }, 3000);
-};
-
-// Sanitize text
-const sanitizeText = (text, maxChars) =>
-  text.replace(/\s+/g, ' ').trim().slice(0, maxChars);
-
-// Load settings
-const loadSettings = async () => {
-  const data = await chrome.storage.local.get([
-    'provider',
-    'model',
-    'mode',
-    'socialStyle',
-    'openaiKey',
-    'anthropicKey',
-    'geminiKey',
-    'resumeText',
-    'resumeFileName',
-    'generalContextText',
-    'generalFileName',
-    'socialContextText',
-    'socialFileName',
-    'systemPrompt',
-  ]);
-
-  activeProvider = data.provider || 'openai';
-  activeMode = data.mode || 'general';
-  activeSocialStyle = data.socialStyle || 'genz';
-  
-  // Set active tab
-  providerTabs.forEach(t => t.classList.remove('active'));
-  providerPanels.forEach(p => p.classList.remove('active'));
-  document.querySelector(`[data-provider="${activeProvider}"]`).classList.add('active');
-  document.querySelector(`.provider-panel[data-panel="${activeProvider}"]`).classList.add('active');
-
-  modeTabs.forEach(t => t.classList.remove('active'));
-  modePanels.forEach(p => p.classList.remove('active'));
-  document.querySelector(`[data-mode="${activeMode}"]`).classList.add('active');
-  document.querySelector(`.mode-panel[data-panel="${activeMode}"]`).classList.add('active');
-  
-  // Update badges and style selector
-  updateActiveBadge(activeProvider);
-  updateModeBadge(activeMode);
-  updateStyleSelector(activeMode);
-
-  // Set active style tab
-  styleTabs.forEach(t => t.classList.remove('active'));
-  const activeStyleTab = document.querySelector(`[data-style="${activeSocialStyle}"]`);
-  if (activeStyleTab) activeStyleTab.classList.add('active');
-
-  // Set values
-  openaiKeyInput.value = data.openaiKey || '';
-  anthropicKeyInput.value = data.anthropicKey || '';
-  geminiKeyInput.value = data.geminiKey || '';
-  resumeTextInput.value = data.resumeText || '';
-  generalTextInput.value = data.generalContextText || '';
-  socialTextInput.value = data.socialContextText || '';
-  systemPromptInput.value = data.systemPrompt || '';
-
-  // Show file info if we have a saved file name
-  if (data.resumeFileName) {
-    showFileInfo(data.resumeFileName);
-  }
-  if (data.generalFileName) {
-    showGeneralFileInfo(data.generalFileName);
-  }
-  if (data.socialFileName) {
-    showSocialFileInfo(data.socialFileName);
-  }
-
-  // Set model selections
-  if (data.model) {
-    if (data.provider === 'openai') openaiModelSelect.value = data.model;
-    else if (data.provider === 'anthropic') anthropicModelSelect.value = data.model;
-    else if (data.provider === 'gemini') geminiModelSelect.value = data.model;
-  }
-};
-
-// Show file info
-const showFileInfo = (name) => {
-  fileInfo.style.display = 'flex';
-  fileName.textContent = name;
-  fileUploadArea.style.display = 'none';
-};
-
-// Hide file info
-const hideFileInfo = () => {
-  fileInfo.style.display = 'none';
-  fileUploadArea.style.display = 'flex';
-  resumeFileInput.value = '';
-};
-
-const showGeneralFileInfo = (name) => {
-  generalFileInfo.style.display = 'flex';
-  generalFileName.textContent = name;
-  generalUploadArea.style.display = 'none';
-};
-
-const hideGeneralFileInfo = () => {
-  generalFileInfo.style.display = 'none';
-  generalUploadArea.style.display = 'flex';
-  generalFileInput.value = '';
-};
-
-const showSocialFileInfo = (name) => {
-  socialFileInfo.style.display = 'flex';
-  socialFileName.textContent = name;
-  socialUploadArea.style.display = 'none';
-};
-
-const hideSocialFileInfo = () => {
-  socialFileInfo.style.display = 'none';
-  socialUploadArea.style.display = 'flex';
-  socialFileInput.value = '';
-};
-
-// Clear file button
-clearFileBtn.addEventListener('click', () => {
-  hideFileInfo();
-  resumeTextInput.value = '';
-  chrome.storage.local.remove('resumeFileName');
-  showStatus('Resume cleared.');
+// ── Context accordion ─────────────────────────────────────────────────────────
+document.querySelectorAll('.ctx-accordion').forEach((acc) => {
+  const headerBtn = acc.querySelector('.ctx-header');
+  headerBtn.addEventListener('click', () => {
+    const isOpen = acc.classList.toggle('open');
+    headerBtn.setAttribute('aria-expanded', String(isOpen));
+  });
 });
 
-clearGeneralFileBtn.addEventListener('click', () => {
-  hideGeneralFileInfo();
-  generalTextInput.value = '';
-  chrome.storage.local.remove('generalFileName');
-  showStatus('General context cleared.');
+// ── Status message ────────────────────────────────────────────────────────────
+const showStatus = (msg, isError = false) => {
+  statusEl.textContent = msg;
+  statusEl.className   = isError ? 'error' : 'success';
+  setTimeout(() => { statusEl.textContent = ''; statusEl.className = ''; }, 3000);
+};
+
+const sanitize = (text, max) => text.replace(/\s+/g, ' ').trim().slice(0, max);
+
+// ── File info helpers ─────────────────────────────────────────────────────────
+const showFileInfo = (infoEl, uploadEl, nameEl, name) => {
+  nameEl.textContent    = name;
+  infoEl.style.display  = 'flex';
+  uploadEl.style.display = 'none';
+};
+const hideFileInfo = (infoEl, uploadEl, fileInput) => {
+  infoEl.style.display  = 'none';
+  uploadEl.style.display = 'flex';
+  fileInput.value = '';
+};
+
+clearWorkBtn.addEventListener('click', () => {
+  hideFileInfo(workFileInfo, workUploadArea, workFileInput);
+  workTextInput.value = '';
+  chrome.storage.local.remove('workFileName');
+  showStatus('Work context cleared.');
 });
 
-clearSocialFileBtn.addEventListener('click', () => {
-  hideSocialFileInfo();
+clearSocialBtn.addEventListener('click', () => {
+  hideFileInfo(socialFileInfo, socialUploadArea, socialFileInput);
   socialTextInput.value = '';
   chrome.storage.local.remove('socialFileName');
   showStatus('Social context cleared.');
 });
 
-// Drag and drop handling
-const setupDragAndDrop = (area, onDrop) => {
-  area.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    area.classList.add('drag-over');
-  });
-
-  area.addEventListener('dragleave', () => {
-    area.classList.remove('drag-over');
-  });
-
-  area.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    area.classList.remove('drag-over');
-
-    const file = e.dataTransfer.files[0];
-    if (file) {
-      await onDrop(file);
-    }
-  });
-};
-
-// Handle file upload (both PDF and text)
-const handleFileUpload = async ({
-  file,
-  uploadLabelElement,
-  textInput,
-  showInfo,
-  fileNameKey,
-  maxChars,
-  successLabel,
-}) => {
+// ── File upload handler ───────────────────────────────────────────────────────
+const handleFileUpload = async ({ file, labelEl, textInput, infoEl, uploadEl, fileInput, fileNameEl, storageKey, label }) => {
   const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-  
-  uploadLabelElement.textContent = 'Processing...';
-  
+  labelEl.textContent = 'Processing…';
+
   try {
     let text = '';
-    
     if (isPDF) {
-      // Use our PDF extractor
-      if (window.PDFExtractor) {
-        text = await window.PDFExtractor.extractText(file);
-        
-        if (!text || text.length < 50) {
-          showStatus('Could not extract text from PDF. Try a text file instead.', true);
-          uploadLabelElement.textContent = 'Drop PDF or text file here, or click to browse';
-          return;
-        }
-      } else {
-        showStatus('PDF parser not loaded. Please refresh the page.', true);
-        uploadLabelElement.textContent = 'Drop PDF or text file here, or click to browse';
+      if (!window.PDFExtractor) {
+        showStatus('PDF parser not loaded. Refresh the page.', true);
+        labelEl.textContent = 'Drop PDF or text file, or click to browse';
+        return;
+      }
+      text = await window.PDFExtractor.extractText(file);
+      if (!text || text.length < 50) {
+        showStatus('Could not extract text from PDF. Try a text file.', true);
+        labelEl.textContent = 'Drop PDF or text file, or click to browse';
         return;
       }
     } else {
-      // Plain text file
       text = await file.text();
     }
-    
-    // Sanitize and set
-    const sanitized = sanitizeText(text, maxChars);
+
+    const sanitized = sanitize(text, MAX_CHARS);
     textInput.value = sanitized;
-    
-    // Show file info
-    showInfo(file.name);
-    
-    // Save file name
-    chrome.storage.local.set({ [fileNameKey]: file.name });
-    
-    showStatus(`${successLabel} loaded: ${sanitized.length} characters extracted.`);
-    
-  } catch (error) {
-    console.error('File processing error:', error);
-    showStatus('Failed to process file: ' + error.message, true);
-    uploadLabelElement.textContent = 'Drop PDF or text file here, or click to browse';
+    showFileInfo(infoEl, uploadEl, fileNameEl, file.name);
+    chrome.storage.local.set({ [storageKey]: file.name });
+    showStatus(`${label}: ${sanitized.length.toLocaleString()} chars loaded.`);
+  } catch (err) {
+    showStatus('Failed to process file: ' + err.message, true);
+    labelEl.textContent = 'Drop PDF or text file, or click to browse';
   }
 };
 
-// File input change handler
-resumeFileInput.addEventListener('change', async (event) => {
-  const file = event.target.files?.[0];
-  if (file) {
-    await handleFileUpload({
-      file,
-      uploadLabelElement: uploadLabel,
-      textInput: resumeTextInput,
-      showInfo: showFileInfo,
-      fileNameKey: 'resumeFileName',
-      maxChars: MAX_RESUME_CHARS,
-      successLabel: 'Resume',
-    });
-  }
+const makeUploadConfig = (ctx) => ({
+  work:   { file: workFileInput,   labelEl: workUploadLabel,   textInput: workTextInput,   infoEl: workFileInfo,   uploadEl: workUploadArea,   fileNameEl: workFileName,   storageKey: 'workFileName',   label: 'Career context' },
+  social: { file: socialFileInput, labelEl: socialUploadLabel, textInput: socialTextInput, infoEl: socialFileInfo, uploadEl: socialUploadArea, fileNameEl: socialFileName, storageKey: 'socialFileName', label: 'Social context' },
+})[ctx];
+
+// File input change
+workFileInput.addEventListener('change', async (e) => {
+  const f = e.target.files?.[0]; if (f) await handleFileUpload({ file: f, fileInput: workFileInput, ...makeUploadConfig('work') });
+});
+socialFileInput.addEventListener('change', async (e) => {
+  const f = e.target.files?.[0]; if (f) await handleFileUpload({ file: f, fileInput: socialFileInput, ...makeUploadConfig('social') });
 });
 
-generalFileInput.addEventListener('change', async (event) => {
-  const file = event.target.files?.[0];
-  if (file) {
-    await handleFileUpload({
-      file,
-      uploadLabelElement: generalUploadLabel,
-      textInput: generalTextInput,
-      showInfo: showGeneralFileInfo,
-      fileNameKey: 'generalFileName',
-      maxChars: MAX_RESUME_CHARS,
-      successLabel: 'General context',
-    });
-  }
-});
-
-socialFileInput.addEventListener('change', async (event) => {
-  const file = event.target.files?.[0];
-  if (file) {
-    await handleFileUpload({
-      file,
-      uploadLabelElement: socialUploadLabel,
-      textInput: socialTextInput,
-      showInfo: showSocialFileInfo,
-      fileNameKey: 'socialFileName',
-      maxChars: MAX_RESUME_CHARS,
-      successLabel: 'Social context',
-    });
-  }
-});
-
-setupDragAndDrop(fileUploadArea, async (file) => {
-  await handleFileUpload({
-    file,
-    uploadLabelElement: uploadLabel,
-    textInput: resumeTextInput,
-    showInfo: showFileInfo,
-    fileNameKey: 'resumeFileName',
-    maxChars: MAX_RESUME_CHARS,
-    successLabel: 'Resume',
+// Drag and drop
+const setupDrag = (area, cfg) => {
+  area.addEventListener('dragover', (e) => { e.preventDefault(); area.classList.add('drag-over'); });
+  area.addEventListener('dragleave', () => area.classList.remove('drag-over'));
+  area.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    area.classList.remove('drag-over');
+    const f = e.dataTransfer.files[0];
+    if (f) await handleFileUpload({ file: f, fileInput: cfg.file, ...cfg });
   });
-});
+};
 
-setupDragAndDrop(generalUploadArea, async (file) => {
-  await handleFileUpload({
-    file,
-    uploadLabelElement: generalUploadLabel,
-    textInput: generalTextInput,
-    showInfo: showGeneralFileInfo,
-    fileNameKey: 'generalFileName',
-    maxChars: MAX_RESUME_CHARS,
-    successLabel: 'General context',
-  });
-});
+setupDrag(workUploadArea,   makeUploadConfig('work'));
+setupDrag(socialUploadArea, makeUploadConfig('social'));
 
-setupDragAndDrop(socialUploadArea, async (file) => {
-  await handleFileUpload({
-    file,
-    uploadLabelElement: socialUploadLabel,
-    textInput: socialTextInput,
-    showInfo: showSocialFileInfo,
-    fileNameKey: 'socialFileName',
-    maxChars: MAX_RESUME_CHARS,
-    successLabel: 'Social context',
-  });
-});
+// ── Load settings ─────────────────────────────────────────────────────────────
+const loadSettings = async () => {
+  const data = await chrome.storage.local.get([
+    'provider', 'model',
+    'openaiKey', 'anthropicKey', 'geminiKey',
+    // New context keys
+    'workContextText', 'workFileName',
+    'socialContextText', 'socialFileName',
+    'alwaysContextText',
+    // Legacy — migrate to work context
+    'generalContextText', 'generalFileName',
+    'systemPrompt',
+  ]);
 
-// Save settings
+  activeProvider = data.provider || 'openai';
+
+  providerTabs.forEach((t) => t.classList.remove('active'));
+  providerPanels.forEach((p) => p.classList.remove('active'));
+  document.querySelector(`[data-provider="${activeProvider}"]`)?.classList.add('active');
+  document.querySelector(`.provider-panel[data-panel="${activeProvider}"]`)?.classList.add('active');
+  activeBadge.textContent = { openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini' }[activeProvider] || activeProvider;
+
+  openaiKeyInput.value       = data.openaiKey    || '';
+  anthropicKeyInput.value    = data.anthropicKey || '';
+  geminiKeyInput.value       = data.geminiKey    || '';
+  systemPromptInput.value    = data.systemPrompt || '';
+  alwaysTextInput.value      = data.alwaysContextText || '';
+
+  // Populate work context — fall back to legacy generalContextText
+  workTextInput.value = data.workContextText || data.generalContextText || '';
+  const wfn = data.workFileName || data.generalFileName || '';
+  if (wfn) showFileInfo(workFileInfo, workUploadArea, workFileName, wfn);
+
+  // Populate social context
+  socialTextInput.value = data.socialContextText || '';
+  if (data.socialFileName) showFileInfo(socialFileInfo, socialUploadArea, socialFileName, data.socialFileName);
+
+  // Model selection
+  if (data.model) {
+    if (data.provider === 'openai')    openaiModelSelect.value    = data.model;
+    if (data.provider === 'anthropic') anthropicModelSelect.value = data.model;
+    if (data.provider === 'gemini')    geminiModelSelect.value    = data.model;
+  }
+};
+
+// ── Save settings ─────────────────────────────────────────────────────────────
 saveButton.addEventListener('click', async () => {
-  const openaiKey = openaiKeyInput.value.trim();
+  const openaiKey    = openaiKeyInput.value.trim();
   const anthropicKey = anthropicKeyInput.value.trim();
-  const geminiKey = geminiKeyInput.value.trim();
-  const resumeText = sanitizeText(resumeTextInput.value, MAX_RESUME_CHARS);
-  const generalContextText = sanitizeText(generalTextInput.value, MAX_RESUME_CHARS);
-  const socialContextText = sanitizeText(socialTextInput.value, MAX_RESUME_CHARS);
-  const systemPrompt = sanitizeText(systemPromptInput.value, MAX_RESUME_CHARS);
+  const geminiKey    = geminiKeyInput.value.trim();
 
-  // Get the model for the active provider
+  const activeKey = activeProvider === 'anthropic' ? anthropicKey
+                  : activeProvider === 'gemini'    ? geminiKey
+                  : openaiKey;
+
+  if (!activeKey) { showStatus('API key is required.', true); return; }
+
   let model;
-  if (activeProvider === 'openai') model = openaiModelSelect.value;
-  else if (activeProvider === 'anthropic') model = anthropicModelSelect.value;
-  else if (activeProvider === 'gemini') model = geminiModelSelect.value;
+  if (activeProvider === 'openai')    model = openaiModelSelect.value;
+  if (activeProvider === 'anthropic') model = anthropicModelSelect.value;
+  if (activeProvider === 'gemini')    model = geminiModelSelect.value;
 
-  // Get the active API key
-  const activeKey =
-    activeProvider === 'anthropic' ? anthropicKey :
-    activeProvider === 'gemini' ? geminiKey : openaiKey;
-
-  if (!activeKey) {
-    showStatus('API key is required.', true);
-    return;
-  }
+  const workContextText   = sanitize(workTextInput.value,   MAX_CHARS);
+  const socialContextText = sanitize(socialTextInput.value, MAX_CHARS);
+  const alwaysContextText = sanitize(alwaysTextInput.value, MAX_CHARS);
+  const systemPrompt      = sanitize(systemPromptInput.value, MAX_CHARS);
 
   await chrome.storage.local.set({
     provider: activeProvider,
     model,
-    mode: activeMode,
-    socialStyle: activeSocialStyle,
     openaiKey,
     anthropicKey,
     geminiKey,
-    resumeText,
-    generalContextText,
+    workContextText,
     socialContextText,
+    alwaysContextText,
     systemPrompt,
+    // Keep generalContextText in sync for backward-compat (background.js reads it as fallback)
+    generalContextText: workContextText,
+    mode: 'general',
   });
 
   showStatus('Settings saved.');
 });
 
-// Initialize
 loadSettings();
