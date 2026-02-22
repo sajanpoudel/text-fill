@@ -166,7 +166,7 @@ const findJobSections = (searchAll = false) => {
 const findHiddenJobContent = () => {
   const ashbyOverview = document.querySelector(
     '[data-tab="overview"], [aria-labelledby*="overview"], [id*="overview"], ' +
-      '[class*="overview"], [class*="job-description"], [class*="jobDescription"]'
+    '[class*="overview"], [class*="job-description"], [class*="jobDescription"]'
   );
   if (ashbyOverview) {
     const text = extractSectionText(ashbyOverview);
@@ -175,7 +175,7 @@ const findHiddenJobContent = () => {
 
   const tabPanels = document.querySelectorAll(
     '[role="tabpanel"], [class*="tab-panel"], [class*="tabpanel"], ' +
-      '[class*="TabPanel"], [data-testid*="tab"]'
+    '[class*="TabPanel"], [data-testid*="tab"]'
   );
   for (const panel of tabPanels) {
     const text = extractSectionText(panel);
@@ -190,7 +190,7 @@ const findHiddenJobContent = () => {
 
   const hiddenContainers = document.querySelectorAll(
     '[hidden], [aria-hidden="true"], [style*="display: none"], ' +
-      '[style*="display:none"], .hidden, .hide'
+    '[style*="display:none"], .hidden, .hide'
   );
   for (const container of hiddenContainers) {
     const text = extractSectionText(container);
@@ -209,7 +209,7 @@ const findHiddenJobContent = () => {
 const findOverviewTabButton = () => {
   const directMatch = document.querySelector(
     '[data-tab="overview"], [aria-controls*="overview"], ' +
-      'button[aria-label*="Overview" i], [role="tab"][aria-label*="Overview" i]'
+    'button[aria-label*="Overview" i], [role="tab"][aria-label*="Overview" i]'
   );
   if (directMatch) return directMatch;
 
@@ -1015,7 +1015,7 @@ const extractPageEntities = () => {
 
   // ATS job boards (Greenhouse, Ashby, Lever, Workday)
   if (["greenhouse.io", "ashbyhq.com", "lever.co", "workday.com", "myworkdayjobs.com"]
-      .some((b) => hostname.includes(b))) {
+    .some((b) => hostname.includes(b))) {
     const company =
       document.querySelector("[class*='company-name']")?.innerText?.trim() ||
       document.querySelector("meta[property='og:site_name']")?.content?.trim();
@@ -1259,8 +1259,8 @@ const showModal = (field, button) => {
     const btn = document.createElement("button");
     btn.className = [
       "tfa-modal-btn",
-      primary    ? "tfa-modal-btn-primary"  : "",
-      secondary  ? "tfa-modal-btn-secondary": "",
+      primary ? "tfa-modal-btn-primary" : "",
+      secondary ? "tfa-modal-btn-secondary" : "",
       isSettings ? "tfa-modal-btn-settings" : "",
     ]
       .filter(Boolean)
@@ -1848,18 +1848,20 @@ const triggerMemoryExtraction = async (generatedText, platformKey, pageContext) 
 
       if (memory.confidence >= autoSaveThreshold) {
         // Auto-save the full structured memory atom
-        await chrome.runtime.sendMessage({ type: "saveMemory", memory: {
-          category,
-          type:       memory.type       || "preference",
-          content:    content.trim().slice(0, 150),
-          tags:       memory.tags       || [],
-          entities:   memory.entities   || [],
-          importance: memory.importance || 2,
-          confidence: memory.confidence,
-          source:     platformKey || "auto",
-          private:    false,
-          related:    [],
-        }});
+        await chrome.runtime.sendMessage({
+          type: "saveMemory", memory: {
+            category,
+            type: memory.type || "preference",
+            content: content.trim().slice(0, 150),
+            tags: memory.tags || [],
+            entities: memory.entities || [],
+            importance: memory.importance || 2,
+            confidence: memory.confidence,
+            source: platformKey || "auto",
+            private: false,
+            related: [],
+          }
+        });
         const label = CAT_LABELS[category] || category;
         showToast(`💡 ${label} memory saved`);
       } else {
@@ -2097,6 +2099,29 @@ const initializeButtons = () => {
     },
     { passive: true, capture: true }
   );
+
+  // When the user clicks/focuses a field, immediately create the button for it.
+  // This bypasses selector matching so it works for any field on any site,
+  // including LinkedIn panels that use class names not in our selector list.
+  // Guard: skip fields inside the extension's own UI (class names start with "tfa-").
+  document.addEventListener("focusin", (e) => {
+    const field = e.target;
+    if (!(field instanceof Element)) return;
+    if (!field.isContentEditable && field.tagName !== "TEXTAREA" &&
+      !(field.tagName === "INPUT" && field.type !== "checkbox" && field.type !== "radio")) return;
+    if (field.closest('[class*="tfa-"]')) return; // skip extension's own UI
+
+    if (state.buttons.has(field)) {
+      // Already tracked — just reposition in case it was hidden
+      positionButton(field, state.buttons.get(field));
+      return;
+    }
+
+    if (!isEditableField(field) || isSearchField(field) || isLikelyPersonalInfoField(field)) return;
+
+    const btn = getOrCreateButton(field);
+    positionButton(field, btn);
+  }, { passive: true, capture: true });
 };
 
 const initializeExtension = async () => {
