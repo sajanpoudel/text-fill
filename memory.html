@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Memory — Text Fill</title>
+    <link rel="stylesheet" href="memory.css" />
+  </head>
+  <body>
+    <main class="container">
+
+      <!-- Header -->
+      <div class="mem-header">
+        <a href="options.html" title="Back to Settings">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="15 18 9 12 15 6"/>
+          </svg>
+          Settings
+        </a>
+        <h1>Memory</h1>
+        <span class="mem-count" id="memCount">0 entries</span>
+      </div>
+
+      <!-- Toolbar -->
+      <div class="mem-toolbar">
+        <input
+          type="search"
+          class="mem-search"
+          id="memSearch"
+          placeholder="Search memories..."
+          autocomplete="off"
+        />
+        <div class="mem-filter-tabs" role="tablist">
+          <button class="mem-filter-tab active" data-cat="all" role="tab">All</button>
+          <button class="mem-filter-tab" data-cat="work" role="tab">Work</button>
+          <button class="mem-filter-tab" data-cat="social" role="tab">Social</button>
+          <button class="mem-filter-tab" data-cat="personal" role="tab">Personal</button>
+          <button class="mem-filter-tab" data-cat="persona" role="tab">Persona</button>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="mem-stats" id="memStats"></div>
+
+      <!-- Memory list -->
+      <div class="mem-list" id="memList">
+        <div class="mem-empty">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M9 11l3 3L22 4"/>
+            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+          </svg>
+          <p>No memories yet.</p>
+          <p>Generate text in the extension to start building memory.</p>
+        </div>
+      </div>
+
+      <!-- Footer actions -->
+      <div class="mem-footer-bar" id="memFooter" style="display:none">
+        <button class="mem-btn-danger" id="btnClearAll">Clear all memories</button>
+        <button class="mem-btn-optimize" id="btnOptimize">Optimize &amp; Deduplicate</button>
+      </div>
+
+    </main>
+
+    <!-- Toast -->
+    <div class="mem-toast" id="memToast"></div>
+
+    <script src="memory.js"></script>
+  </body>
+</html>

@@ -1,0 +1,355 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #f4f4f5;
+  color: #111;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.container {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 28px 20px 56px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ── Header ──────────────────────────────────────────── */
+.mem-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mem-header a {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #555;
+  text-decoration: none;
+  padding: 6px 10px;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+.mem-header a:hover { background: #e4e4e7; }
+
+.mem-header h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  flex: 1;
+}
+
+.mem-count {
+  font-size: 12px;
+  color: #888;
+  background: #e4e4e7;
+  border-radius: 20px;
+  padding: 2px 10px;
+}
+
+/* ── Toolbar ─────────────────────────────────────────── */
+.mem-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.mem-search {
+  flex: 1;
+  min-width: 180px;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 14px;
+  background: #fff;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.mem-search:focus { border-color: #6366f1; }
+
+.mem-filter-tabs {
+  display: flex;
+  gap: 4px;
+  background: #e4e4e7;
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.mem-filter-tab {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: #555;
+  transition: background 0.15s, color 0.15s;
+}
+.mem-filter-tab.active {
+  background: #fff;
+  color: #111;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+/* ── Stats bar ───────────────────────────────────────── */
+.mem-stats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mem-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #fff;
+  border: 1px solid #e4e4e7;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.mem-stat-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.dot-work    { background: #6366f1; }
+.dot-social  { background: #22c55e; }
+.dot-personal { background: #f59e0b; }
+.dot-persona { background: #ec4899; }
+
+.mem-stat-label { color: #555; }
+.mem-stat-val   { font-weight: 600; }
+
+/* ── Memory list ─────────────────────────────────────── */
+.mem-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mem-empty {
+  text-align: center;
+  padding: 60px 24px;
+  color: #888;
+  font-size: 14px;
+}
+.mem-empty svg { opacity: 0.3; margin-bottom: 12px; }
+.mem-empty p { margin: 0; }
+
+/* ── Memory card ─────────────────────────────────────── */
+.mem-card {
+  background: #fff;
+  border: 1px solid #e4e4e7;
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: box-shadow 0.15s;
+}
+.mem-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.mem-card.mem-card-private { opacity: 0.65; }
+
+.mem-card-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.mem-card-cat {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 20px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.cat-work     { background: #ede9fe; color: #6366f1; }
+.cat-social   { background: #dcfce7; color: #16a34a; }
+.cat-personal { background: #fef3c7; color: #d97706; }
+.cat-persona  { background: #fce7f3; color: #be185d; }
+
+.mem-card-content {
+  flex: 1;
+  font-size: 14px;
+  line-height: 1.55;
+  color: #222;
+}
+.mem-card-content.editing { display: none; }
+
+.mem-card-edit-area {
+  display: none;
+  flex: 1;
+}
+.mem-card-edit-area.editing {
+  display: block;
+}
+.mem-card-edit-area textarea {
+  width: 100%;
+  border: 1px solid #6366f1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  outline: none;
+  line-height: 1.55;
+}
+
+.mem-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.mem-icon-btn {
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  color: #999;
+  display: flex;
+  align-items: center;
+  transition: background 0.12s, color 0.12s;
+}
+.mem-icon-btn:hover { background: #f4f4f5; color: #444; }
+.mem-icon-btn.active { color: #6366f1; }
+.mem-icon-btn.del:hover { color: #ef4444; }
+
+/* Importance stars */
+.mem-importance {
+  display: flex;
+  gap: 2px;
+}
+.imp-star {
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.3;
+  transition: opacity 0.1s;
+}
+.imp-star.on { opacity: 1; }
+
+/* Tags */
+.mem-tags {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.mem-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: #f4f4f5;
+  color: #555;
+}
+
+/* Meta row */
+.mem-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  color: #aaa;
+  flex-wrap: wrap;
+}
+.mem-meta-source { font-style: italic; }
+.mem-meta-mentions::before { content: "↩ "; }
+
+/* Edit save/cancel */
+.mem-edit-actions {
+  display: none;
+  gap: 6px;
+}
+.mem-edit-actions.editing { display: flex; }
+
+.mem-btn-save {
+  padding: 5px 14px;
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.mem-btn-save:hover { background: #4f46e5; }
+
+.mem-btn-cancel {
+  padding: 5px 12px;
+  background: #f4f4f5;
+  color: #555;
+  border: none;
+  border-radius: 7px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.mem-btn-cancel:hover { background: #e4e4e7; }
+
+/* ── Footer actions ──────────────────────────────────── */
+.mem-footer-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 8px;
+}
+
+.mem-btn-danger {
+  padding: 7px 14px;
+  background: transparent;
+  color: #ef4444;
+  border: 1px solid #fca5a5;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.mem-btn-danger:hover { background: #fef2f2; }
+
+.mem-btn-optimize {
+  padding: 7px 16px;
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.mem-btn-optimize:hover { background: #4f46e5; }
+.mem-btn-optimize:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Toast ───────────────────────────────────────────── */
+.mem-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #111;
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 9999;
+  white-space: nowrap;
+}
+.mem-toast.show { opacity: 1; }
+.mem-toast.error { background: #dc2626; }

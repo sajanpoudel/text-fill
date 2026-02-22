@@ -548,6 +548,47 @@
   background: #dc2626;
 }
 
+/* Action toast (Save / Skip memory suggestion) */
+.tfa-toast-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: normal;
+  max-width: 420px;
+  padding: 10px 14px;
+}
+
+.tfa-toast-text {
+  flex: 1;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.tfa-toast-btn {
+  flex-shrink: 0;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.1s;
+  line-height: 1.4;
+}
+
+.tfa-toast-btn-save {
+  background: #3b82f6;
+  color: #fff;
+}
+.tfa-toast-btn-save:hover { background: #2563eb; }
+
+.tfa-toast-btn-skip {
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.85);
+}
+.tfa-toast-btn-skip:hover { background: rgba(255, 255, 255, 0.25); }
+
 @keyframes tfa-toast-in {
   from {
     opacity: 0;

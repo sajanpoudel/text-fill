@@ -3,6 +3,129 @@ const ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages";
 const GEMINI_ENDPOINT =
   "https://generativelanguage.googleapis.com/v1beta/models";
 
+// ── Memory Storage Layer ──────────────────────────────────────────────────────
+// Platforms worth extracting memory from (high-signal only)
+const HIGH_SIGNAL_PLATFORMS = new Set([
+  "linkedin.com", "mail.google.com", "slack.com",
+  "greenhouse.io", "ashbyhq.com", "lever.co", "workday.com",
+  "workable.com", "myworkdayjobs.com", "jobs.ashbyhq.com",
+  "boards.greenhouse.io", "jobs.lever.co",
+]);
+
+const isHighSignalPlatform = (platformKey) =>
+  [...HIGH_SIGNAL_PLATFORMS].some((p) => platformKey?.includes(p.split(".")[0]));
+
+// Memory types by category
+const MEMORY_CATEGORY_LABELS = {
+  work: "Work",
+  social: "Social",
+  personal: "Personal",
+  persona: "Persona",
+};
+
+const getMemories = async () => {
+  const { memories = [] } = await chrome.storage.local.get("memories");
+  return memories;
+};
+
+const saveMemories = async (memories) => {
+  await chrome.storage.local.set({ memories });
+};
+
+// Deduplicate check: same category + 2+ shared entity/keyword tokens
+const isDuplicateMemory = (existing, candidate) => {
+  if (existing.category !== candidate.category) return false;
+  const existingEntities = (existing.entities || []).map((e) => e.toLowerCase());
+  const candidateEntities = (candidate.entities || []).map((e) => e.toLowerCase());
+  const entityOverlap = candidateEntities.some((e) => existingEntities.includes(e));
+  if (!entityOverlap) return false;
+
+  const existingWords = existing.content.toLowerCase().split(/\W+/).filter((w) => w.length > 4);
+  const candidateWords = candidate.content.toLowerCase().split(/\W+/).filter((w) => w.length > 4);
+  const wordOverlap = candidateWords.filter((w) => existingWords.includes(w)).length;
+  return wordOverlap >= 2;
+};
+
+const addMemory = async (memoryData) => {
+  const memories = await getMemories();
+
+  // Deduplicate: reinforce existing instead of adding
+  const existing = memories.find((m) => isDuplicateMemory(m, memoryData));
+  if (existing) {
+    existing.mentions = (existing.mentions || 1) + 1;
+    existing.updatedAt = Date.now();
+    await saveMemories(memories);
+    return { action: "reinforced", id: existing.id };
+  }
+
+  const newMemory = {
+    id: `mem_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    mentions: 1,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    private: false,
+    related: [],
+    ...memoryData,
+  };
+
+  memories.push(newMemory);
+
+  // Hard cap: 100 memories, drop lowest scoring when over limit
+  if (memories.length > 100) {
+    memories.sort((a, b) =>
+      (b.importance || 2) * Math.log(1 + (b.mentions || 1)) -
+      (a.importance || 2) * Math.log(1 + (a.mentions || 1))
+    );
+    memories.splice(90);
+  }
+
+  await saveMemories(memories);
+  return { action: "added", id: newMemory.id };
+};
+
+// Score a memory for relevance to current generation context
+const scoreMemory = (memory, platformKey, contextKeywords) => {
+  const daysSince = (Date.now() - (memory.updatedAt || memory.createdAt)) / 86400000;
+  const recency = Math.exp(-daysSince / 60); // 60-day half-life
+  const freq = Math.log(1 + (memory.mentions || 1));
+  const importance = memory.importance || 2;
+
+  let relevance = 0.5;
+  // Same-platform boost
+  if (memory.source && platformKey && memory.source.includes(platformKey)) relevance = 1.0;
+
+  // Keyword match against page context
+  const memKeys = [
+    ...(memory.tags || []),
+    ...(memory.entities || []).map((e) => e.toLowerCase()),
+  ];
+  const kwMatch = memKeys.some((k) => contextKeywords.some((w) => w.length > 3 && (w.includes(k) || k.includes(w))));
+  if (kwMatch) relevance = Math.max(relevance, 1.4);
+
+  return importance * freq * recency * relevance;
+};
+
+const getRelevantMemories = async (platformKey, pageContextText = "") => {
+  const memories = await getMemories();
+  const contextWords = pageContextText.toLowerCase().split(/\W+/).filter((w) => w.length > 3);
+
+  return memories
+    .filter((m) => !m.private)
+    .map((m) => ({ m, score: scoreMemory(m, platformKey, contextWords) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8)
+    .map((s) => s.m);
+};
+
+const formatMemoriesForPrompt = (memories) => {
+  if (!memories.length) return null;
+  const lines = memories.map((m) => {
+    const cat = MEMORY_CATEGORY_LABELS[m.category] || m.category;
+    return `[${cat}] ${m.content}`;
+  });
+  return `=== Learned Memory (high-confidence personal facts) ===\n${lines.join("\n")}`;
+};
+
 // Which context types to pull in for each platform.
 // Users store Career, Social, and Always-active info separately —
 // only the relevant ones are sent to the AI based on the current site.
@@ -148,6 +271,7 @@ const normalizeAnswer = (text) => {
 const buildPrompt = ({
   systemPrompt,
   generalContext,
+  learnedMemory,
   pageContext,
   question,
   fieldValue,
@@ -180,6 +304,10 @@ const buildPrompt = ({
 
   if (generalContext?.trim()) {
     userParts.push(`=== Your Background ===\n${generalContext.trim()}`);
+  }
+
+  if (learnedMemory?.trim()) {
+    userParts.push(learnedMemory.trim());
   }
 
   if (Array.isArray(capturedContexts) && capturedContexts.length > 0) {
@@ -418,10 +546,236 @@ const requestGemini = async ({ apiKey, model, system, user }) => {
   }
 };
 
+// ── Memory extraction system prompt ──────────────────────────────────────────
+const MEMORY_SYSTEM_PROMPT =
+  "You are a personal memory assistant embedded in a writing tool. " +
+  "Analyze text the user just wrote and extract valuable personal facts worth " +
+  "remembering for future AI-assisted writing.\n\n" +
+  "Focus on:\n" +
+  "- WORK: job title, employer, skills, projects, achievements, career goals\n" +
+  "- SOCIAL: hobbies, interests, relationships, communities, personality, online style\n" +
+  "- ALWAYS: preferred writing tone, formatting rules, things to always/never include\n\n" +
+  "Return ONLY valid JSON, nothing else:\n" +
+  '{"memories":[{"section":"work"|"social"|"always","insight":"concise fact under 100 chars","confidence":0.0}]}\n\n' +
+  "Rules:\n" +
+  "- confidence ≥ 0.80 → auto-save silently\n" +
+  "- confidence 0.60–0.79 → ask the user to confirm\n" +
+  "- confidence < 0.60 → omit entirely\n" +
+  "- Do NOT duplicate facts already in existing memory\n" +
+  "- Maximum 2 memories per call\n" +
+  'Return {"memories":[]} if nothing new or significant is found.';
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "openSettings") {
     chrome.runtime.openOptionsPage();
     return false;
+  }
+
+  // ── Append a memory insight — now writes to structured memories array ────────
+  if (message?.type === "appendToMemory") {
+    (async () => {
+      try {
+        const { section, insight } = message;
+        const category = section === "always" ? "persona" : section; // map old "always" → "persona"
+        const result = await addMemory({
+          category,
+          type: "preference",
+          content: insight.trim().slice(0, 150),
+          tags: [],
+          entities: [],
+          importance: 2,
+          confidence: 0.85,
+          source: "auto",
+          private: false,
+          related: [],
+        });
+        sendResponse({ ok: true, ...result });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  // ── Memory CRUD handlers ────────────────────────────────────────────────────
+  if (message?.type === "getMemories") {
+    (async () => {
+      try { sendResponse({ ok: true, memories: await getMemories() }); }
+      catch (err) { sendResponse({ ok: false, error: err.message }); }
+    })();
+    return true;
+  }
+
+  if (message?.type === "saveMemory") {
+    (async () => {
+      try {
+        const result = await addMemory(message.memory);
+        sendResponse({ ok: true, ...result });
+      } catch (err) { sendResponse({ ok: false, error: err.message }); }
+    })();
+    return true;
+  }
+
+  if (message?.type === "updateMemory") {
+    (async () => {
+      try {
+        const memories = await getMemories();
+        const idx = memories.findIndex((m) => m.id === message.id);
+        if (idx === -1) { sendResponse({ ok: false, error: "Not found" }); return; }
+        memories[idx] = { ...memories[idx], ...message.changes, updatedAt: Date.now() };
+        await saveMemories(memories);
+        sendResponse({ ok: true });
+      } catch (err) { sendResponse({ ok: false, error: err.message }); }
+    })();
+    return true;
+  }
+
+  if (message?.type === "deleteMemory") {
+    (async () => {
+      try {
+        const memories = await getMemories();
+        await saveMemories(memories.filter((m) => m.id !== message.id));
+        sendResponse({ ok: true });
+      } catch (err) { sendResponse({ ok: false, error: err.message }); }
+    })();
+    return true;
+  }
+
+  // ── Entity linking: check if person/company matches stored job targets ────
+  if (message?.type === "checkEntityLinks") {
+    (async () => {
+      try {
+        const { entities = [] } = message;
+        const memories = await getMemories();
+        const links = [];
+
+        for (const entity of entities) {
+          if (entity.type === "person" && entity.employer) {
+            // Find if employer is a job target
+            const match = memories.find(
+              (m) =>
+                m.category === "work" &&
+                m.entities?.some(
+                  (e) =>
+                    entity.employer.toLowerCase().includes(e.toLowerCase()) ||
+                    e.toLowerCase().includes(entity.employer.toLowerCase())
+                )
+            );
+            if (match) {
+              links.push({
+                type: "contact_at_target",
+                content: `${entity.name} works at ${entity.employer} — noted in your work memory`,
+                relatedId: match.id,
+              });
+            }
+          }
+
+          if (entity.type === "job_posting" && entity.company) {
+            // Auto-save job targets from job boards
+            const result = await addMemory({
+              category: "work",
+              type: "job_target",
+              content: entity.role
+                ? `Targeting ${entity.role} at ${entity.company}`
+                : `Exploring roles at ${entity.company}`,
+              tags: [entity.company.toLowerCase().replace(/\s+/g, "_"), "job_target"],
+              entities: [entity.company],
+              importance: 3,
+              confidence: 0.92,
+              source: entity.source || "job_board",
+              private: false,
+              related: [],
+            });
+            if (result.action === "added") {
+              links.push({ type: "job_saved", content: `Saved: ${entity.company}`, action: "added" });
+            }
+          }
+        }
+
+        sendResponse({ ok: true, links });
+      } catch (err) { sendResponse({ ok: false, error: err.message, links: [] }); }
+    })();
+    return true;
+  }
+
+  // ── Extract memorable facts from generated text ─────────────────────────────
+  if (message?.type === "extractMemory") {
+    (async () => {
+      try {
+        const { generatedText, platformKey, pageContext, existingContext } = message;
+
+        // Skip only if text is too short — platform gate removed (any site can yield memory)
+        if (!generatedText || generatedText.trim().length < 100) {
+          sendResponse({ ok: true, memories: [] }); return;
+        }
+
+        const { provider, model, openaiKey, anthropicKey, geminiKey } =
+          await chrome.storage.local.get(["provider", "model", "openaiKey", "anthropicKey", "geminiKey"]);
+
+        const activeProvider = provider || "openai";
+        const apiKey = activeProvider === "anthropic" ? anthropicKey
+                     : activeProvider === "gemini"    ? geminiKey
+                     : openaiKey;
+        if (!apiKey) { sendResponse({ ok: true, memories: [] }); return; }
+
+        const activeModel = model ||
+          (activeProvider === "anthropic" ? "claude-sonnet-4-5"
+         : activeProvider === "gemini"    ? "gemini-3-pro-preview"
+         : "gpt-5-nano");
+
+        const PRECISE_MEMORY_PROMPT =
+          "You are a high-precision personal memory assistant embedded in a writing tool. Extract ONLY facts that belong to ONE of these two buckets:\n" +
+          "  A) About the USER themselves (their job, skills, goals, preferences, relationships, location, personality).\n" +
+          "  B) About a SPECIFIC person or company DIRECTLY relevant to the user right now (e.g. a hiring manager they are writing to, a company they are targeting, a contact they know).\n\n" +
+          "STRICT rules — violating any means return nothing:\n" +
+          "- confidence ≥ 0.85 ONLY — discard anything ambiguous or generic\n" +
+          "- Must contain a specific proper noun, number, or named skill (not vague)\n" +
+          "- Must be stable for weeks/months (not ephemeral news or filler)\n" +
+          "- Must be personally actionable: would change what an AI writer produces for this user\n" +
+          "- Do NOT save generic facts, public knowledge, or content unrelated to the user\n" +
+          "- Maximum 2 entries per call\n" +
+          "- category: 'work' | 'social' | 'personal' | 'persona'\n" +
+          "- type: one of current_role, skill, job_target, project, relationship, interest, location, preference, writing_style, tone\n\n" +
+          'Return ONLY JSON: {"memories":[{"category":"...","type":"...","content":"under 120 chars","tags":["tag1"],"entities":["ProperNoun"],"importance":1-3,"confidence":0.0}]}\n' +
+          'Return {"memories":[]} if nothing qualifies.';
+
+        const userPrompt = [
+          `Platform: ${platformKey}`,
+          pageContext ? `Page: ${pageContext.slice(0, 250)}` : "",
+          existingContext ? `Already stored (skip duplicates):\n${existingContext.slice(0, 350)}` : "",
+          `\nText written:\n${generatedText.trim().slice(0, 800)}`,
+        ].filter(Boolean).join("\n");
+
+        let rawResponse = "";
+        try {
+          if (activeProvider === "anthropic") {
+            rawResponse = await requestAnthropic({ apiKey, model: activeModel, system: PRECISE_MEMORY_PROMPT, user: userPrompt });
+          } else if (activeProvider === "gemini") {
+            rawResponse = await requestGemini({ apiKey, model: activeModel, system: PRECISE_MEMORY_PROMPT, user: userPrompt });
+          } else {
+            rawResponse = await requestOpenAI({ apiKey, model: activeModel, system: PRECISE_MEMORY_PROMPT, user: userPrompt });
+          }
+        } catch (_) {
+          sendResponse({ ok: true, memories: [] }); return;
+        }
+
+        const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) { sendResponse({ ok: true, memories: [] }); return; }
+
+        try {
+          const parsed = JSON.parse(jsonMatch[0]);
+          const validMemories = (parsed.memories || []).filter(
+            (m) => m.category && m.content && typeof m.confidence === "number" && m.confidence >= 0.85
+          );
+          sendResponse({ ok: true, memories: validMemories });
+        } catch (_) {
+          sendResponse({ ok: true, memories: [] });
+        }
+      } catch (err) {
+        sendResponse({ ok: true, memories: [] });
+      }
+    })();
+    return true;
   }
 
   if (message?.type !== "generateAnswer") {
@@ -490,9 +844,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         alwaysContext: alwaysContextText || "",
       });
 
+      // Retrieve relevant learned memories for this platform + context
+      const relevantMems = await getRelevantMemories(platformKey, message.pageContext || "");
+      const learnedMemory = formatMemoriesForPrompt(relevantMems);
+
       const promptPayload = buildPrompt({
         systemPrompt,
         generalContext: structuredContext,
+        learnedMemory,
         pageContext: message.pageContext,
         question: message.question,
         fieldValue: message.fieldValue,

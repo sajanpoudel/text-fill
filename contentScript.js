@@ -736,6 +736,23 @@ const capturePageContext = async (button = null) => {
     if (button) resetButton(button);
     updateContextIndicators();
     showToast(`Context saved: ${(title || hostname).slice(0, 40)}`);
+
+    // Entity extraction + relational linking (fire-and-forget)
+    try {
+      const entities = extractPageEntities();
+      if (entities.length > 0) {
+        const result = await chrome.runtime.sendMessage({ type: "checkEntityLinks", entities });
+        if (result?.links?.length > 0) {
+          for (const link of result.links) {
+            if (link.type === "contact_at_target") {
+              showToast(`🔗 ${link.content}`);
+            } else if (link.type === "job_saved" && link.action === "added") {
+              showToast(`💼 Job target saved: ${link.content.replace("Saved: ", "")}`);
+            }
+          }
+        }
+      }
+    } catch (_) { /* entity linking is best-effort */ }
   } catch (err) {
     if (button) resetButton(button);
     showToast("Failed to capture context", true);
@@ -962,6 +979,54 @@ const toggleContextPanel = () => {
   } else {
     showContextPanel();
   }
+};
+
+// ─── On-Device Entity Extraction ──────────────────────────────────────────────
+const extractPageEntities = () => {
+  const hostname = window.location.hostname.toLowerCase();
+  const pathname = window.location.pathname.toLowerCase();
+  const entities = [];
+
+  // LinkedIn profile
+  if (hostname.includes("linkedin.com") && pathname.includes("/in/")) {
+    const name =
+      document.querySelector("h1.text-heading-xlarge")?.innerText?.trim() ||
+      document.querySelector("h1[class*='name']")?.innerText?.trim();
+    const titleEl = document.querySelector(".text-body-medium.break-words") ||
+      document.querySelector("[class*='top-card-layout__headline']");
+    const rawTitle = titleEl?.innerText?.trim() || "";
+    const atMatch = rawTitle.match(/(?:at|@)\s+([A-Z][A-Za-z0-9 &,.]+?)(?:\s*[\|\·•]|$)/);
+    const pipeMatch = rawTitle.match(/^([A-Z][A-Za-z0-9 &,.]+?)\s*[\|·•]/);
+    const employer = atMatch?.[1]?.trim() || pipeMatch?.[1]?.trim() ||
+      document.querySelector("[class*='top-card__employer']")?.innerText?.trim();
+    if (name) entities.push({ type: "person", name, employer, title: rawTitle, source: "linkedin_profile" });
+  }
+
+  // LinkedIn job posting
+  if (hostname.includes("linkedin.com") && (pathname.includes("/jobs/") || pathname.includes("/job/"))) {
+    const company =
+      document.querySelector(".job-details-jobs-unified-top-card__company-name a")?.innerText?.trim() ||
+      document.querySelector("[class*='top-card__employer']")?.innerText?.trim();
+    const role =
+      document.querySelector("h1.job-details-jobs-unified-top-card__job-title")?.innerText?.trim() ||
+      document.querySelector("h1[class*='job-title']")?.innerText?.trim();
+    if (company) entities.push({ type: "job_posting", company, role, source: "linkedin_job" });
+  }
+
+  // ATS job boards (Greenhouse, Ashby, Lever, Workday)
+  if (["greenhouse.io", "ashbyhq.com", "lever.co", "workday.com", "myworkdayjobs.com"]
+      .some((b) => hostname.includes(b))) {
+    const company =
+      document.querySelector("[class*='company-name']")?.innerText?.trim() ||
+      document.querySelector("meta[property='og:site_name']")?.content?.trim();
+    const role =
+      document.querySelector("h1[class*='job-title']")?.innerText?.trim() ||
+      document.querySelector("h1[class*='posting-headline']")?.innerText?.trim() ||
+      document.querySelector("h1")?.innerText?.trim();
+    if (company || role) entities.push({ type: "job_posting", company: company || "", role: role || "", source: hostname });
+  }
+
+  return entities;
 };
 
 const createFloatingFAB = () => {
@@ -1665,6 +1730,9 @@ const generateAndFill = async (field, button, options = {}) => {
 
     insertText(field, response.answer);
     setButtonSuccess(button);
+
+    // Async memory extraction — fire-and-forget, non-blocking
+    setTimeout(() => triggerMemoryExtraction(response.answer, platformKey, pageContext), 3000);
   } catch (err) {
     showToast(err.message || "Something went wrong", true);
     resetButton(button);
@@ -1691,6 +1759,98 @@ const showToast = (message, isError = false) => {
       // Ignore
     }
   }, 4000);
+};
+
+// ─── Memory System ────────────────────────────────────────────────────────────
+
+// Rate limit: one extraction per 5 minutes per tab session
+let _lastMemoryExtraction = 0;
+
+// Action toast: persists until user acts (Save/Skip) or 12 s timeout
+const showActionToast = (insight, section) => {
+  // Don't stack action toasts — dismiss any existing one first
+  document.querySelector(".tfa-toast-action")?.remove();
+
+  const sectionLabel = { work: "Work", social: "Social", always: "General" }[section] || section;
+
+  const toast = document.createElement("div");
+  toast.className = "tfa-toast tfa-toast-action";
+
+  const textEl = document.createElement("span");
+  textEl.className = "tfa-toast-text";
+  textEl.textContent = `💡 Save to ${sectionLabel}: "${insight.slice(0, 55)}"`;
+
+  const saveBtn = document.createElement("button");
+  saveBtn.className = "tfa-toast-btn tfa-toast-btn-save";
+  saveBtn.textContent = "Save";
+  saveBtn.addEventListener("click", async () => {
+    toast.remove();
+    await chrome.runtime.sendMessage({ type: "appendToMemory", section, insight });
+    showToast(`💡 Saved to ${sectionLabel} memory`);
+  });
+
+  const skipBtn = document.createElement("button");
+  skipBtn.className = "tfa-toast-btn tfa-toast-btn-skip";
+  skipBtn.textContent = "Skip";
+  skipBtn.addEventListener("click", () => toast.remove());
+
+  toast.appendChild(textEl);
+  toast.appendChild(saveBtn);
+  toast.appendChild(skipBtn);
+  document.body.appendChild(toast);
+
+  setTimeout(() => { if (toast.parentElement) toast.remove(); }, 12000);
+};
+
+// Platforms worth triggering memory extraction on (mirrors background.js HIGH_SIGNAL_PLATFORMS)
+const HIGH_SIGNAL_HOSTS = new Set([
+  "linkedin.com", "mail.google.com", "slack.com",
+  "greenhouse.io", "ashbyhq.com", "lever.co", "workday.com",
+  "workable.com", "myworkdayjobs.com",
+]);
+const isHighSignalHost = () => {
+  const h = window.location.hostname.toLowerCase();
+  return [...HIGH_SIGNAL_HOSTS].some((p) => h.includes(p));
+};
+
+const triggerMemoryExtraction = async (generatedText, platformKey, pageContext) => {
+  const now = Date.now();
+  // 10-minute cooldown — any page qualifies; confidence ≥ 0.85 filter enforced by AI
+  if (now - _lastMemoryExtraction < 10 * 60 * 1000) return;
+  if (!generatedText || generatedText.trim().length < 100) return;
+  _lastMemoryExtraction = now;
+
+  try {
+    // Pass existing context so AI can avoid duplicating what's already stored
+    const stored = await chrome.storage.local.get(["workContextText", "socialContextText", "alwaysContextText"]);
+    const existingContext = [stored.workContextText, stored.socialContextText, stored.alwaysContextText]
+      .filter(Boolean).join("\n").slice(0, 400);
+
+    const result = await chrome.runtime.sendMessage({
+      type: "extractMemory",
+      generatedText,
+      platformKey,
+      pageContext: (pageContext || "").slice(0, 300),
+      existingContext,
+    });
+
+    if (!result?.ok || !result.memories?.length) return;
+
+    for (const memory of result.memories) {
+      if (memory.confidence >= 0.8) {
+        // Auto-save, brief toast
+        await chrome.runtime.sendMessage({ type: "appendToMemory", section: memory.section, insight: memory.insight });
+        const label = { work: "Work", social: "Social", always: "General" }[memory.section] || memory.section;
+        showToast(`💡 ${label} memory updated`);
+      } else {
+        // Ask user — one at a time (loop naturally spaces them if there are two)
+        showActionToast(memory.insight, memory.section);
+        await new Promise((r) => setTimeout(r, 200)); // tiny gap between toasts
+      }
+    }
+  } catch (_) {
+    // Memory extraction is best-effort — silently ignore errors
+  }
 };
 
 // ─── Field Scanning & Button Management ───────────────────────────────────────
