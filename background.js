@@ -4,17 +4,6 @@ const GEMINI_ENDPOINT =
   "https://generativelanguage.googleapis.com/v1beta/models";
 
 // ── Memory Storage Layer ──────────────────────────────────────────────────────
-// Platforms worth extracting memory from (high-signal only)
-const HIGH_SIGNAL_PLATFORMS = new Set([
-  "linkedin.com", "mail.google.com", "slack.com",
-  "greenhouse.io", "ashbyhq.com", "lever.co", "workday.com",
-  "workable.com", "myworkdayjobs.com", "jobs.ashbyhq.com",
-  "boards.greenhouse.io", "jobs.lever.co",
-]);
-
-const isHighSignalPlatform = (platformKey) =>
-  [...HIGH_SIGNAL_PLATFORMS].some((p) => platformKey?.includes(p.split(".")[0]));
-
 // Memory types by category
 const MEMORY_CATEGORY_LABELS = {
   work: "Work",
@@ -32,18 +21,22 @@ const saveMemories = async (memories) => {
   await chrome.storage.local.set({ memories });
 };
 
-// Deduplicate check: same category + 2+ shared entity/keyword tokens
+// Deduplicate check: same category + overlapping content
 const isDuplicateMemory = (existing, candidate) => {
   if (existing.category !== candidate.category) return false;
-  const existingEntities = (existing.entities || []).map((e) => e.toLowerCase());
-  const candidateEntities = (candidate.entities || []).map((e) => e.toLowerCase());
-  const entityOverlap = candidateEntities.some((e) => existingEntities.includes(e));
-  if (!entityOverlap) return false;
 
   const existingWords = existing.content.toLowerCase().split(/\W+/).filter((w) => w.length > 4);
   const candidateWords = candidate.content.toLowerCase().split(/\W+/).filter((w) => w.length > 4);
   const wordOverlap = candidateWords.filter((w) => existingWords.includes(w)).length;
-  return wordOverlap >= 2;
+
+  // Persona has no proper-noun entities — deduplicate purely on word overlap (3+ shared words)
+  if (candidate.category === "persona") return wordOverlap >= 3;
+
+  // For all other categories: require entity overlap AND 2+ shared content words
+  const existingEntities = (existing.entities || []).map((e) => e.toLowerCase());
+  const candidateEntities = (candidate.entities || []).map((e) => e.toLowerCase());
+  const entityOverlap = candidateEntities.some((e) => existingEntities.includes(e));
+  return entityOverlap && wordOverlap >= 2;
 };
 
 const addMemory = async (memoryData) => {
@@ -109,21 +102,35 @@ const getRelevantMemories = async (platformKey, pageContextText = "") => {
   const memories = await getMemories();
   const contextWords = pageContextText.toLowerCase().split(/\W+/).filter((w) => w.length > 3);
 
-  return memories
-    .filter((m) => !m.private)
+  // Persona = user's writing DNA — always injected, never scored out
+  const persona = memories.filter((m) => !m.private && m.category === "persona");
+
+  // All other memories scored by platform + keyword relevance, top 6
+  const contextual = memories
+    .filter((m) => !m.private && m.category !== "persona")
     .map((m) => ({ m, score: scoreMemory(m, platformKey, contextWords) }))
     .sort((a, b) => b.score - a.score)
-    .slice(0, 8)
+    .slice(0, 6)
     .map((s) => s.m);
+
+  return { persona, contextual };
 };
 
-const formatMemoriesForPrompt = (memories) => {
-  if (!memories.length) return null;
-  const lines = memories.map((m) => {
+// Format the persona voice block — goes into the system prompt
+const formatPersonaVoice = (persona) => {
+  if (!persona.length) return null;
+  const lines = persona.map((m) => `- ${m.content}`);
+  return `The user's voice & style — internalize completely, do not mention:\n${lines.join("\n")}`;
+};
+
+// Format contextual facts — go into user parts
+const formatContextualMemories = (contextual) => {
+  if (!contextual.length) return null;
+  const lines = contextual.map((m) => {
     const cat = MEMORY_CATEGORY_LABELS[m.category] || m.category;
     return `[${cat}] ${m.content}`;
   });
-  return `=== Learned Memory (high-confidence personal facts) ===\n${lines.join("\n")}`;
+  return `=== Known Context ===\n${lines.join("\n")}`;
 };
 
 // Which context types to pull in for each platform.
@@ -270,6 +277,7 @@ const normalizeAnswer = (text) => {
 // Single unified prompt builder — adapts to any platform/action
 const buildPrompt = ({
   systemPrompt,
+  personaVoice,
   generalContext,
   learnedMemory,
   pageContext,
@@ -285,7 +293,7 @@ const buildPrompt = ({
   const taskInstruction =
     ACTION_INSTRUCTIONS[action] || ACTION_INSTRUCTIONS.generate;
 
-  const system = systemPrompt?.trim()
+  const baseSystem = systemPrompt?.trim()
     ? systemPrompt.trim()
     : [
         "You are a precise, helpful writing assistant.",
@@ -299,6 +307,9 @@ const buildPrompt = ({
         "Use active voice. Be confident, specific, and genuine.",
         "When personal context is provided, use it naturally without explicitly referencing it ('based on my background' → just use the background).",
       ].join(" ");
+
+  // Persona voice is always appended — it is the user's writing DNA and must shape every response
+  const system = personaVoice ? `${baseSystem}\n\n${personaVoice}` : baseSystem;
 
   const userParts = [];
 
@@ -546,48 +557,32 @@ const requestGemini = async ({ apiKey, model, system, user }) => {
   }
 };
 
-// ── Memory extraction system prompt ──────────────────────────────────────────
-const MEMORY_SYSTEM_PROMPT =
-  "You are a personal memory assistant embedded in a writing tool. " +
-  "Analyze text the user just wrote and extract valuable personal facts worth " +
-  "remembering for future AI-assisted writing.\n\n" +
-  "Focus on:\n" +
-  "- WORK: job title, employer, skills, projects, achievements, career goals\n" +
-  "- SOCIAL: hobbies, interests, relationships, communities, personality, online style\n" +
-  "- ALWAYS: preferred writing tone, formatting rules, things to always/never include\n\n" +
-  "Return ONLY valid JSON, nothing else:\n" +
-  '{"memories":[{"section":"work"|"social"|"always","insight":"concise fact under 100 chars","confidence":0.0}]}\n\n' +
-  "Rules:\n" +
-  "- confidence ≥ 0.80 → auto-save silently\n" +
-  "- confidence 0.60–0.79 → ask the user to confirm\n" +
-  "- confidence < 0.60 → omit entirely\n" +
-  "- Do NOT duplicate facts already in existing memory\n" +
-  "- Maximum 2 memories per call\n" +
-  'Return {"memories":[]} if nothing new or significant is found.';
-
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "openSettings") {
     chrome.runtime.openOptionsPage();
     return false;
   }
 
-  // ── Append a memory insight — now writes to structured memories array ────────
+  // ── Append a confirmed memory insight from user action toast ────────────────
   if (message?.type === "appendToMemory") {
     (async () => {
       try {
-        const { section, insight } = message;
-        const category = section === "always" ? "persona" : section; // map old "always" → "persona"
+        const { category: rawCat, content } = message;
+        if (!content?.trim()) { sendResponse({ ok: false, error: "Empty content" }); return; }
+        const validCats = new Set(["work", "social", "personal", "persona"]);
+        const category = validCats.has(rawCat) ? rawCat : "persona";
+
         const result = await addMemory({
           category,
-          type: "preference",
-          content: insight.trim().slice(0, 150),
-          tags: [],
-          entities: [],
+          type:       "preference",
+          content:    content.trim().slice(0, 150),
+          tags:       [],
+          entities:   [],
           importance: 2,
           confidence: 0.85,
-          source: "auto",
-          private: false,
-          related: [],
+          source:     "user_confirm",
+          private:    false,
+          related:    [],
         });
         sendResponse({ ok: true, ...result });
       } catch (err) {
@@ -709,8 +704,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           sendResponse({ ok: true, memories: [] }); return;
         }
 
-        const { provider, model, openaiKey, anthropicKey, geminiKey } =
-          await chrome.storage.local.get(["provider", "model", "openaiKey", "anthropicKey", "geminiKey"]);
+        const {
+          provider, openaiKey, anthropicKey, geminiKey,
+          openaiMemoryModel, anthropicMemoryModel, geminiMemoryModel,
+        } = await chrome.storage.local.get([
+          "provider", "openaiKey", "anthropicKey", "geminiKey",
+          "openaiMemoryModel", "anthropicMemoryModel", "geminiMemoryModel",
+        ]);
 
         const activeProvider = provider || "openai";
         const apiKey = activeProvider === "anthropic" ? anthropicKey
@@ -718,24 +718,28 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
                      : openaiKey;
         if (!apiKey) { sendResponse({ ok: true, memories: [] }); return; }
 
-        const activeModel = model ||
-          (activeProvider === "anthropic" ? "claude-sonnet-4-5"
-         : activeProvider === "gemini"    ? "gemini-3-pro-preview"
-         : "gpt-5-nano");
+        // Use the dedicated memory model (cheaper/faster) — falls back to sensible defaults
+        const activeModel =
+          activeProvider === "anthropic" ? (anthropicMemoryModel || "claude-haiku-3-5")
+        : activeProvider === "gemini"    ? (geminiMemoryModel    || "gemini-2.5-flash-lite")
+        :                                   (openaiMemoryModel   || "gpt-5-nano");
 
         const PRECISE_MEMORY_PROMPT =
           "You are a high-precision personal memory assistant embedded in a writing tool. Extract ONLY facts that belong to ONE of these two buckets:\n" +
           "  A) About the USER themselves (their job, skills, goals, preferences, relationships, location, personality).\n" +
           "  B) About a SPECIFIC person or company DIRECTLY relevant to the user right now (e.g. a hiring manager they are writing to, a company they are targeting, a contact they know).\n\n" +
+          "CATEGORY DEFINITIONS:\n" +
+          "- 'work'     — Professional facts: job title, employer, skills, projects, career goals, work history, job targets, colleagues.\n" +
+          "- 'social'   — Social life facts: friends, hobbies, interests, communities, how they spend time, platforms they use.\n" +
+          "- 'personal' — Personal life facts: name, location, relationships, values, significant life events, personal goals.\n" +
+          "- 'persona'  — The user's WRITING IDENTITY: their unique voice, tone, language patterns, sentence rhythm, formatting habits, words or phrases they always/never use, communication style across platforms, what makes their writing distinctly theirs. EXTREMELY RARE to extract — only save if the pattern is unmistakable and you are 95%+ confident it defines this user across ALL their writing, not just this one message. A single generation almost never justifies a persona memory. When in doubt, return nothing for this category.\n\n" +
           "STRICT rules — violating any means return nothing:\n" +
           "- confidence ≥ 0.85 ONLY — discard anything ambiguous or generic\n" +
-          "- Must contain a specific proper noun, number, or named skill (not vague)\n" +
-          "- Must be stable for weeks/months (not ephemeral news or filler)\n" +
+          "- Must be stable for weeks/months (not ephemeral filler)\n" +
           "- Must be personally actionable: would change what an AI writer produces for this user\n" +
           "- Do NOT save generic facts, public knowledge, or content unrelated to the user\n" +
           "- Maximum 2 entries per call\n" +
-          "- category: 'work' | 'social' | 'personal' | 'persona'\n" +
-          "- type: one of current_role, skill, job_target, project, relationship, interest, location, preference, writing_style, tone\n\n" +
+          "- type: one of current_role, skill, job_target, project, relationship, interest, location, preference, writing_style, tone, voice_pattern\n\n" +
           'Return ONLY JSON: {"memories":[{"category":"...","type":"...","content":"under 120 chars","tags":["tag1"],"entities":["ProperNoun"],"importance":1-3,"confidence":0.0}]}\n' +
           'Return {"memories":[]} if nothing qualifies.';
 
@@ -788,12 +792,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         provider,
         model,
         systemPrompt,
-        // New structured context keys
         workContextText,
         socialContextText,
         alwaysContextText,
-        // Legacy key — kept for backward compatibility
-        generalContextText,
         openaiKey,
         anthropicKey,
         geminiKey,
@@ -804,7 +805,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         "workContextText",
         "socialContextText",
         "alwaysContextText",
-        "generalContextText",
         "openaiKey",
         "anthropicKey",
         "geminiKey",
@@ -836,20 +836,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       const platformKey = message.platformKey || "general";
 
-      // Build a context block containing only the sections relevant to this platform.
-      // Falls back to legacy generalContextText as the work context for existing users.
       const structuredContext = buildContextBlock(platformKey, {
-        workContext: workContextText || generalContextText || "",
+        workContext:   workContextText   || "",
         socialContext: socialContextText || "",
         alwaysContext: alwaysContextText || "",
       });
 
       // Retrieve relevant learned memories for this platform + context
-      const relevantMems = await getRelevantMemories(platformKey, message.pageContext || "");
-      const learnedMemory = formatMemoriesForPrompt(relevantMems);
+      const { persona, contextual } = await getRelevantMemories(platformKey, message.pageContext || "");
+      const personaVoice = formatPersonaVoice(persona);
+      const learnedMemory = formatContextualMemories(contextual);
 
       const promptPayload = buildPrompt({
         systemPrompt,
+        personaVoice,
         generalContext: structuredContext,
         learnedMemory,
         pageContext: message.pageContext,

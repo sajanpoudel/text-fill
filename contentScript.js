@@ -1771,7 +1771,7 @@ const showActionToast = (insight, section) => {
   // Don't stack action toasts — dismiss any existing one first
   document.querySelector(".tfa-toast-action")?.remove();
 
-  const sectionLabel = { work: "Work", social: "Social", always: "General" }[section] || section;
+  const sectionLabel = { work: "Work", social: "Social", personal: "Personal", persona: "Persona" }[section] || section;
 
   const toast = document.createElement("div");
   toast.className = "tfa-toast tfa-toast-action";
@@ -1785,7 +1785,7 @@ const showActionToast = (insight, section) => {
   saveBtn.textContent = "Save";
   saveBtn.addEventListener("click", async () => {
     toast.remove();
-    await chrome.runtime.sendMessage({ type: "appendToMemory", section, insight });
+    await chrome.runtime.sendMessage({ type: "appendToMemory", category: section, content: insight });
     showToast(`💡 Saved to ${sectionLabel} memory`);
   });
 
@@ -1836,16 +1836,36 @@ const triggerMemoryExtraction = async (generatedText, platformKey, pageContext) 
 
     if (!result?.ok || !result.memories?.length) return;
 
+    const CAT_LABELS = { work: "Work", social: "Social", personal: "Personal", persona: "Persona" };
+
     for (const memory of result.memories) {
-      if (memory.confidence >= 0.8) {
-        // Auto-save, brief toast
-        await chrome.runtime.sendMessage({ type: "appendToMemory", section: memory.section, insight: memory.insight });
-        const label = { work: "Work", social: "Social", always: "General" }[memory.section] || memory.section;
-        showToast(`💡 ${label} memory updated`);
+      const { category, content } = memory;
+      if (!category || !content) continue;
+
+      // Persona is the user's writing soul — require very high confidence before auto-saving.
+      // A single generation rarely proves a consistent style pattern; ask the user to confirm instead.
+      const autoSaveThreshold = category === "persona" ? 0.95 : 0.85;
+
+      if (memory.confidence >= autoSaveThreshold) {
+        // Auto-save the full structured memory atom
+        await chrome.runtime.sendMessage({ type: "saveMemory", memory: {
+          category,
+          type:       memory.type       || "preference",
+          content:    content.trim().slice(0, 150),
+          tags:       memory.tags       || [],
+          entities:   memory.entities   || [],
+          importance: memory.importance || 2,
+          confidence: memory.confidence,
+          source:     platformKey || "auto",
+          private:    false,
+          related:    [],
+        }});
+        const label = CAT_LABELS[category] || category;
+        showToast(`💡 ${label} memory saved`);
       } else {
-        // Ask user — one at a time (loop naturally spaces them if there are two)
-        showActionToast(memory.insight, memory.section);
-        await new Promise((r) => setTimeout(r, 200)); // tiny gap between toasts
+        // Ask user to confirm — one at a time
+        showActionToast(content, category);
+        await new Promise((r) => setTimeout(r, 200));
       }
     }
   } catch (_) {
@@ -2082,31 +2102,13 @@ const initializeButtons = () => {
 const initializeExtension = async () => {
   setupUrlChangeDetection();
 
-  // Load context library from storage (with migration from old single-context format)
+  // Load context library from storage
   try {
-    const stored = await chrome.storage.local.get(["capturedContexts", "capturedContext"]);
-
+    const stored = await chrome.storage.local.get("capturedContexts");
     if (Array.isArray(stored.capturedContexts)) {
       state.capturedContexts = stored.capturedContexts;
-    } else if (stored.capturedContext && stored.capturedContext.text) {
-      // Migrate old single-context entry to array
-      const old = stored.capturedContext;
-      const migrated = {
-        id: `ctx_${Date.now()}`,
-        title: old.title || "",
-        url: old.url || "",
-        hostname: (() => { try { return new URL(old.url).hostname; } catch (_) { return ""; } })(),
-        text: old.text,
-        time: old.time || Date.now(),
-        active: true,
-      };
-      state.capturedContexts = [migrated];
-      chrome.storage.local.set({ capturedContexts: state.capturedContexts });
-      chrome.storage.local.remove("capturedContext");
     }
-  } catch (e) {
-    // Ignore storage errors
-  }
+  } catch (_) { /* ignore */ }
 
   initializeButtons();
   createFloatingFAB();

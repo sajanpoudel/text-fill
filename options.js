@@ -11,6 +11,11 @@ const openaiModelSelect   = document.getElementById('openaiModel');
 const anthropicModelSelect= document.getElementById('anthropicModel');
 const geminiModelSelect   = document.getElementById('geminiModel');
 
+// Memory model selects (per provider)
+const openaiMemoryModelSelect    = document.getElementById('openaiMemoryModel');
+const anthropicMemoryModelSelect = document.getElementById('anthropicMemoryModel');
+const geminiMemoryModelSelect    = document.getElementById('geminiMemoryModel');
+
 // Context inputs — Career & Work
 const workFileInput   = document.getElementById('workFile');
 const workTextInput   = document.getElementById('workText');
@@ -181,12 +186,11 @@ const loadSettings = async () => {
   const data = await chrome.storage.local.get([
     'provider', 'model',
     'openaiKey', 'anthropicKey', 'geminiKey',
-    // New context keys
+    // Memory models (per provider)
+    'openaiMemoryModel', 'anthropicMemoryModel', 'geminiMemoryModel',
     'workContextText', 'workFileName',
     'socialContextText', 'socialFileName',
     'alwaysContextText',
-    // Legacy — migrate to work context
-    'generalContextText', 'generalFileName',
     'systemPrompt',
   ]);
 
@@ -204,21 +208,25 @@ const loadSettings = async () => {
   systemPromptInput.value    = data.systemPrompt || '';
   alwaysTextInput.value      = data.alwaysContextText || '';
 
-  // Populate work context — fall back to legacy generalContextText
-  workTextInput.value = data.workContextText || data.generalContextText || '';
-  const wfn = data.workFileName || data.generalFileName || '';
+  workTextInput.value = data.workContextText || '';
+  const wfn = data.workFileName || '';
   if (wfn) showFileInfo(workFileInfo, workUploadArea, workFileName, wfn);
 
   // Populate social context
   socialTextInput.value = data.socialContextText || '';
   if (data.socialFileName) showFileInfo(socialFileInfo, socialUploadArea, socialFileName, data.socialFileName);
 
-  // Model selection
+  // Main model selection
   if (data.model) {
     if (data.provider === 'openai')    openaiModelSelect.value    = data.model;
     if (data.provider === 'anthropic') anthropicModelSelect.value = data.model;
     if (data.provider === 'gemini')    geminiModelSelect.value    = data.model;
   }
+
+  // Memory model selection (defaults: gpt-5-nano, claude-haiku-3-5, gemini-2.5-flash-lite)
+  openaiMemoryModelSelect.value    = data.openaiMemoryModel    || 'gpt-5-nano';
+  anthropicMemoryModelSelect.value = data.anthropicMemoryModel || 'claude-haiku-3-5';
+  geminiMemoryModelSelect.value    = data.geminiMemoryModel    || 'gemini-2.5-flash-lite';
 };
 
 // ── Save settings ─────────────────────────────────────────────────────────────
@@ -249,13 +257,13 @@ saveButton.addEventListener('click', async () => {
     openaiKey,
     anthropicKey,
     geminiKey,
+    openaiMemoryModel:    openaiMemoryModelSelect.value,
+    anthropicMemoryModel: anthropicMemoryModelSelect.value,
+    geminiMemoryModel:    geminiMemoryModelSelect.value,
     workContextText,
     socialContextText,
     alwaysContextText,
     systemPrompt,
-    // Keep generalContextText in sync for backward-compat (background.js reads it as fallback)
-    generalContextText: workContextText,
-    mode: 'general',
   });
 
   showStatus('Settings saved.');

@@ -18,6 +18,31 @@ body {
   gap: 20px;
 }
 
+/* ── Memory bar ─────────────────────────────────────── */
+.memory-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.memory-bar-label {
+  font-size: 13px;
+  color: #888;
+}
+
+.btn-manage-memory {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111;
+  text-decoration: none;
+  padding: 6px 14px;
+  border: 1.5px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  transition: background 0.15s;
+}
+.btn-manage-memory:hover { background: #f4f4f5; }
+
 /* ── Header ─────────────────────────────────────────── */
 .app-header {
   display: flex;
@@ -152,6 +177,24 @@ body {
 
 /* ── Form fields ────────────────────────────────────── */
 .field { display: flex; flex-direction: column; gap: 6px; }
+
+.field-memory {
+  padding-top: 4px;
+  border-top: 1px solid #f0f0f0;
+  margin-top: 2px;
+}
+.field-memory label { color: #888; font-weight: 500; }
+.field-memory select {
+  background: #fafafa;
+  color: #555;
+  font-size: 13px;
+}
+.field-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: #bbb;
+  margin-left: 4px;
+}
 
 .field label {
   font-size: 12px;
