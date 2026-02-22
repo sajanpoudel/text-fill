@@ -353,3 +353,96 @@ body {
 }
 .mem-toast.show { opacity: 1; }
 .mem-toast.error { background: #dc2626; }
+
+/* ── Archived card ───────────────────────────────────── */
+.mem-card-archived { opacity: 0.65; border-left: 3px solid #d1d5db; }
+.cat-archived {
+  background: #f3f4f6;
+  color: #6b7280;
+  border: 1px solid #d1d5db;
+}
+.dot-archived { background: #9ca3af; }
+
+/* ── Forget score bar ────────────────────────────────── */
+.forget-bar {
+  height: 3px;
+  background: #f3f4f6;
+  border-radius: 2px;
+  overflow: hidden;
+  margin: 4px 0 2px;
+}
+.forget-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+
+/* ── Cluster view ────────────────────────────────────── */
+.mem-cluster-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  background: #fff;
+  border: 1.5px solid #e4e4e7;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #555;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.mem-cluster-btn:hover { background: #f4f4f5; border-color: #c4c4c7; }
+.mem-cluster-btn.active { background: #111; border-color: #111; color: #fff; }
+.mem-cluster-btn.active svg { stroke: #fff; }
+
+.cluster-category { display: flex; flex-direction: column; gap: 10px; }
+.cluster-cat-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9ca3af;
+  padding: 4px 0 2px;
+}
+
+.cluster-group {
+  background: #fff;
+  border: 1px solid #e4e4e7;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.cluster-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fafafa;
+}
+.cluster-group-header:hover { background: #f4f4f5; }
+.cluster-label { flex: 1; font-size: 13px; font-weight: 600; color: #333; }
+.cluster-count { font-size: 12px; color: #9ca3af; }
+.cluster-toggle { font-size: 11px; color: #bbb; }
+
+.cluster-group-body { display: flex; flex-direction: column; }
+.cluster-group-body .mem-card {
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  border-bottom: 1px solid #f0f0f0;
+}
+.cluster-group-body .mem-card:last-child { border-bottom: none; }
+.cluster-group-body.collapsed { display: none; }
+
+/* ── Toolbar layout (search + cluster button) ─────────── */
+.mem-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}

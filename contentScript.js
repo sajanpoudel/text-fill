@@ -1732,7 +1732,10 @@ const generateAndFill = async (field, button, options = {}) => {
     setButtonSuccess(button);
 
     // Async memory extraction — fire-and-forget, non-blocking
-    setTimeout(() => triggerMemoryExtraction(response.answer, platformKey, pageContext), 3000);
+    // Pass the user's own words (instruction + existing field content) alongside the AI answer.
+    // The user's raw input is the primary signal for persona — the AI output was shaped by the extension.
+    const userInput = [instruction, fieldValue].filter((s) => s?.trim()).join("\n").trim();
+    setTimeout(() => triggerMemoryExtraction(response.answer, platformKey, pageContext, userInput), 3000);
   } catch (err) {
     showToast(err.message || "Something went wrong", true);
     resetButton(button);
@@ -1802,18 +1805,7 @@ const showActionToast = (insight, section) => {
   setTimeout(() => { if (toast.parentElement) toast.remove(); }, 12000);
 };
 
-// Platforms worth triggering memory extraction on (mirrors background.js HIGH_SIGNAL_PLATFORMS)
-const HIGH_SIGNAL_HOSTS = new Set([
-  "linkedin.com", "mail.google.com", "slack.com",
-  "greenhouse.io", "ashbyhq.com", "lever.co", "workday.com",
-  "workable.com", "myworkdayjobs.com",
-]);
-const isHighSignalHost = () => {
-  const h = window.location.hostname.toLowerCase();
-  return [...HIGH_SIGNAL_HOSTS].some((p) => h.includes(p));
-};
-
-const triggerMemoryExtraction = async (generatedText, platformKey, pageContext) => {
+const triggerMemoryExtraction = async (generatedText, platformKey, pageContext, userInput = "") => {
   const now = Date.now();
   // 10-minute cooldown — any page qualifies; confidence ≥ 0.85 filter enforced by AI
   if (now - _lastMemoryExtraction < 10 * 60 * 1000) return;
@@ -1829,6 +1821,7 @@ const triggerMemoryExtraction = async (generatedText, platformKey, pageContext) 
     const result = await chrome.runtime.sendMessage({
       type: "extractMemory",
       generatedText,
+      userInput: userInput.slice(0, 300), // user's own words — primary signal for persona
       platformKey,
       pageContext: (pageContext || "").slice(0, 300),
       existingContext,

@@ -195,6 +195,20 @@ body {
   color: #bbb;
   margin-left: 4px;
 }
+.embed-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #fef9ec;
+  border: 1px solid #f5e4a0;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #7a6300;
+  line-height: 1.5;
+}
+.embed-hint svg { flex-shrink: 0; margin-top: 1px; color: #c9980a; }
 
 .field label {
   font-size: 12px;

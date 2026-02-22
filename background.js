@@ -3,6 +3,100 @@ const ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages";
 const GEMINI_ENDPOINT =
   "https://generativelanguage.googleapis.com/v1beta/models";
 
+// ── Embedding Infrastructure ───────────────────────────────────────────────────
+const EMBED_DIMS = 256;
+const SEMANTIC_DEDUP_THRESHOLD = 0.92;
+const ARCHIVE_THRESHOLD = 0.60;
+const DELETE_THRESHOLD  = 0.85;
+
+// Memory caps — each tier has its own limit.
+// Storage cost at 700 total: ~1.75MB embeddings + ~560KB metadata = ~2.3MB.
+// Chrome's chrome.storage.local limit is 10MB — we are well within it.
+const ACTIVE_CAP   = 500;  // active (injectable) memories
+const ARCHIVED_CAP = 200;  // archived (faded, kept for reference, not injected)
+
+const normalizeVector = (v) => {
+  const mag = Math.sqrt(v.reduce((s, x) => s + x * x, 0));
+  return mag === 0 ? v : v.map((x) => x / mag);
+};
+
+const dotProduct = (a, b) => {
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  return dot;
+};
+
+// Returns a 256-dim pre-normalized vector, or null on failure.
+// Anthropic has no embedding API — returns null (caller falls back to keyword matching).
+const generateEmbedding = async (text, provider, apiKey) => {
+  if (!apiKey || !text?.trim() || provider === "anthropic") return null;
+  try {
+    if (provider === "openai") {
+      const res = await fetch("https://api.openai.com/v1/embeddings", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: "text-embedding-3-small",
+          input: text.slice(0, 1000),
+          dimensions: EMBED_DIMS,
+          encoding_format: "float",
+        }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const vec = data?.data?.[0]?.embedding;
+      return vec ? normalizeVector(vec) : null;
+    }
+    if (provider === "gemini") {
+      const res = await fetch(
+        `${GEMINI_ENDPOINT}/text-embedding-004:embedContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "models/text-embedding-004",
+            content: { parts: [{ text: text.slice(0, 1000) }] },
+            taskType: "SEMANTIC_SIMILARITY",
+            outputDimensionality: EMBED_DIMS,
+          }),
+        }
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      const vec = data?.embedding?.values;
+      return vec ? normalizeVector(vec) : null;
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+};
+
+const getEmbeddingIndex = async () => {
+  const { memoryEmbeddings = {} } = await chrome.storage.local.get("memoryEmbeddings");
+  return memoryEmbeddings;
+};
+
+const setEmbeddingIndex = async (index) => {
+  await chrome.storage.local.set({ memoryEmbeddings: index });
+};
+
+// Find top-K semantically similar memories. Stored embeddings must be pre-normalized.
+const findSimilarMemories = (queryEmbedding, memories, embeddingIndex, topK = 6, threshold = 0) =>
+  memories
+    .map((m) => {
+      const emb = embeddingIndex[m.id];
+      if (!emb) return { m, score: 0 };
+      return { m, score: dotProduct(queryEmbedding, emb) };
+    })
+    .filter(({ score }) => score > threshold)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK)
+    .map(({ m, score }) => ({ ...m, _similarity: score }));
+
 // ── Memory Storage Layer ──────────────────────────────────────────────────────
 // Memory types by category
 const MEMORY_CATEGORY_LABELS = {
@@ -39,37 +133,127 @@ const isDuplicateMemory = (existing, candidate) => {
   return entityOverlap && wordOverlap >= 2;
 };
 
-const addMemory = async (memoryData) => {
-  const memories = await getMemories();
+// Forgetting score (0 = keep forever, 1 = delete immediately).
+// Stability grows with each mention — spaced-repetition-inspired (doubles every ~3 reinforcements).
+// Persona memories: always score 0 (never auto-archived or deleted).
+const computeForgetScore = (memory) => {
+  if (memory.category === "persona") return 0;
+  const now = Date.now();
+  const daysSinceUpdate = (now - (memory.updatedAt || memory.createdAt || now)) / 86400000;
+  const daysSinceAccess = (now - (memory.lastAccessedAt || memory.createdAt || now)) / 86400000;
 
-  // Deduplicate: reinforce existing instead of adding
+  // Stability: base 7 days, multiplied by 1.8 per mention (capped at 10 mentions)
+  const stability = 7 * Math.pow(1.8, Math.min(memory.mentions || 1, 10) - 1);
+  const updateRetention = Math.exp(-daysSinceUpdate / stability);
+  const accessRetention = Math.exp(-daysSinceAccess / (stability * 1.5));
+  const retention = updateRetention * 0.4 + accessRetention * 0.6;
+
+  const importanceShield = (memory.importance || 2) / 5;
+  const sessionPenalty   = Math.min((memory.sessionsSinceAccess || 0) / 20, 1.0);
+  const contradictionBoost = memory.contradictedBy ? 0.5 : 0;
+
+  const rawForget = (1 - retention) * (1 - importanceShield * 0.7) + sessionPenalty * 0.3;
+  return Math.min(1, rawForget + contradictionBoost);
+};
+
+// addMemory supports optional semantic dedup via embeddings.
+// provider + apiKey are optional — if absent (or Anthropic), falls back to keyword dedup only.
+const addMemory = async (memoryData, provider = null, apiKey = null) => {
+  const memories = await getMemories();
+  const embeddingIndex = await getEmbeddingIndex();
+
+  // Step 1: Generate embedding for candidate (silently skipped if unavailable)
+  let candidateEmbedding = null;
+  if (provider && apiKey && provider !== "anthropic") {
+    candidateEmbedding = await generateEmbedding(memoryData.content, provider, apiKey);
+  }
+
+  // Step 2: Semantic dedup — reinforce instead of adding near-duplicate
+  if (candidateEmbedding) {
+    const similar = findSimilarMemories(
+      candidateEmbedding, memories, embeddingIndex, 3, SEMANTIC_DEDUP_THRESHOLD
+    );
+    if (similar.length > 0) {
+      const match = similar[0];
+      const idx = memories.findIndex((m) => m.id === match.id);
+      if (idx >= 0) {
+        memories[idx].mentions   = (memories[idx].mentions || 1) + 1;
+        memories[idx].updatedAt  = Date.now();
+        await saveMemories(memories);
+        return { action: "reinforced", id: match.id };
+      }
+    }
+  }
+
+  // Step 3: Keyword dedup fallback (belt + suspenders)
   const existing = memories.find((m) => isDuplicateMemory(m, memoryData));
   if (existing) {
-    existing.mentions = (existing.mentions || 1) + 1;
+    existing.mentions  = (existing.mentions || 1) + 1;
     existing.updatedAt = Date.now();
     await saveMemories(memories);
     return { action: "reinforced", id: existing.id };
   }
 
+  // Step 4: New memory — add with full schema
   const newMemory = {
     id: `mem_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     mentions: 1,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    private: false,
-    related: [],
+    createdAt:          Date.now(),
+    updatedAt:          Date.now(),
+    lastAccessedAt:     Date.now(),
+    accessCount:        0,
+    sessionsSinceAccess: 0,
+    tier:               "active",
+    forgetScore:        0,
+    private:            false,
+    related:            [],
     ...memoryData,
   };
-
   memories.push(newMemory);
 
-  // Hard cap: 100 memories, drop lowest scoring when over limit
-  if (memories.length > 100) {
-    memories.sort((a, b) =>
-      (b.importance || 2) * Math.log(1 + (b.mentions || 1)) -
-      (a.importance || 2) * Math.log(1 + (a.mentions || 1))
-    );
-    memories.splice(90);
+  // Store embedding separately so the memories array stays lean
+  if (candidateEmbedding) {
+    embeddingIndex[newMemory.id] = candidateEmbedding;
+    await setEmbeddingIndex(embeddingIndex);
+  }
+
+  // ── Eviction when active cap is hit ─────────────────────────────────────────
+  // Sort ASCENDING by forgetScore so index 0 = most valuable (keep these).
+  // Evict from the tail: high-importance ones get archived (second chance),
+  // low-importance ones are hard-deleted to free space.
+  const activeMemories = memories.filter((m) => m.tier !== "archived");
+  if (activeMemories.length > ACTIVE_CAP) {
+    // Sort ascending: lowest forgetScore (most valuable) first
+    activeMemories.sort((a, b) => computeForgetScore(a) - computeForgetScore(b));
+    const keep    = activeMemories.slice(0, ACTIVE_CAP);  // keep up to cap
+    const toEvict = activeMemories.slice(ACTIVE_CAP);     // evict the rest
+
+    const newlyArchived = [];
+    toEvict.forEach((m) => {
+      if ((m.importance || 2) >= 3) {
+        // Worth keeping — demote to archived instead of deleting
+        newlyArchived.push({ ...m, tier: "archived" });
+      } else {
+        // Low value — hard delete + remove embedding
+        delete embeddingIndex[m.id];
+      }
+    });
+
+    // Merge archived + newlyArchived; trim if archived cap is also exceeded
+    let archived = memories.filter((m) => m.tier === "archived").concat(newlyArchived);
+    if (archived.length > ARCHIVED_CAP) {
+      archived.sort(
+        (a, b) =>
+          (b.importance || 2) * Math.log(1 + (b.mentions || 1)) -
+          (a.importance || 2) * Math.log(1 + (a.mentions || 1))
+      );
+      archived.slice(ARCHIVED_CAP).forEach((m) => delete embeddingIndex[m.id]);
+      archived = archived.slice(0, ARCHIVED_CAP);
+    }
+
+    memories.length = 0;
+    memories.push(...keep, ...archived);
+    await setEmbeddingIndex(embeddingIndex);
   }
 
   await saveMemories(memories);
@@ -98,20 +282,50 @@ const scoreMemory = (memory, platformKey, contextKeywords) => {
   return importance * freq * recency * relevance;
 };
 
-const getRelevantMemories = async (platformKey, pageContextText = "") => {
+// getRelevantMemories: tries semantic retrieval first; falls back to keyword scoring.
+// Only "active" tier memories are considered — archived memories are excluded.
+const getRelevantMemories = async (platformKey, pageContextText = "", provider = null, apiKey = null) => {
   const memories = await getMemories();
-  const contextWords = pageContextText.toLowerCase().split(/\W+/).filter((w) => w.length > 3);
+  const active = memories.filter((m) => !m.private && m.tier !== "archived");
 
   // Persona = user's writing DNA — always injected, never scored out
-  const persona = memories.filter((m) => !m.private && m.category === "persona");
+  const persona = active.filter((m) => m.category === "persona");
+  const nonPersona = active.filter((m) => m.category !== "persona");
 
-  // All other memories scored by platform + keyword relevance, top 6
-  const contextual = memories
-    .filter((m) => !m.private && m.category !== "persona")
-    .map((m) => ({ m, score: scoreMemory(m, platformKey, contextWords) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 6)
-    .map((s) => s.m);
+  let contextual;
+
+  // Try semantic retrieval when embeddings are available
+  if (pageContextText && provider && apiKey && provider !== "anthropic") {
+    const embeddingIndex = await getEmbeddingIndex();
+    const queryEmbedding = await generateEmbedding(
+      pageContextText.slice(0, 500), provider, apiKey
+    );
+    if (queryEmbedding) {
+      contextual = nonPersona
+        .map((m) => {
+          const emb = embeddingIndex[m.id];
+          const semanticScore = emb ? dotProduct(queryEmbedding, emb) : 0;
+          const importanceBoost = (m.importance || 2) / 5;
+          const recency = Math.exp(
+            -(Date.now() - (m.updatedAt || m.createdAt)) / (86400000 * 60)
+          );
+          return { m, score: semanticScore * 0.6 + importanceBoost * 0.25 + recency * 0.15 };
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 6)
+        .map(({ m }) => m);
+    }
+  }
+
+  // Keyword fallback (also used when no page context or Anthropic provider)
+  if (!contextual) {
+    const contextWords = pageContextText.toLowerCase().split(/\W+/).filter((w) => w.length > 3);
+    contextual = nonPersona
+      .map((m) => ({ m, score: scoreMemory(m, platformKey, contextWords) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 6)
+      .map(({ m }) => m);
+  }
 
   return { persona, contextual };
 };
@@ -572,6 +786,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         const validCats = new Set(["work", "social", "personal", "persona"]);
         const category = validCats.has(rawCat) ? rawCat : "persona";
 
+        const { provider, openaiKey, geminiKey } = await chrome.storage.local.get([
+          "provider", "openaiKey", "geminiKey",
+        ]);
+        const embedProvider = provider || "openai";
+        const embedKey = embedProvider === "gemini" ? geminiKey : openaiKey;
+
         const result = await addMemory({
           category,
           type:       "preference",
@@ -583,7 +803,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           source:     "user_confirm",
           private:    false,
           related:    [],
-        });
+        }, embedProvider, embedKey);
         sendResponse({ ok: true, ...result });
       } catch (err) {
         sendResponse({ ok: false, error: err.message });
@@ -604,7 +824,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "saveMemory") {
     (async () => {
       try {
-        const result = await addMemory(message.memory);
+        const { provider, openaiKey, geminiKey } = await chrome.storage.local.get([
+          "provider", "openaiKey", "geminiKey",
+        ]);
+        const embedProvider = provider || "openai";
+        const embedKey = embedProvider === "gemini" ? geminiKey : openaiKey;
+        const result = await addMemory(message.memory, embedProvider, embedKey);
         sendResponse({ ok: true, ...result });
       } catch (err) { sendResponse({ ok: false, error: err.message }); }
     })();
@@ -629,6 +854,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     (async () => {
       try {
         const memories = await getMemories();
+        // Also clean up the embedding index when a memory is deleted
+        const embeddingIndex = await getEmbeddingIndex();
+        delete embeddingIndex[message.id];
+        await setEmbeddingIndex(embeddingIndex);
         await saveMemories(memories.filter((m) => m.id !== message.id));
         sendResponse({ ok: true });
       } catch (err) { sendResponse({ ok: false, error: err.message }); }
@@ -697,7 +926,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "extractMemory") {
     (async () => {
       try {
-        const { generatedText, platformKey, pageContext, existingContext } = message;
+        const { generatedText, userInput, platformKey, pageContext, existingContext } = message;
 
         // Skip only if text is too short — platform gate removed (any site can yield memory)
         if (!generatedText || generatedText.trim().length < 100) {
@@ -732,7 +961,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           "- 'work'     — Professional facts: job title, employer, skills, projects, career goals, work history, job targets, colleagues.\n" +
           "- 'social'   — Social life facts: friends, hobbies, interests, communities, how they spend time, platforms they use.\n" +
           "- 'personal' — Personal life facts: name, location, relationships, values, significant life events, personal goals.\n" +
-          "- 'persona'  — The user's WRITING IDENTITY: their unique voice, tone, language patterns, sentence rhythm, formatting habits, words or phrases they always/never use, communication style across platforms, what makes their writing distinctly theirs. EXTREMELY RARE to extract — only save if the pattern is unmistakable and you are 95%+ confident it defines this user across ALL their writing, not just this one message. A single generation almost never justifies a persona memory. When in doubt, return nothing for this category.\n\n" +
+          "- 'persona'  — The user's WRITING IDENTITY: their unique voice, tone, language patterns, sentence rhythm, formatting habits, words or phrases they always/never use, communication style across platforms, what makes their writing distinctly theirs. FOR PERSONA ONLY: use \"User's own words\" section as your primary signal — that is the user's natural unfiltered language. The AI-generated text was shaped by the extension and is NOT a reliable persona signal. EXTREMELY RARE to extract — only save if the pattern is unmistakable and 95%+ confident. When in doubt, return nothing for this category.\n\n" +
           "STRICT rules — violating any means return nothing:\n" +
           "- confidence ≥ 0.85 ONLY — discard anything ambiguous or generic\n" +
           "- Must be stable for weeks/months (not ephemeral filler)\n" +
@@ -747,7 +976,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           `Platform: ${platformKey}`,
           pageContext ? `Page: ${pageContext.slice(0, 250)}` : "",
           existingContext ? `Already stored (skip duplicates):\n${existingContext.slice(0, 350)}` : "",
-          `\nText written:\n${generatedText.trim().slice(0, 800)}`,
+          userInput?.trim() ? `\nUser's own words (instruction + what they typed — PRIMARY signal for persona):\n${userInput.trim().slice(0, 400)}` : "",
+          `\nAI-generated text (for work/social/personal facts only — NOT for persona):\n${generatedText.trim().slice(0, 800)}`,
         ].filter(Boolean).join("\n");
 
         let rawResponse = "";
@@ -842,10 +1072,30 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         alwaysContext: alwaysContextText || "",
       });
 
-      // Retrieve relevant learned memories for this platform + context
-      const { persona, contextual } = await getRelevantMemories(platformKey, message.pageContext || "");
+      // Retrieve relevant learned memories for this platform + context.
+      // Pass provider/apiKey for semantic (embedding-based) retrieval when available.
+      const embedKey = activeProvider === "gemini" ? geminiKey : openaiKey;
+      const { persona, contextual } = await getRelevantMemories(
+        platformKey, message.pageContext || "", activeProvider, embedKey
+      );
       const personaVoice = formatPersonaVoice(persona);
       const learnedMemory = formatContextualMemories(contextual);
+
+      // Track memory access — update lastAccessedAt, accessCount, reset sessionsSinceAccess
+      if (contextual.length > 0) {
+        const allMemories = await getMemories();
+        const usedIds = new Set(contextual.map((m) => m.id));
+        let changed = false;
+        for (const m of allMemories) {
+          if (usedIds.has(m.id)) {
+            m.lastAccessedAt = Date.now();
+            m.accessCount = (m.accessCount || 0) + 1;
+            m.sessionsSinceAccess = 0;
+            changed = true;
+          }
+        }
+        if (changed) await saveMemories(allMemories);
+      }
 
       const promptPayload = buildPrompt({
         systemPrompt,
@@ -895,3 +1145,105 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   return true;
 });
+
+// ── Lifecycle: Forgetting Cycle & Embedding Backfill ─────────────────────────
+
+// Forgetting cycle: compute forgetScore for every memory.
+// Archive high-score memories; delete ones past the deletion threshold.
+// Runs once per week via alarm.
+const runForgettingCycle = async () => {
+  const memories = await getMemories();
+  const embeddingIndex = await getEmbeddingIndex();
+
+  const toDelete = new Set();
+  const updated = memories.map((m) => {
+    const score = computeForgetScore(m);
+    const mem = { ...m, forgetScore: parseFloat(score.toFixed(3)) };
+
+    if (score > DELETE_THRESHOLD && (m.importance || 2) <= 2) {
+      toDelete.add(m.id);
+    } else if (score > ARCHIVE_THRESHOLD && m.tier !== "archived") {
+      mem.tier = "archived";
+    } else if (score <= ARCHIVE_THRESHOLD && m.tier === "archived") {
+      // Memory was accessed again — restore to active
+      mem.tier = "active";
+    }
+    return mem;
+  }).filter((m) => !toDelete.has(m.id));
+
+  toDelete.forEach((id) => delete embeddingIndex[id]);
+
+  // Cap archived tier: keep only the ARCHIVED_CAP highest-importance ones
+  const archived = updated.filter((m) => m.tier === "archived");
+  if (archived.length > ARCHIVED_CAP) {
+    archived.sort(
+      (a, b) =>
+        (b.importance || 2) * Math.log(1 + (b.mentions || 1)) -
+        (a.importance || 2) * Math.log(1 + (a.mentions || 1))
+    );
+    const toPurge = archived.slice(ARCHIVED_CAP);
+    const purgeIds = new Set(toPurge.map((m) => m.id));
+    purgeIds.forEach((id) => delete embeddingIndex[id]);
+    const active = updated.filter((m) => m.tier !== "archived");
+    updated.length = 0;
+    updated.push(...active, ...archived.slice(0, ARCHIVED_CAP));
+  }
+
+  await saveMemories(updated);
+  await setEmbeddingIndex(embeddingIndex);
+  await chrome.storage.local.set({ lastForgettingCycle: Date.now() });
+};
+
+// Backfill: on startup, generate embeddings for any memory that lacks one.
+// Uses 100ms delay between calls to avoid rate-limiting.
+const backfillEmbeddings = async () => {
+  const { provider, openaiKey, geminiKey } = await chrome.storage.local.get([
+    "provider", "openaiKey", "geminiKey",
+  ]);
+  const embedProvider = provider || "openai";
+  const apiKey = embedProvider === "gemini" ? geminiKey : openaiKey;
+  if (!apiKey || embedProvider === "anthropic") return;
+
+  const memories = await getMemories();
+  const embeddingIndex = await getEmbeddingIndex();
+
+  let changed = false;
+  for (const m of memories) {
+    if (embeddingIndex[m.id]) continue;
+    try {
+      const emb = await generateEmbedding(m.content, embedProvider, apiKey);
+      if (emb) {
+        embeddingIndex[m.id] = emb;
+        changed = true;
+      }
+    } catch (_) { /* skip on error — will retry next startup */ }
+    await new Promise((r) => setTimeout(r, 100)); // gentle rate limiting
+  }
+
+  if (changed) await setEmbeddingIndex(embeddingIndex);
+};
+
+// On startup: increment session counter, run forgetting cycle (max once/week), backfill embeddings
+const onStartupInit = async () => {
+  // Increment sessionsSinceAccess for every memory — memories used this session
+  // will have theirs reset back to 0 in generateAnswer. This powers the session-based
+  // forgetting penalty in computeForgetScore.
+  const allMems = await getMemories();
+  if (allMems.length > 0) {
+    for (const m of allMems) {
+      m.sessionsSinceAccess = (m.sessionsSinceAccess || 0) + 1;
+    }
+    await saveMemories(allMems);
+  }
+
+  const { lastForgettingCycle = 0 } = await chrome.storage.local.get("lastForgettingCycle");
+  const weekMs = 7 * 24 * 60 * 60 * 1000;
+  if (Date.now() - lastForgettingCycle > weekMs) {
+    await runForgettingCycle();
+  }
+  // Backfill runs every startup but is a no-op if all memories are already embedded
+  backfillEmbeddings(); // fire-and-forget
+};
+
+chrome.runtime.onStartup.addListener(onStartupInit);
+chrome.runtime.onInstalled.addListener(onStartupInit);
