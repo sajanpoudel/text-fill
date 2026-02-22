@@ -154,7 +154,7 @@ const buildPrompt = ({
   platformKey,
   action,
   instruction,
-  capturedContext,
+  capturedContexts,
 }) => {
   const profile =
     PLATFORM_PROFILES[platformKey] || PLATFORM_PROFILES.general;
@@ -182,13 +182,13 @@ const buildPrompt = ({
     userParts.push(`=== Your Background ===\n${generalContext.trim()}`);
   }
 
-  if (capturedContext?.text) {
-    const capturedLabel = capturedContext.title
-      ? `${capturedContext.title}`
-      : capturedContext.url || "another page";
-    userParts.push(
-      `=== Context captured from: ${capturedLabel} ===\n${capturedContext.text}`
-    );
+  if (Array.isArray(capturedContexts) && capturedContexts.length > 0) {
+    capturedContexts.forEach((ctx) => {
+      if (ctx?.text) {
+        const label = ctx.title || ctx.hostname || ctx.url || "another page";
+        userParts.push(`=== Context from: ${label} ===\n${ctx.text.trim()}`);
+      }
+    });
   }
 
   if (pageContext?.trim()) {
@@ -499,7 +499,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         platformKey,
         action: message.action || "generate",
         instruction: message.instruction || "",
-        capturedContext: message.capturedContext || null,
+        capturedContexts: message.capturedContexts || null,
       });
 
       let answer = "";

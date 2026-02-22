@@ -89,19 +89,268 @@
   animation: tfa-spin 0.85s linear infinite;
 }
 
-/* Context-captured indicator dot */
+/* Context-captured indicator dot (on field buttons) */
 .tfa-context-dot {
   position: absolute;
   bottom: -2px;
   right: -2px;
-  width: 9px;
+  min-width: 9px;
   height: 9px;
   background: #3b82f6;
   border: 2px solid #fff;
-  border-radius: 50%;
+  border-radius: 5px;
   pointer-events: none;
   z-index: 1;
+  font-size: 7px;
+  font-weight: 700;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 1px;
+  box-sizing: border-box;
 }
+
+/* ── Floating Context FAB ────────────────────────────────────────────────── */
+.tfa-fab {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 2147483646;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  overflow: visible;
+}
+
+.tfa-fab:hover {
+  transform: scale(1.1);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.tfa-fab:active {
+  transform: scale(0.95);
+}
+
+.tfa-fab .tfa-logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Count badge on FAB */
+.tfa-fab-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  background: #3b82f6;
+  border: 2px solid #fff;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+  box-sizing: border-box;
+  pointer-events: none;
+  font-family: system-ui, -apple-system, sans-serif;
+  line-height: 1;
+}
+
+/* ── Context Library Panel ───────────────────────────────────────────────── */
+.tfa-context-panel {
+  position: fixed;
+  z-index: 2147483647;
+  width: 288px;
+  max-height: 360px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 14px;
+  box-shadow:
+    0 4px 6px rgba(0, 0, 0, 0.05),
+    0 12px 32px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  animation: tfa-modal-in 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Panel header */
+.tfa-cp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 12px 10px;
+  border-bottom: 1px solid #f0f0f0;
+  flex-shrink: 0;
+}
+
+.tfa-cp-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #111;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tfa-cp-add-btn {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 9px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.tfa-cp-add-btn:hover { background: #dbeafe; }
+
+/* Context list */
+.tfa-cp-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.tfa-cp-empty {
+  padding: 20px 14px;
+  font-size: 12.5px;
+  color: #aaa;
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* Individual context row */
+.tfa-cp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  transition: background 0.1s;
+}
+
+.tfa-cp-row:hover { background: #f9f9f9; }
+
+.tfa-cp-row-inactive { opacity: 0.45; }
+
+.tfa-cp-check {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: #3b82f6;
+  margin: 0;
+}
+
+.tfa-cp-avatar {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: #e4e4e7;
+  font-size: 11px;
+  font-weight: 700;
+  color: #555;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.tfa-cp-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tfa-cp-item-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #111;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tfa-cp-item-meta {
+  font-size: 11px;
+  color: #aaa;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tfa-cp-del {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: #ccc;
+  cursor: pointer;
+  padding: 3px 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  transition: color 0.1s, background 0.1s;
+}
+
+.tfa-cp-del:hover { color: #dc2626; background: #fee2e2; }
+
+/* Footer */
+.tfa-cp-footer {
+  border-top: 1px solid #f0f0f0;
+  padding: 8px 12px;
+  flex-shrink: 0;
+}
+
+.tfa-cp-clear-all {
+  font-size: 12px;
+  color: #aaa;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.1s;
+}
+
+.tfa-cp-clear-all:hover { color: #dc2626; }
+
+/* ── Dark mode for context panel ─────────────────────────────────────────── */
+.tfa-context-panel[data-dark="1"] {
+  background: #1c1c1e;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.tfa-context-panel[data-dark="1"] .tfa-cp-header { border-bottom-color: rgba(255,255,255,0.07); }
+.tfa-context-panel[data-dark="1"] .tfa-cp-title  { color: #f0f0f0; }
+.tfa-context-panel[data-dark="1"] .tfa-cp-add-btn { background: rgba(96,165,250,0.15); color: #60a5fa; }
+.tfa-context-panel[data-dark="1"] .tfa-cp-add-btn:hover { background: rgba(96,165,250,0.25); }
+.tfa-context-panel[data-dark="1"] .tfa-cp-row:hover { background: rgba(255,255,255,0.05); }
+.tfa-context-panel[data-dark="1"] .tfa-cp-item-title { color: #e0e0e0; }
+.tfa-context-panel[data-dark="1"] .tfa-cp-item-meta  { color: #666; }
+.tfa-context-panel[data-dark="1"] .tfa-cp-avatar     { background: #3a3a3c; color: #aaa; }
+.tfa-context-panel[data-dark="1"] .tfa-cp-footer     { border-top-color: rgba(255,255,255,0.07); }
+.tfa-context-panel[data-dark="1"] .tfa-cp-clear-all  { color: #666; }
+.tfa-context-panel[data-dark="1"] .tfa-cp-empty      { color: #555; }
 
 /* ── Quick-Action Modal ──────────────────────────────────────────────────── */
 .tfa-modal {

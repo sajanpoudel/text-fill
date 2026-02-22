@@ -101,7 +101,7 @@ const state = {
   buttons: new Map(),
   cachedJobDescription: null,
   currentJobUrl: null,
-  capturedContext: null, // { title, url, text, time } — cross-tab context
+  capturedContexts: [], // [{ id, title, url, hostname, text, time, active }] — multi-page context library
   scanScheduled: false,
   observer: null,
   idleCallbackId: null,
@@ -708,48 +708,292 @@ const getFieldValue = (field) => {
 
 const getLogoUrl = () => chrome.runtime.getURL("logo.png");
 
-// ─── Context Capture (cross-tab page context sharing) ─────────────────────────
+// ─── Context Library (multi-page context capture) ─────────────────────────────
 
-const capturePageContext = async (requestingButton) => {
-  setButtonLoading(requestingButton);
+let _fab = null;
+let _contextPanel = null;
+
+const capturePageContext = async (button = null) => {
+  if (button) setButtonLoading(button);
   try {
     const title = document.title || "";
     const url = window.location.href || "";
+    const hostname = window.location.hostname || "";
     const pageText = extractSectionText(document.body, 4000);
+    const id = `ctx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
-    state.capturedContext = { title, url, text: pageText, time: Date.now() };
-    await chrome.storage.local.set({ capturedContext: state.capturedContext });
+    const entry = { id, title, url, hostname, text: pageText, time: Date.now(), active: true };
 
-    resetButton(requestingButton);
-    state.buttons.forEach((btn) => updateContextIndicator(btn));
-    showToast(
-      `Context captured: ${(title || url).slice(0, 50)}`,
-      false
-    );
+    // Deduplicate by URL — update if already saved
+    const existingIdx = state.capturedContexts.findIndex((c) => c.url === url);
+    if (existingIdx >= 0) {
+      state.capturedContexts[existingIdx] = entry;
+    } else {
+      state.capturedContexts.push(entry);
+    }
+
+    await chrome.storage.local.set({ capturedContexts: state.capturedContexts });
+    if (button) resetButton(button);
+    updateContextIndicators();
+    showToast(`Context saved: ${(title || hostname).slice(0, 40)}`);
   } catch (err) {
-    resetButton(requestingButton);
+    if (button) resetButton(button);
     showToast("Failed to capture context", true);
   }
 };
 
-const clearCapturedContext = () => {
-  state.capturedContext = null;
-  chrome.storage.local.remove("capturedContext");
-  state.buttons.forEach((btn) => updateContextIndicator(btn));
-  showToast("Context cleared");
+const clearCapturedContext = async (id = null) => {
+  if (id) {
+    state.capturedContexts = state.capturedContexts.filter((c) => c.id !== id);
+  } else {
+    state.capturedContexts = [];
+  }
+  await chrome.storage.local.set({ capturedContexts: state.capturedContexts });
+  updateContextIndicators();
+  if (!id) showToast("All contexts cleared");
 };
 
+const toggleContextActive = async (id) => {
+  const ctx = state.capturedContexts.find((c) => c.id === id);
+  if (ctx) {
+    ctx.active = !ctx.active;
+    await chrome.storage.local.set({ capturedContexts: state.capturedContexts });
+    updateContextIndicators();
+  }
+};
+
+// Update the dot on a single field button
 const updateContextIndicator = (button) => {
+  const activeCount = state.capturedContexts.filter((c) => c.active).length;
   let dot = button.querySelector(".tfa-context-dot");
-  if (state.capturedContext) {
+  if (activeCount > 0) {
     if (!dot) {
       dot = document.createElement("span");
       dot.className = "tfa-context-dot";
       button.appendChild(dot);
     }
+    dot.textContent = activeCount > 1 ? String(activeCount) : "";
   } else {
     if (dot) dot.remove();
   }
+};
+
+// Update all field buttons + FAB badge
+const updateContextIndicators = () => {
+  state.buttons.forEach((btn) => updateContextIndicator(btn));
+  const totalCount = state.capturedContexts.length;
+  if (_fab) {
+    let badge = _fab.querySelector(".tfa-fab-badge");
+    if (badge) {
+      badge.textContent = totalCount;
+      badge.style.display = totalCount > 0 ? "flex" : "none";
+    }
+  }
+  // Refresh panel if open
+  if (_contextPanel && document.body.contains(_contextPanel)) {
+    refreshContextPanel(_contextPanel);
+  }
+};
+
+// ─── Floating FAB & Context Panel ─────────────────────────────────────────────
+
+const positionContextPanel = (panel) => {
+  if (!_fab) return;
+  const fabRect = _fab.getBoundingClientRect();
+  const PANEL_W = 288;
+  const right = Math.max(window.innerWidth - fabRect.right, 8);
+  const bottom = window.innerHeight - fabRect.top + 8;
+  panel.style.right = `${right}px`;
+  panel.style.bottom = `${bottom}px`;
+  panel.style.maxWidth = `${Math.min(PANEL_W, window.innerWidth - 16)}px`;
+};
+
+const relativeTime = (ts) => {
+  const diff = Date.now() - ts;
+  if (diff < 60000) return "just now";
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+  return `${Math.floor(diff / 86400000)}d ago`;
+};
+
+const renderContextList = (listEl) => {
+  listEl.innerHTML = "";
+  if (state.capturedContexts.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "tfa-cp-empty";
+    empty.textContent = "No contexts yet — browse to a page and click \"+\".";
+    listEl.appendChild(empty);
+    return;
+  }
+
+  [...state.capturedContexts].reverse().forEach((ctx) => {
+    const row = document.createElement("div");
+    row.className = `tfa-cp-row${ctx.active ? "" : " tfa-cp-row-inactive"}`;
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "tfa-cp-check";
+    checkbox.checked = ctx.active;
+    checkbox.title = ctx.active ? "Deactivate" : "Activate";
+    checkbox.addEventListener("change", async () => {
+      await toggleContextActive(ctx.id);
+    });
+
+    const avatar = document.createElement("span");
+    avatar.className = "tfa-cp-avatar";
+    avatar.textContent = (ctx.hostname || ctx.title || "?").charAt(0).toUpperCase();
+
+    const info = document.createElement("div");
+    info.className = "tfa-cp-info";
+
+    const titleEl = document.createElement("span");
+    titleEl.className = "tfa-cp-item-title";
+    titleEl.textContent = (ctx.title || ctx.hostname || ctx.url).slice(0, 40);
+    titleEl.title = ctx.url;
+
+    const metaEl = document.createElement("span");
+    metaEl.className = "tfa-cp-item-meta";
+    metaEl.textContent = `${ctx.hostname} · ${relativeTime(ctx.time)}`;
+
+    info.appendChild(titleEl);
+    info.appendChild(metaEl);
+
+    const del = document.createElement("button");
+    del.className = "tfa-cp-del";
+    del.title = "Remove";
+    del.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+    del.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await clearCapturedContext(ctx.id);
+    });
+
+    row.appendChild(checkbox);
+    row.appendChild(avatar);
+    row.appendChild(info);
+    row.appendChild(del);
+    listEl.appendChild(row);
+  });
+};
+
+const refreshContextPanel = (panel) => {
+  const list = panel.querySelector(".tfa-cp-list");
+  if (list) renderContextList(list);
+
+  const footer = panel.querySelector(".tfa-cp-footer");
+  if (state.capturedContexts.length > 0 && !footer) {
+    const footerEl = document.createElement("div");
+    footerEl.className = "tfa-cp-footer";
+    const clearAll = document.createElement("button");
+    clearAll.className = "tfa-cp-clear-all";
+    clearAll.textContent = "Delete all";
+    clearAll.addEventListener("click", async () => { await clearCapturedContext(); });
+    footerEl.appendChild(clearAll);
+    panel.appendChild(footerEl);
+  } else if (state.capturedContexts.length === 0 && footer) {
+    footer.remove();
+  }
+};
+
+const closeContextPanel = () => {
+  if (_contextPanel && document.body.contains(_contextPanel)) _contextPanel.remove();
+  _contextPanel = null;
+};
+
+const showContextPanel = () => {
+  closeContextPanel();
+  closeAllModals();
+
+  const panel = document.createElement("div");
+  panel.className = "tfa-context-panel";
+  if (isPageDark()) panel.dataset.dark = "1";
+
+  // Header
+  const header = document.createElement("div");
+  header.className = "tfa-cp-header";
+
+  const titleSpan = document.createElement("span");
+  titleSpan.className = "tfa-cp-title";
+  titleSpan.textContent = "Context Library";
+  header.appendChild(titleSpan);
+
+  const addBtn = document.createElement("button");
+  addBtn.className = "tfa-cp-add-btn";
+  addBtn.textContent = "+ Add this page";
+  addBtn.addEventListener("click", async () => { await capturePageContext(); });
+  header.appendChild(addBtn);
+  panel.appendChild(header);
+
+  // List
+  const list = document.createElement("div");
+  list.className = "tfa-cp-list";
+  renderContextList(list);
+  panel.appendChild(list);
+
+  // Footer
+  if (state.capturedContexts.length > 0) {
+    const footerEl = document.createElement("div");
+    footerEl.className = "tfa-cp-footer";
+    const clearAll = document.createElement("button");
+    clearAll.className = "tfa-cp-clear-all";
+    clearAll.textContent = "Delete all";
+    clearAll.addEventListener("click", async () => { await clearCapturedContext(); });
+    footerEl.appendChild(clearAll);
+    panel.appendChild(footerEl);
+  }
+
+  document.body.appendChild(panel);
+  positionContextPanel(panel);
+  _contextPanel = panel;
+
+  setTimeout(() => {
+    const outside = (e) => {
+      if (!panel.contains(e.target) && e.target !== _fab) {
+        closeContextPanel();
+        document.removeEventListener("click", outside, true);
+      }
+    };
+    document.addEventListener("click", outside, true);
+  }, 50);
+};
+
+const toggleContextPanel = () => {
+  if (_contextPanel && document.body.contains(_contextPanel)) {
+    closeContextPanel();
+  } else {
+    showContextPanel();
+  }
+};
+
+const createFloatingFAB = () => {
+  if (_fab && document.body.contains(_fab)) return;
+
+  _fab = document.createElement("button");
+  _fab.className = "tfa-fab";
+  _fab.type = "button";
+  _fab.title = "Context library — save pages to use as AI context";
+
+  const img = document.createElement("img");
+  img.src = getLogoUrl();
+  img.alt = "Context";
+  img.className = "tfa-logo";
+  _fab.appendChild(img);
+
+  const badge = document.createElement("span");
+  badge.className = "tfa-fab-badge";
+  badge.style.display = "none";
+  _fab.appendChild(badge);
+
+  _fab.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleContextPanel();
+  });
+
+  document.body.appendChild(_fab);
+
+  // Set initial badge
+  const count = state.capturedContexts.length;
+  if (count > 0) { badge.textContent = count; badge.style.display = "flex"; }
 };
 
 // ─── Button State Management ───────────────────────────────────────────────────
@@ -893,7 +1137,8 @@ const showModal = (field, button) => {
   closeAllModals();
 
   const hasContent = getFieldValue(field).trim().length > 10;
-  const hasContext = !!state.capturedContext;
+  const activeCount = state.capturedContexts.filter((c) => c.active).length;
+  const alreadySaved = state.capturedContexts.some((c) => c.url === window.location.href);
 
   const modal = document.createElement("div");
   modal.className = "tfa-modal";
@@ -927,18 +1172,13 @@ const showModal = (field, button) => {
     actions.push({ icon: "↗", label: "Expand", action: "expand" });
   }
 
-  if (hasContext) {
-    const contextTitle = (state.capturedContext.title || "").slice(0, 28);
+  {
+    const ctxLabel = activeCount > 0
+      ? `Add page · ${activeCount} active`
+      : alreadySaved ? "Update page context" : "Add page to context";
     actions.push({
       icon: "📋",
-      label: `Context: ${contextTitle || "captured"}`,
-      action: "clearContext",
-      secondary: true,
-    });
-  } else {
-    actions.push({
-      icon: "📋",
-      label: "Capture page context",
+      label: ctxLabel,
       action: "captureContext",
       secondary: true,
     });
@@ -982,8 +1222,6 @@ const showModal = (field, button) => {
         chrome.runtime.sendMessage({ type: "openSettings" });
       } else if (action === "captureContext") {
         await capturePageContext(button);
-      } else if (action === "clearContext") {
-        clearCapturedContext();
       } else {
         await generateAndFill(field, button, { action, instruction });
       }
@@ -991,8 +1229,8 @@ const showModal = (field, button) => {
 
     actionsDiv.appendChild(btn);
 
-    // Separator before context actions
-    if (action === "captureContext" || action === "clearContext") {
+    // Separator before context action
+    if (action === "captureContext") {
       const sep = actionsDiv.querySelector(".tfa-modal-sep");
       if (!sep) {
         const divEl = document.createElement("div");
@@ -1413,24 +1651,7 @@ const generateAndFill = async (field, button, options = {}) => {
     const fieldValue = getFieldValue(field);
     const platformKey = detectPlatformKey();
 
-    // Load cross-tab captured context if not already in memory
-    if (!state.capturedContext) {
-      try {
-        const stored = await chrome.storage.local.get("capturedContext");
-        if (stored.capturedContext) {
-          const age = Date.now() - stored.capturedContext.time;
-          if (age < 30 * 60 * 1000) {
-            // 30 min TTL
-            state.capturedContext = stored.capturedContext;
-            state.buttons.forEach((btn) => updateContextIndicator(btn));
-          } else {
-            chrome.storage.local.remove("capturedContext");
-          }
-        }
-      } catch (e) {
-        // Ignore storage errors
-      }
-    }
+    const activeContexts = state.capturedContexts.filter((c) => c.active);
 
     const response = await chrome.runtime.sendMessage({
       type: "generateAnswer",
@@ -1440,7 +1661,7 @@ const generateAndFill = async (field, button, options = {}) => {
       platformKey,
       action,
       instruction,
-      capturedContext: state.capturedContext || null,
+      capturedContexts: activeContexts.length > 0 ? activeContexts : null,
     });
 
     if (!response?.ok) {
@@ -1708,22 +1929,35 @@ const initializeButtons = () => {
 const initializeExtension = async () => {
   setupUrlChangeDetection();
 
-  // Load any previously captured cross-tab context
+  // Load context library from storage (with migration from old single-context format)
   try {
-    const stored = await chrome.storage.local.get("capturedContext");
-    if (stored.capturedContext) {
-      const age = Date.now() - stored.capturedContext.time;
-      if (age < 30 * 60 * 1000) {
-        state.capturedContext = stored.capturedContext;
-      } else {
-        chrome.storage.local.remove("capturedContext");
-      }
+    const stored = await chrome.storage.local.get(["capturedContexts", "capturedContext"]);
+
+    if (Array.isArray(stored.capturedContexts)) {
+      state.capturedContexts = stored.capturedContexts;
+    } else if (stored.capturedContext && stored.capturedContext.text) {
+      // Migrate old single-context entry to array
+      const old = stored.capturedContext;
+      const migrated = {
+        id: `ctx_${Date.now()}`,
+        title: old.title || "",
+        url: old.url || "",
+        hostname: (() => { try { return new URL(old.url).hostname; } catch (_) { return ""; } })(),
+        text: old.text,
+        time: old.time || Date.now(),
+        active: true,
+      };
+      state.capturedContexts = [migrated];
+      chrome.storage.local.set({ capturedContexts: state.capturedContexts });
+      chrome.storage.local.remove("capturedContext");
     }
   } catch (e) {
-    // Ignore
+    // Ignore storage errors
   }
 
   initializeButtons();
+  createFloatingFAB();
+  updateContextIndicators();
   proactivelyCacheJobDescription();
 };
 
