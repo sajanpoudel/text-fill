@@ -1055,7 +1055,7 @@ const setButtonSuccess = (button) => {
   setTimeout(() => {
     if (successOverlay.parentElement) successOverlay.remove();
     button.disabled = false;
-    button.title = "Fill with AI (right-click for settings)";
+    button.title = "Fill with AI";
   }, 1500);
 };
 
@@ -1065,7 +1065,7 @@ const resetButton = (button) => {
   );
   if (overlay) overlay.remove();
   button.disabled = false;
-  button.title = "Fill with AI (right-click for settings)";
+  button.title = "Fill with AI";
 };
 
 // ─── Modal System ──────────────────────────────────────────────────────────────
@@ -1313,7 +1313,7 @@ const getOrCreateButton = (field) => {
   const button = document.createElement("button");
   button.className = "tfa-icon-button";
   button.type = "button";
-  button.title = "Fill with AI (right-click for settings)";
+  button.title = "Fill with AI";
 
   const img = document.createElement("img");
   img.src = getLogoUrl();
@@ -1354,13 +1354,6 @@ const getOrCreateButton = (field) => {
         toggleModal(field, button);
       }, 280);
     }
-  });
-
-  // Right click → open settings
-  button.addEventListener("contextmenu", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    chrome.runtime.sendMessage({ type: "openSettings" });
   });
 
   state.buttons.set(field, button);
