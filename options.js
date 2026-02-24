@@ -15,6 +15,8 @@ const geminiModelSelect   = document.getElementById('geminiModel');
 const openaiMemoryModelSelect    = document.getElementById('openaiMemoryModel');
 const anthropicMemoryModelSelect = document.getElementById('anthropicMemoryModel');
 const geminiMemoryModelSelect    = document.getElementById('geminiMemoryModel');
+const openaiEmbeddingModelSelect = document.getElementById('openaiEmbeddingModel');
+const geminiEmbeddingModelSelect = document.getElementById('geminiEmbeddingModel');
 
 // Context inputs — Career & Work
 const workFileInput   = document.getElementById('workFile');
@@ -42,18 +44,46 @@ const saveButton        = document.getElementById('save');
 const statusEl          = document.getElementById('status');
 
 const MAX_CHARS = 8000;
+const PROVIDER_LABELS = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  gemini: 'Gemini',
+};
+const MAIN_MODEL_SELECT_BY_PROVIDER = {
+  openai: openaiModelSelect,
+  anthropic: anthropicModelSelect,
+  gemini: geminiModelSelect,
+};
+const GEMINI_EMBEDDING_MODELS = new Set(['gemini-embedding-001']);
 let activeProvider = 'openai';
+
+const setActiveProvider = (provider) => {
+  const nextProvider = PROVIDER_LABELS[provider] ? provider : 'openai';
+  activeProvider = nextProvider;
+  providerTabs.forEach((t) => {
+    t.classList.toggle('active', t.dataset.provider === nextProvider);
+  });
+  providerPanels.forEach((panel) => {
+    panel.classList.toggle('active', panel.dataset.panel === nextProvider);
+  });
+  activeBadge.textContent = PROVIDER_LABELS[nextProvider] || nextProvider;
+};
+
+const getActiveModel = () =>
+  MAIN_MODEL_SELECT_BY_PROVIDER[activeProvider]?.value || openaiModelSelect.value;
+
+const setSelectValue = (selectEl, value, fallbackValue) => {
+  if (!selectEl) return fallbackValue;
+  const options = Array.from(selectEl.options || []).map((o) => o.value);
+  const nextValue = options.includes(value) ? value : fallbackValue;
+  selectEl.value = nextValue;
+  return nextValue;
+};
 
 // ── Provider tabs ─────────────────────────────────────────────────────────────
 providerTabs.forEach((tab) => {
   tab.addEventListener('click', () => {
-    const p = tab.dataset.provider;
-    providerTabs.forEach((t) => t.classList.remove('active'));
-    tab.classList.add('active');
-    providerPanels.forEach((panel) => panel.classList.remove('active'));
-    document.querySelector(`.provider-panel[data-panel="${p}"]`).classList.add('active');
-    activeProvider = p;
-    activeBadge.textContent = { openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini' }[p] || p;
+    setActiveProvider(tab.dataset.provider);
   });
 });
 
@@ -153,17 +183,39 @@ const handleFileUpload = async ({ file, labelEl, textInput, infoEl, uploadEl, fi
   }
 };
 
-const makeUploadConfig = (ctx) => ({
-  work:   { file: workFileInput,   labelEl: workUploadLabel,   textInput: workTextInput,   infoEl: workFileInfo,   uploadEl: workUploadArea,   fileNameEl: workFileName,   storageKey: 'workFileName',   label: 'Career context' },
-  social: { file: socialFileInput, labelEl: socialUploadLabel, textInput: socialTextInput, infoEl: socialFileInfo, uploadEl: socialUploadArea, fileNameEl: socialFileName, storageKey: 'socialFileName', label: 'Social context' },
-})[ctx];
+const UPLOAD_CONFIG = {
+  work: {
+    file: workFileInput,
+    labelEl: workUploadLabel,
+    textInput: workTextInput,
+    infoEl: workFileInfo,
+    uploadEl: workUploadArea,
+    fileNameEl: workFileName,
+    storageKey: 'workFileName',
+    label: 'Career context',
+  },
+  social: {
+    file: socialFileInput,
+    labelEl: socialUploadLabel,
+    textInput: socialTextInput,
+    infoEl: socialFileInfo,
+    uploadEl: socialUploadArea,
+    fileNameEl: socialFileName,
+    storageKey: 'socialFileName',
+    label: 'Social context',
+  },
+};
+
+const getUploadConfig = (ctx) => UPLOAD_CONFIG[ctx];
 
 // File input change
 workFileInput.addEventListener('change', async (e) => {
-  const f = e.target.files?.[0]; if (f) await handleFileUpload({ file: f, fileInput: workFileInput, ...makeUploadConfig('work') });
+  const f = e.target.files?.[0];
+  if (f) await handleFileUpload({ file: f, fileInput: workFileInput, ...getUploadConfig('work') });
 });
 socialFileInput.addEventListener('change', async (e) => {
-  const f = e.target.files?.[0]; if (f) await handleFileUpload({ file: f, fileInput: socialFileInput, ...makeUploadConfig('social') });
+  const f = e.target.files?.[0];
+  if (f) await handleFileUpload({ file: f, fileInput: socialFileInput, ...getUploadConfig('social') });
 });
 
 // Drag and drop
@@ -178,8 +230,8 @@ const setupDrag = (area, cfg) => {
   });
 };
 
-setupDrag(workUploadArea,   makeUploadConfig('work'));
-setupDrag(socialUploadArea, makeUploadConfig('social'));
+setupDrag(workUploadArea, getUploadConfig('work'));
+setupDrag(socialUploadArea, getUploadConfig('social'));
 
 // ── Load settings ─────────────────────────────────────────────────────────────
 const loadSettings = async () => {
@@ -188,6 +240,8 @@ const loadSettings = async () => {
     'openaiKey', 'anthropicKey', 'geminiKey',
     // Memory models (per provider)
     'openaiMemoryModel', 'anthropicMemoryModel', 'geminiMemoryModel',
+    // Embedding models (providers that support embeddings)
+    'openaiEmbeddingModel', 'geminiEmbeddingModel',
     'workContextText', 'workFileName',
     'socialContextText', 'socialFileName',
     'alwaysContextText',
@@ -195,12 +249,7 @@ const loadSettings = async () => {
   ]);
 
   activeProvider = data.provider || 'openai';
-
-  providerTabs.forEach((t) => t.classList.remove('active'));
-  providerPanels.forEach((p) => p.classList.remove('active'));
-  document.querySelector(`[data-provider="${activeProvider}"]`)?.classList.add('active');
-  document.querySelector(`.provider-panel[data-panel="${activeProvider}"]`)?.classList.add('active');
-  activeBadge.textContent = { openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini' }[activeProvider] || activeProvider;
+  setActiveProvider(activeProvider);
 
   openaiKeyInput.value       = data.openaiKey    || '';
   anthropicKeyInput.value    = data.anthropicKey || '';
@@ -218,15 +267,28 @@ const loadSettings = async () => {
 
   // Main model selection
   if (data.model) {
-    if (data.provider === 'openai')    openaiModelSelect.value    = data.model;
-    if (data.provider === 'anthropic') anthropicModelSelect.value = data.model;
-    if (data.provider === 'gemini')    geminiModelSelect.value    = data.model;
+    const modelSelect = MAIN_MODEL_SELECT_BY_PROVIDER[data.provider];
+    if (modelSelect) modelSelect.value = data.model;
   }
 
   // Memory model selection (defaults: gpt-5-nano, claude-haiku-3-5, gemini-2.5-flash-lite)
-  openaiMemoryModelSelect.value    = data.openaiMemoryModel    || 'gpt-5-nano';
-  anthropicMemoryModelSelect.value = data.anthropicMemoryModel || 'claude-haiku-3-5';
-  geminiMemoryModelSelect.value    = data.geminiMemoryModel    || 'gemini-2.5-flash-lite';
+  setSelectValue(openaiMemoryModelSelect, data.openaiMemoryModel, 'gpt-5-nano');
+  setSelectValue(anthropicMemoryModelSelect, data.anthropicMemoryModel, 'claude-haiku-3-5');
+  setSelectValue(geminiMemoryModelSelect, data.geminiMemoryModel, 'gemini-2.5-flash-lite');
+  setSelectValue(openaiEmbeddingModelSelect, data.openaiEmbeddingModel, 'text-embedding-3-small');
+
+  const resolvedGeminiEmbeddingModel = setSelectValue(
+    geminiEmbeddingModelSelect,
+    data.geminiEmbeddingModel,
+    'gemini-embedding-001'
+  );
+  if (
+    data.geminiEmbeddingModel &&
+    !GEMINI_EMBEDDING_MODELS.has(data.geminiEmbeddingModel) &&
+    data.geminiEmbeddingModel !== resolvedGeminiEmbeddingModel
+  ) {
+    await chrome.storage.local.set({ geminiEmbeddingModel: resolvedGeminiEmbeddingModel });
+  }
 };
 
 // ── Save settings ─────────────────────────────────────────────────────────────
@@ -241,15 +303,15 @@ saveButton.addEventListener('click', async () => {
 
   if (!activeKey) { showStatus('API key is required.', true); return; }
 
-  let model;
-  if (activeProvider === 'openai')    model = openaiModelSelect.value;
-  if (activeProvider === 'anthropic') model = anthropicModelSelect.value;
-  if (activeProvider === 'gemini')    model = geminiModelSelect.value;
+  const model = getActiveModel();
 
   const workContextText   = sanitize(workTextInput.value,   MAX_CHARS);
   const socialContextText = sanitize(socialTextInput.value, MAX_CHARS);
   const alwaysContextText = sanitize(alwaysTextInput.value, MAX_CHARS);
   const systemPrompt      = sanitize(systemPromptInput.value, MAX_CHARS);
+  const geminiEmbeddingModel = GEMINI_EMBEDDING_MODELS.has(geminiEmbeddingModelSelect.value)
+    ? geminiEmbeddingModelSelect.value
+    : 'gemini-embedding-001';
 
   await chrome.storage.local.set({
     provider: activeProvider,
@@ -260,6 +322,8 @@ saveButton.addEventListener('click', async () => {
     openaiMemoryModel:    openaiMemoryModelSelect.value,
     anthropicMemoryModel: anthropicMemoryModelSelect.value,
     geminiMemoryModel:    geminiMemoryModelSelect.value,
+    openaiEmbeddingModel: openaiEmbeddingModelSelect.value,
+    geminiEmbeddingModel,
     workContextText,
     socialContextText,
     alwaysContextText,

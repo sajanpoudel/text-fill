@@ -65,8 +65,12 @@
       <!-- Footer actions -->
       <div class="mem-footer-bar" id="memFooter" style="display:none">
         <button class="mem-btn-danger" id="btnClearAll">Clear all memories</button>
-        <button class="mem-btn-optimize" id="btnOptimize">Optimize &amp; Deduplicate</button>
+        <div class="mem-footer-actions">
+          <button class="mem-btn-secondary" id="btnBackfillEmbeddings">Backfill embeddings</button>
+          <button class="mem-btn-optimize" id="btnOptimize">Optimize &amp; Deduplicate</button>
+        </div>
       </div>
+      <div class="mem-backfill-report" id="backfillReport" style="display:none"></div>
 
     </main>
 

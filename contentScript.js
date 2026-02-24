@@ -1,5 +1,6 @@
 const MAX_CONTEXT_CHARS = 5000;
 const MAX_PAGE_CHARS = 6000;
+const CANVAS_PATH_RE = /\/courses\/\d+\/(assignments|discussion_topics|quizzes|modules)/;
 
 const JOB_HINTS = [
   "job description",
@@ -15,6 +16,9 @@ const JOB_HINTS = [
   "your impact",
   "what we're looking for",
 ];
+
+const isCanvasLocation = (hostname = "", pathname = "") =>
+  hostname.includes("instructure.com") || CANVAS_PATH_RE.test(pathname);
 
 // Platform-specific selectors for better field detection
 const PLATFORM_SELECTORS = {
@@ -81,6 +85,14 @@ const PLATFORM_SELECTORS = {
     'textarea[placeholder*="What are your thoughts"]',
     'div.public-DraftEditor-content[contenteditable="true"]',
   ],
+  canvas: [
+    ".tox-edit-area__iframe",
+    '.ic-RichContentEditor iframe[id$="_ifr"]',
+    'iframe[id$="_ifr"][title*="Rich Text Area"]',
+    'textarea[id*="submission"]',
+    'textarea[name*="submission"]',
+    '.discussion-reply-box textarea',
+  ],
   general: [
     "textarea",
     'input[type="text"]',
@@ -108,7 +120,163 @@ const state = {
   scrollTicking: false,
 };
 
+const OBSERVER_ATTRIBUTE_FILTER = [
+  "class",
+  "style",
+  "hidden",
+  "aria-hidden",
+  "contenteditable",
+  "role",
+];
+const EDITABLE_INPUT_SELECTOR = 'input, textarea, [contenteditable="true"]';
+
 const normalizeText = (text) => text.replace(/\s+/g, " ").trim();
+const IS_TOP_FRAME = (() => {
+  try {
+    return window.top === window;
+  } catch (_) {
+    return true;
+  }
+})();
+
+const isBlankLikeUrl = (href = "") =>
+  href === "about:blank" || href.startsWith("about:srcdoc");
+
+const canReadWindowLocation = (targetWindow) => {
+  try {
+    return Boolean(targetWindow?.location?.href);
+  } catch (_) {
+    return false;
+  }
+};
+
+const canReadWindowDocument = (targetWindow) => {
+  try {
+    return Boolean(targetWindow?.document);
+  } catch (_) {
+    return false;
+  }
+};
+
+const shouldInitializeInThisFrame = () => {
+  if (IS_TOP_FRAME) return true;
+
+  try {
+    const topHostname = (window.top?.location?.hostname || "").toLowerCase();
+    const topPathname = (window.top?.location?.pathname || "").toLowerCase();
+    if (isCanvasLocation(topHostname, topPathname)) return false;
+  } catch (_) {
+    // Ignore and continue with generic frame checks.
+  }
+
+  let href = "";
+  try {
+    href = window.location.href || "";
+  } catch (_) {
+    return false;
+  }
+
+  // Keep same-origin about:blank/srcdoc editor frames (TinyMCE, etc.).
+  if (isBlankLikeUrl(href)) {
+    try {
+      const topHostname = (window.top?.location?.hostname || "").toLowerCase();
+      const topPathname = (window.top?.location?.pathname || "").toLowerCase();
+      // Canvas TinyMCE iframes are highly dynamic. Keep all icon logic in top frame
+      // and treat the iframe element as the stable editor anchor.
+      if (isCanvasLocation(topHostname, topPathname)) return false;
+      return (
+        window.top &&
+        window.top !== window &&
+        canReadWindowLocation(window.top) &&
+        canReadWindowDocument(window.top)
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // For non-blank iframes, only run when same-origin with top.
+  try {
+    return (
+      window.top &&
+      window.top !== window &&
+      window.top.location.origin === window.location.origin
+    );
+  } catch (_) {
+    return false;
+  }
+};
+
+const getHostWindow = () => {
+  let href = "";
+  try {
+    href = window.location.href || "";
+  } catch (_) {
+    return window;
+  }
+
+  try {
+    if (isBlankLikeUrl(href) && window.top && window.top !== window) {
+      if (!canReadWindowLocation(window.top) || !canReadWindowDocument(window.top)) {
+        return window;
+      }
+      return window.top;
+    }
+  } catch (_) {
+    // Cross-origin access blocked — use current frame.
+  }
+  return window;
+};
+
+const getHostDocument = () => {
+  const hostWindow = getHostWindow();
+  try {
+    return hostWindow.document || document;
+  } catch (_) {
+    return document;
+  }
+};
+
+const getLocationSnapshot = () => {
+  const hostWindow = getHostWindow();
+  const hostDoc = getHostDocument();
+  let hostname = "";
+  let pathname = "";
+  let href = "";
+  let title = "";
+
+  try {
+    const loc = hostWindow.location;
+    hostname = (loc?.hostname || "").toLowerCase();
+    pathname = (loc?.pathname || "").toLowerCase();
+    href = loc?.href || "";
+  } catch (_) {
+    try {
+      hostname = (window.location.hostname || "").toLowerCase();
+      pathname = (window.location.pathname || "").toLowerCase();
+      href = window.location.href || "";
+    } catch (_) {
+      // Keep empty fallbacks.
+    }
+  }
+
+  try {
+    title = hostDoc.title || document.title || "";
+  } catch (_) {
+    try {
+      title = document.title || "";
+    } catch (_) {
+      title = "";
+    }
+  }
+
+  return {
+    hostname,
+    pathname,
+    href,
+    title,
+  };
+};
 
 const getFromSessionStorage = (key) => {
   try {
@@ -423,6 +591,9 @@ const handleUrlChange = () => {
     if (typeof scheduleScan === "function") {
       scheduleScan();
     }
+    if (typeof syncContextFabVisibility === "function") {
+      syncContextFabVisibility();
+    }
   }
 };
 
@@ -515,7 +686,7 @@ const proactivelyCacheJobDescription = async () => {
 // ─── Platform Detection ────────────────────────────────────────────────────────
 
 const detectPlatformKey = () => {
-  const hostname = window.location.hostname.toLowerCase();
+  const { hostname, pathname } = getLocationSnapshot();
   if (hostname.includes("mail.google.com")) return "gmail";
   if (hostname.includes("linkedin.com")) return "linkedin";
   if (hostname.includes("twitter.com") || hostname.includes("x.com"))
@@ -531,6 +702,9 @@ const detectPlatformKey = () => {
   if (hostname.includes("notion.so") || hostname.includes("notion.com"))
     return "notion";
   if (hostname.includes("docs.google.com")) return "google_docs";
+  if (isCanvasLocation(hostname, pathname)) {
+    return "canvas";
+  }
 
   const jobBoards = [
     "greenhouse.io",
@@ -549,12 +723,77 @@ const detectPlatformKey = () => {
   return "general";
 };
 
+const isElementVisible = (el) => {
+  if (!(el instanceof Element)) return false;
+  const view = el.ownerDocument?.defaultView || window;
+  const style = view.getComputedStyle(el);
+  if (
+    style.display === "none" ||
+    style.visibility === "hidden" ||
+    style.opacity === "0"
+  ) {
+    return false;
+  }
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+};
+
+const pickPersonLikeCandidate = (values = []) => {
+  const generic = new Set([
+    "to",
+    "cc",
+    "bcc",
+    "message",
+    "messages",
+    "chat",
+    "compose",
+    "new message",
+    "reply",
+    "inbox",
+    "messaging",
+    "focused",
+    "jobs",
+    "unread",
+    "connections",
+    "inmail",
+    "starred",
+    "you",
+    "me",
+  ]);
+
+  for (const raw of values) {
+    if (!raw) continue;
+    let text = normalizeText(raw)
+      .replace(/\([^)]*\)/g, "")
+      .split("·")[0]
+      .split("|")[0]
+      .trim();
+    if (!text) continue;
+    if (text.length < 2 || text.length > 80) continue;
+    const lower = text.toLowerCase();
+    if (generic.has(lower)) continue;
+    if (/^\d{1,2}:\d{2}\s*(am|pm)?$/i.test(lower)) continue;
+    if (lower.includes("you:") || lower.includes("subject:")) continue;
+    if (
+      /\b(reaching out|follow|reply|message|interest|opportunity|hiring)\b/i.test(
+        text
+      ) &&
+      text.split(/\s+/).length > 4
+    ) {
+      continue;
+    }
+    if (!/[a-z]/i.test(text)) continue;
+    return text;
+  }
+  return "";
+};
+
 // ─── Compose Boundary Detection (context isolation) ───────────────────────────
 // Finds the tightest container that represents what the user is currently
 // composing — prevents reading unrelated emails, chats, or conversations.
 
 const getComposeBoundary = (field) => {
-  const hostname = window.location.hostname.toLowerCase();
+  const { hostname, pathname } = getLocationSnapshot();
 
   // Gmail: Only the active compose/reply window
   if (hostname.includes("mail.google.com")) {
@@ -569,6 +808,10 @@ const getComposeBoundary = (field) => {
   // LinkedIn: Only the active message, post, or comment editor
   if (hostname.includes("linkedin.com")) {
     return (
+      field.closest(".msg-overlay-conversation-bubble--is-active") ||
+      field.closest(".msg-overlay-conversation-bubble") ||
+      field.closest(".msg-thread") ||
+      field.closest(".msg-conversation-card") ||
       field.closest(".msg-form__container") ||
       field.closest('[role="dialog"]') ||
       field.closest(".share-creation-state") ||
@@ -602,6 +845,16 @@ const getComposeBoundary = (field) => {
     );
   }
 
+  // Canvas LMS / assignment portals
+  if (isCanvasLocation(hostname, pathname)) {
+    return (
+      field.closest(
+        ".submission-details, .ic-Layout-contentMain, .discussion-topic, .quiz-submission, [role='main'], form"
+      ) ||
+      null
+    );
+  }
+
   // Generic: prefer dialog > form
   return (
     field.closest('[role="dialog"]') ||
@@ -612,31 +865,338 @@ const getComposeBoundary = (field) => {
 
 // ─── Context Extraction ────────────────────────────────────────────────────────
 
-const extractPageContext = (field) => {
-  const title = document.title || "";
-  const url = window.location.href || "";
-  const metaDescription =
-    document.querySelector("meta[name='description']")?.content || "";
+const ROLE_KEYWORDS = {
+  academic: ["professor", "instructor", "teacher", "ta", "course", "class"],
+  hiring: ["recruiter", "hiring manager", "interviewer", "talent", "sourcer"],
+  client: ["client", "customer", "stakeholder", "account", "vendor"],
+};
 
-  // Use compose boundary to isolate context — avoids reading other emails/chats
-  const composeBoundary = getComposeBoundary(field);
+const ASSIGNMENT_KEYWORDS = [
+  "assignment",
+  "discussion",
+  "prompt",
+  "instructions",
+  "rubric",
+  "submission",
+  "question",
+  "reply",
+  "respond",
+  "initial post",
+  "classmates",
+  "classmate",
+  "graded",
+  "grade",
+  "module",
+  "week",
+  "thesis",
+  "argument",
+  "reflection",
+  "cite",
+  "citation",
+  "word count",
+  "due date",
+  "points",
+];
 
-  let contextText = "";
-  let pageText = "";
+const GENERIC_COMPOSE_LABELS = [
+  "write a reply",
+  "write your reply",
+  "reply",
+  "write a response",
+  "response",
+  "add a comment",
+  "write a comment",
+  "comment",
+  "message",
+];
 
-  if (composeBoundary) {
-    // Only read within the compose/reply window
-    contextText = extractSectionText(composeBoundary, 3000);
-  } else {
-    contextText = extractSectionText(
-      field.closest("section, form, div"),
-      2000
-    );
-    pageText = extractSectionText(document.body, MAX_PAGE_CHARS);
+const isGenericComposeLabel = (text = "", platformKey = "") => {
+  const normalized = normalizeText(text).toLowerCase();
+  if (!normalized) return false;
+  if (platformKey !== "canvas") return false;
+  return GENERIC_COMPOSE_LABELS.some((label) => normalized === label);
+};
+
+const inferRoleHint = (sourceText = "", platformKey = "") => {
+  const text = sourceText.toLowerCase();
+  if (ROLE_KEYWORDS.academic.some((k) => text.includes(k))) return "academic";
+  if (ROLE_KEYWORDS.hiring.some((k) => text.includes(k))) return "hiring";
+  if (ROLE_KEYWORDS.client.some((k) => text.includes(k))) return "client";
+  if (["messenger", "facebook", "instagram", "threads"].includes(platformKey)) {
+    return "social";
+  }
+  return "";
+};
+
+const collectKeywordSnippets = (
+  root,
+  keywords,
+  { maxSnippets = 6, maxTotal = 1600, maxNodes = 350 } = {}
+) => {
+  if (!root) return "";
+  const candidates = Array.from(
+    root.querySelectorAll("h1,h2,h3,h4,legend,label,p,li,td,th,div,span")
+  ).slice(0, maxNodes);
+
+  const snippets = [];
+  let total = 0;
+
+  for (const el of candidates) {
+    const text = normalizeText(el.innerText || "");
+    if (text.length < 24 || text.length > 450) continue;
+
+    const lower = text.toLowerCase();
+    if (!keywords.some((k) => lower.includes(k))) continue;
+    if (snippets.some((s) => s === text || s.includes(text) || text.includes(s)))
+      continue;
+
+    snippets.push(text);
+    total += text.length;
+    if (snippets.length >= maxSnippets || total >= maxTotal) break;
   }
 
-  // For job application platforms, append job description
+  return snippets.join("\n");
+};
+
+const findHostIframeForField = (field, hostDoc = getHostDocument()) => {
+  if (!(field instanceof Element)) return null;
+  if (field.ownerDocument === hostDoc) return null;
+  const frames = Array.from(hostDoc.querySelectorAll("iframe"));
+  for (const frame of frames) {
+    try {
+      if (frame.contentDocument === field.ownerDocument) return frame;
+    } catch (_) {
+      // Cross-origin frame; ignore.
+    }
+  }
+  return null;
+};
+
+const getHostAnchorForField = (field, hostDoc = getHostDocument()) => {
+  if (!(field instanceof Element)) return null;
+  if (field.ownerDocument === hostDoc) {
+    return (
+      field.closest(
+        "[data-testid='discussion-topic-container'], .discussion-topic, .submission-details, .discussion-reply-box, .ic-Layout-contentMain, .ic-RichContentEditor, [role='main'], form, section, article"
+      ) || field.closest("section, form, article, [role='main'], div")
+    );
+  }
+
+  const hostFrame = findHostIframeForField(field, hostDoc);
+  if (!hostFrame) return null;
+  return (
+    hostFrame.closest(
+      "[data-testid='discussion-topic-container'], .discussion-topic, .submission-details, .discussion-reply-box, .ic-Layout-contentMain, .ic-RichContentEditor, [role='main'], form, section, article"
+    ) ||
+    hostFrame.parentElement ||
+    hostDoc.body
+  );
+};
+
+const isPromptNoiseText = (text = "") => {
+  const lower = text.toLowerCase();
+  if (!lower) return true;
+  if (/^(view|insert|format|tools|table|edit)$/i.test(lower)) return true;
+  if (/^(bold|italic|underline|font|paragraph|styles?)$/i.test(lower)) return true;
+  if (/^\d+\s*words?$/.test(lower)) return true;
+  if (/^to\b|^cc\b|^bcc\b/.test(lower)) return true;
+  return false;
+};
+
+const extractLinkedInCounterpartyContext = (field, composeBoundary) => {
+  const hostDoc = getHostDocument();
+
+  const conversationRoot =
+    composeBoundary?.closest(
+      ".msg-overlay-conversation-bubble, .msg-thread, .msg-conversation-card"
+    ) ||
+    field.closest(".msg-overlay-conversation-bubble, .msg-thread, .msg-conversation-card") ||
+    composeBoundary ||
+    null;
+  if (!conversationRoot) return null;
+
+  const headerRoot =
+    conversationRoot.querySelector(
+      "header, [class*='msg-thread__header'], [class*='conversation-header'], [class*='msg-overlay-conversation-bubble-header']"
+    ) || conversationRoot;
+  const headerCandidates = [];
+  [
+    ".msg-thread__link-to-profile",
+    "[class*='msg-thread__name']",
+    "a[href*='/in/']",
+    "[class*='participant-name']",
+    "h1, h2, h3",
+  ].forEach((selector) => {
+    headerRoot.querySelectorAll(selector).forEach((el) => {
+      if (!isElementVisible(el)) return;
+      const text = normalizeText(el.innerText || el.textContent || "");
+      if (text) headerCandidates.push(text);
+    });
+  });
+
+  const headerName = pickPersonLikeCandidate(headerCandidates);
+  if (headerName) {
+    const roleHint = inferRoleHint(
+      `${headerName} ${headerRoot.innerText || ""}`,
+      "linkedin"
+    );
+    return { name: headerName, roleHint };
+  }
+
+  const selectedConversation = hostDoc.querySelector(
+    ".msg-conversation-listitem--is-active, .msg-conversation-listitem--selected, .msg-conversation-listitem[aria-selected='true'], [aria-selected='true'][class*='msg-conversation-listitem']"
+  );
+  if (selectedConversation && isElementVisible(selectedConversation)) {
+    const fromSelected = [];
+    [
+      "[class*='participant-names']",
+      "[class*='participant-name']",
+      "[class*='conversation-listitem__name']",
+      "h3",
+      "a[href*='/in/']",
+    ].forEach((selector) => {
+      selectedConversation.querySelectorAll(selector).forEach((el) => {
+        if (!isElementVisible(el)) return;
+        const text = normalizeText(el.innerText || el.textContent || "");
+        if (text) fromSelected.push(text);
+      });
+    });
+    const selectedName = pickPersonLikeCandidate(fromSelected);
+    if (selectedName) {
+      const selectedHint = inferRoleHint(
+        `${selectedName} ${selectedConversation.innerText || ""}`,
+        "linkedin"
+      );
+      return { name: selectedName, roleHint: selectedHint };
+    }
+  }
+
+  return null;
+};
+
+const extractCounterpartyContext = (field, composeBoundary, platformKey) => {
+  if (platformKey === "linkedin") {
+    const linkedinCounterparty = extractLinkedInCounterpartyContext(
+      field,
+      composeBoundary
+    );
+    if (linkedinCounterparty) return linkedinCounterparty;
+  }
+
+  const hostDoc = getHostDocument();
+  const root =
+    composeBoundary ||
+    field.closest("section, article, [role='main'], form, div") ||
+    hostDoc.body ||
+    document.body;
+
+  const selectors = [
+    'input[aria-label*="To"]',
+    'textarea[aria-label*="To"]',
+    '[aria-label*="recipient"]',
+    '[aria-label*="Recipient"]',
+    "[data-testid*='recipient']",
+    "[data-testid*='conversation']",
+    "[class*='recipient']",
+    "[class*='participant']",
+    "[class*='conversation']",
+    "header h1, header h2, header [role='heading']",
+    "h1, h2, h3, [role='heading']",
+    "span[email]",
+  ];
+
+  const raw = [];
+  for (const selector of selectors) {
+    root.querySelectorAll(selector).forEach((el) => {
+      if (!isElementVisible(el)) return;
+      const text = normalizeText(el.innerText || el.textContent || "");
+      if (!text) return;
+      if (text.length < 2 || text.length > 80) return;
+      raw.push(text);
+    });
+    if (raw.length >= 5) break;
+  }
+
+  const candidate = pickPersonLikeCandidate(raw);
+  if (!candidate) return null;
+
+  const roleHint = inferRoleHint(
+    `${candidate} ${getLocationSnapshot().title} ${getLocationSnapshot().href}`,
+    platformKey
+  );
+
+  return {
+    name: candidate.replace(/\s+/g, " ").trim(),
+    roleHint,
+  };
+};
+
+const extractAssignmentContext = (field, sourceDoc = null) => {
+  const doc = sourceDoc || getHostDocument();
+  const loc = getLocationSnapshot();
+  const titleAndUrl = `${loc.title} ${loc.href}`.toLowerCase();
+  const shouldScan = ASSIGNMENT_KEYWORDS.some((k) =>
+    titleAndUrl.includes(k)
+  );
+  if (!shouldScan) return "";
+
+  const hostAnchor = getHostAnchorForField(field, doc);
+  const scanProfile = { maxSnippets: 8, maxTotal: 1800, maxNodes: 420 };
+
+  const roots = [
+    hostAnchor,
+    doc.querySelector(
+      "[data-testid='discussion-topic-container'], [data-resource-type='discussion_topic.body'], .assignment-description, .ic-Assignment-description, .discussion-topic, .quiz-submission, .submission-details"
+    ),
+    field.closest(".submission-details, .discussion-topic, main, article, [role='main']"),
+    doc.body || document.body,
+  ].filter(Boolean);
+
+  for (const root of roots) {
+    let text = collectKeywordSnippets(root, ASSIGNMENT_KEYWORDS, {
+      ...scanProfile,
+      maxNodes:
+        root === (doc.body || document.body)
+          ? scanProfile.maxNodes
+          : Math.max(450, Math.floor(scanProfile.maxNodes * 0.75)),
+    });
+    if (text && text.length > 60) return text.slice(0, 2200);
+  }
+  return "";
+};
+
+const extractContextPack = (field) => {
+  const hostDoc = getHostDocument();
+  const loc = getLocationSnapshot();
+  const title = loc.title || document.title || "";
+  const url = loc.href || window.location.href || "";
+  const metaDescription =
+    hostDoc.querySelector("meta[name='description']")?.content || "";
   const platformKey = detectPlatformKey();
+
+  const hostAnchor = getHostAnchorForField(field, hostDoc);
+  const composeBoundary = getComposeBoundary(field) || hostAnchor;
+  const foregroundRoot =
+    composeBoundary ||
+    hostAnchor ||
+    field.closest("section, form, article, [role='main'], div");
+  const backgroundRoot =
+    hostDoc.querySelector("main, article, [role='main']") ||
+    hostDoc.body ||
+    document.body;
+
+  const foregroundContext = extractSectionText(foregroundRoot, 2800);
+  let backgroundContext = composeBoundary
+    ? extractSectionText(backgroundRoot, 2600)
+    : extractSectionText(hostDoc.body || document.body, 1800);
+
+  if (foregroundContext && backgroundContext) {
+    const snippet = foregroundContext.slice(0, 220);
+    if (snippet.length > 80 && backgroundContext.includes(snippet)) {
+      backgroundContext = normalizeText(backgroundContext.replace(snippet, " "));
+    }
+  }
+
   let jobContext = "";
   if (platformKey === "job_application") {
     const jobDesc = extractJobDescription();
@@ -645,65 +1205,242 @@ const extractPageContext = (field) => {
     }
   }
 
+  const counterpart = extractCounterpartyContext(
+    field,
+    composeBoundary,
+    platformKey
+  );
+  const assignmentContext = extractAssignmentContext(field, hostDoc);
+
+  return {
+    title,
+    url,
+    metaDescription,
+    platformKey,
+    foregroundContext,
+    backgroundContext,
+    assignmentContext,
+    counterpart,
+    jobContext,
+    usesComposeBoundary: Boolean(composeBoundary),
+  };
+};
+
+const buildPageContextFromPack = (pack) => {
+  if (!pack) return "";
   const parts = [
-    title ? `Page: ${title}` : "",
-    url ? `URL: ${url}` : "",
-    metaDescription ? `Description: ${metaDescription}` : "",
-    contextText ? `Context:\n${contextText}` : "",
-    pageText ? `Page content:\n${pageText}` : "",
-    jobContext ? `Job description:\n${jobContext}` : "",
+    pack.title ? `Page: ${pack.title}` : "",
+    pack.url ? `URL: ${pack.url}` : "",
+    pack.metaDescription ? `Description: ${pack.metaDescription}` : "",
+    pack.counterpart?.name
+      ? `Audience: ${pack.counterpart.name}${
+          pack.counterpart.roleHint ? ` (${pack.counterpart.roleHint})` : ""
+        }`
+      : "",
+    pack.foregroundContext
+      ? `Foreground context:\n${pack.foregroundContext}`
+      : "",
+    pack.backgroundContext
+      ? `Background context:\n${pack.backgroundContext}`
+      : "",
+    pack.assignmentContext
+      ? `Assignment context:\n${pack.assignmentContext}`
+      : "",
+    pack.jobContext ? `Job description:\n${pack.jobContext}` : "",
   ].filter(Boolean);
 
   return parts.join("\n\n").slice(0, MAX_PAGE_CHARS);
 };
 
-const getQuestionText = (field) => {
+const extractPageContext = (field) => buildPageContextFromPack(extractContextPack(field));
+
+const inferQuestionFromContextPack = (contextPack = null) => {
+  if (!contextPack) return "";
+  const raw = [contextPack.assignmentContext, contextPack.foregroundContext]
+    .filter(Boolean)
+    .join("\n");
+  if (!raw) return "";
+  const lines = raw
+    .split(/\n+/)
+    .map((s) => normalizeText(s))
+    .filter((s) => s.length >= 22 && s.length <= 280);
+  const best =
+    lines.find((s) => /\?$/.test(s)) ||
+    lines.find((s) =>
+      /\b(what|why|how|describe|discuss|explain|analy[sz]e|compare|respond|reply)\b/i.test(
+        s
+      )
+    ) ||
+    "";
+  return best;
+};
+
+const getQuestionText = (field, contextPack = null) => {
   if (!(field instanceof Element)) return "";
+  const hostDoc = getHostDocument();
+  const localDoc = field.ownerDocument || document;
+  const platformKey = contextPack?.platformKey || detectPlatformKey();
 
   const ariaLabel = field.getAttribute("aria-label");
-  if (ariaLabel) return ariaLabel.trim();
+  if (ariaLabel && !isGenericComposeLabel(ariaLabel, platformKey)) {
+    return ariaLabel.trim();
+  }
 
   const ariaLabelledBy = field.getAttribute("aria-labelledby");
   if (typeof ariaLabelledBy === "string" && ariaLabelledBy.trim()) {
     const labelled = ariaLabelledBy
       .trim()
       .split(/\s+/)
-      .map((id) => document.getElementById(id))
+      .map((id) => localDoc.getElementById(id) || hostDoc.getElementById(id))
       .filter((el) => el && typeof el.textContent === "string")
       .map((el) => el.textContent.trim())
       .filter((t) => t)
       .join(" ")
       .trim();
-    if (labelled) return labelled;
+    if (labelled && !isGenericComposeLabel(labelled, platformKey)) {
+      return labelled;
+    }
   }
 
-  const label = document.querySelector(`label[for="${field.id}"]`);
-  if (label?.innerText) return label.innerText.trim();
+  const label =
+    localDoc.querySelector(`label[for="${field.id}"]`) ||
+    hostDoc.querySelector(`label[for="${field.id}"]`);
+  if (
+    label?.innerText &&
+    !isGenericComposeLabel(label.innerText, platformKey)
+  ) {
+    return label.innerText.trim();
+  }
 
   const placeholder =
     field.placeholder ||
     field.getAttribute("data-placeholder") ||
     field.getAttribute("aria-placeholder") ||
     "";
-  if (placeholder) return placeholder.trim();
+  if (placeholder && !isGenericComposeLabel(placeholder, platformKey)) {
+    return placeholder.trim();
+  }
 
   const describedBy = field.getAttribute("aria-describedby");
   if (describedBy) {
     const described = describedBy
       .split(" ")
-      .map((id) => document.getElementById(id)?.innerText || "")
+      .map(
+        (id) =>
+          localDoc.getElementById(id)?.innerText ||
+          hostDoc.getElementById(id)?.innerText ||
+          ""
+      )
       .join(" ")
       .trim();
-    if (described) return described;
+    if (described && !isGenericComposeLabel(described, platformKey)) {
+      return described;
+    }
   }
 
-  const parentText = field.closest("section, form, div")?.innerText || "";
-  return normalizeText(parentText.split("\n").slice(0, 3).join(" "));
+  const inferred = inferQuestionFromContextPack(contextPack);
+  if (inferred) return inferred;
+
+  const hostAnchor = getHostAnchorForField(field, hostDoc);
+  const parentText =
+    hostAnchor?.innerText ||
+    field.closest("section, form, div")?.innerText ||
+    "";
+  const condensed = normalizeText(parentText.split("\n").slice(0, 3).join(" "));
+  if (condensed.length >= 12) return condensed.slice(0, 320);
+
+  const assignmentFallback = extractAssignmentContext(field, hostDoc);
+  if (assignmentFallback) {
+    const line = assignmentFallback
+      .split(/\n+/)
+      .map((s) => normalizeText(s))
+      .find((s) => s.length >= 22 && s.length <= 280);
+    if (line) return line;
+  }
+
+  return "";
 };
 
 const getFieldValue = (field) => {
+  if (isCanvasEditorIframe(field)) {
+    const editorBody = getCanvasEditorBody(field);
+    return editorBody ? (editorBody.innerText || editorBody.textContent || "") : "";
+  }
   if (field?.isContentEditable) return field.textContent || "";
   return field?.value || "";
+};
+
+// Extracts structural hints about a field to guide adaptive generation:
+// expected length (from dimensions/attributes) + nearby question labels
+const extractFieldHints = (field, contextPack = null) => {
+  const hints = {};
+  const hostDoc = getHostDocument();
+
+  // 1. Expected length from explicit attributes
+  const maxLength =
+    parseInt(field.getAttribute("maxlength") || field.getAttribute("maxLength")) || 0;
+  const rows = parseInt(field.getAttribute("rows")) || 0;
+
+  if (maxLength > 0) {
+    hints.maxLength = maxLength;
+    if (maxLength <= 140) hints.expectedLength = "very_short";
+    else if (maxLength <= 320) hints.expectedLength = "short";
+    else if (maxLength <= 700) hints.expectedLength = "medium";
+    else hints.expectedLength = "long";
+  } else {
+    // Fall back to rendered height
+    const rect = field.getBoundingClientRect();
+    if (rect.height > 0) {
+      if (rect.height < 56) hints.expectedLength = "very_short";
+      else if (rect.height < 120) hints.expectedLength = "short";
+      else if (rect.height < 260) hints.expectedLength = "medium";
+      else hints.expectedLength = "long";
+    }
+  }
+
+  // Large textarea rows always means long-form
+  if (rows >= 10) hints.expectedLength = "very_long";
+
+  // 2. Nearby headings/labels that describe what this field expects
+  const nearbyLabels = [];
+  const container =
+    getHostAnchorForField(field, hostDoc) ||
+    field.closest("form, section, article, [role='main']") ||
+    hostDoc.body ||
+    document.body;
+  const candidates = Array.from(
+    container.querySelectorAll("h1,h2,h3,h4,h5,label,legend,p,span")
+  );
+
+  for (const el of candidates.reverse()) {
+    if (el.contains(field)) continue;
+    // Must appear before the field in DOM order
+    if (el.ownerDocument === field.ownerDocument) {
+      const pos = el.compareDocumentPosition(field);
+      if (!(pos & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+    }
+    const text = el.innerText?.trim() || "";
+    if (text.length > 4 && text.length < 300 && !isPromptNoiseText(text)) {
+      nearbyLabels.push(text);
+      if (nearbyLabels.length >= 3) break;
+    }
+  }
+
+  if (contextPack?.assignmentContext) {
+    contextPack.assignmentContext
+      .split(/\n+/)
+      .map((s) => normalizeText(s))
+      .filter((s) => s.length >= 20 && s.length <= 220)
+      .slice(0, 2)
+      .forEach((line) => nearbyLabels.push(line));
+  }
+
+  const uniqueNearby = [...new Set(nearbyLabels.map((s) => s.trim()))].filter(
+    Boolean
+  );
+  if (uniqueNearby.length > 0) hints.nearbyLabels = uniqueNearby.slice(0, 4);
+
+  return hints;
 };
 
 const getLogoUrl = () => chrome.runtime.getURL("logo.png");
@@ -716,10 +1453,14 @@ let _contextPanel = null;
 const capturePageContext = async (button = null) => {
   if (button) setButtonLoading(button);
   try {
-    const title = document.title || "";
-    const url = window.location.href || "";
-    const hostname = window.location.hostname || "";
-    const pageText = extractSectionText(document.body, 4000);
+    const hostDoc = getHostDocument();
+    const loc = getLocationSnapshot();
+    const title = loc.title || document.title || "";
+    const url = loc.href || window.location.href || "";
+    const hostname = loc.hostname || window.location.hostname || "";
+    const pageText =
+      extractSectionText(hostDoc.body || document.body, 4000) ||
+      extractSectionText(document.body, 4000);
     const id = `ctx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
     const entry = { id, title, url, hostname, text: pageText, time: Date.now(), active: true };
@@ -810,6 +1551,26 @@ const updateContextIndicators = () => {
   if (_contextPanel && document.body.contains(_contextPanel)) {
     refreshContextPanel(_contextPanel);
   }
+  syncContextFabVisibility();
+};
+
+const shouldShowContextFab = () => {
+  if (!IS_TOP_FRAME) return false;
+  if (detectPlatformKey() === "canvas") return true;
+  const hasVisibleFieldButton = [...state.buttons.values()].some((btn) => {
+    if (!btn || !document.body.contains(btn)) return false;
+    if (btn.style.display === "none") return false;
+    const rect = btn.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  });
+  return !hasVisibleFieldButton;
+};
+
+const syncContextFabVisibility = () => {
+  if (!_fab) return;
+  const show = shouldShowContextFab();
+  _fab.style.display = show ? "flex" : "none";
+  if (!show) closeContextPanel();
 };
 
 // ─── Floating FAB & Context Panel ─────────────────────────────────────────────
@@ -983,33 +1744,35 @@ const toggleContextPanel = () => {
 
 // ─── On-Device Entity Extraction ──────────────────────────────────────────────
 const extractPageEntities = () => {
-  const hostname = window.location.hostname.toLowerCase();
-  const pathname = window.location.pathname.toLowerCase();
+  const loc = getLocationSnapshot();
+  const hostDoc = getHostDocument();
+  const hostname = (loc.hostname || window.location.hostname || "").toLowerCase();
+  const pathname = (loc.pathname || window.location.pathname || "").toLowerCase();
   const entities = [];
 
   // LinkedIn profile
   if (hostname.includes("linkedin.com") && pathname.includes("/in/")) {
     const name =
-      document.querySelector("h1.text-heading-xlarge")?.innerText?.trim() ||
-      document.querySelector("h1[class*='name']")?.innerText?.trim();
-    const titleEl = document.querySelector(".text-body-medium.break-words") ||
-      document.querySelector("[class*='top-card-layout__headline']");
+      hostDoc.querySelector("h1.text-heading-xlarge")?.innerText?.trim() ||
+      hostDoc.querySelector("h1[class*='name']")?.innerText?.trim();
+    const titleEl = hostDoc.querySelector(".text-body-medium.break-words") ||
+      hostDoc.querySelector("[class*='top-card-layout__headline']");
     const rawTitle = titleEl?.innerText?.trim() || "";
     const atMatch = rawTitle.match(/(?:at|@)\s+([A-Z][A-Za-z0-9 &,.]+?)(?:\s*[\|\·•]|$)/);
     const pipeMatch = rawTitle.match(/^([A-Z][A-Za-z0-9 &,.]+?)\s*[\|·•]/);
     const employer = atMatch?.[1]?.trim() || pipeMatch?.[1]?.trim() ||
-      document.querySelector("[class*='top-card__employer']")?.innerText?.trim();
+      hostDoc.querySelector("[class*='top-card__employer']")?.innerText?.trim();
     if (name) entities.push({ type: "person", name, employer, title: rawTitle, source: "linkedin_profile" });
   }
 
   // LinkedIn job posting
   if (hostname.includes("linkedin.com") && (pathname.includes("/jobs/") || pathname.includes("/job/"))) {
     const company =
-      document.querySelector(".job-details-jobs-unified-top-card__company-name a")?.innerText?.trim() ||
-      document.querySelector("[class*='top-card__employer']")?.innerText?.trim();
+      hostDoc.querySelector(".job-details-jobs-unified-top-card__company-name a")?.innerText?.trim() ||
+      hostDoc.querySelector("[class*='top-card__employer']")?.innerText?.trim();
     const role =
-      document.querySelector("h1.job-details-jobs-unified-top-card__job-title")?.innerText?.trim() ||
-      document.querySelector("h1[class*='job-title']")?.innerText?.trim();
+      hostDoc.querySelector("h1.job-details-jobs-unified-top-card__job-title")?.innerText?.trim() ||
+      hostDoc.querySelector("h1[class*='job-title']")?.innerText?.trim();
     if (company) entities.push({ type: "job_posting", company, role, source: "linkedin_job" });
   }
 
@@ -1017,12 +1780,12 @@ const extractPageEntities = () => {
   if (["greenhouse.io", "ashbyhq.com", "lever.co", "workday.com", "myworkdayjobs.com"]
     .some((b) => hostname.includes(b))) {
     const company =
-      document.querySelector("[class*='company-name']")?.innerText?.trim() ||
-      document.querySelector("meta[property='og:site_name']")?.content?.trim();
+      hostDoc.querySelector("[class*='company-name']")?.innerText?.trim() ||
+      hostDoc.querySelector("meta[property='og:site_name']")?.content?.trim();
     const role =
-      document.querySelector("h1[class*='job-title']")?.innerText?.trim() ||
-      document.querySelector("h1[class*='posting-headline']")?.innerText?.trim() ||
-      document.querySelector("h1")?.innerText?.trim();
+      hostDoc.querySelector("h1[class*='job-title']")?.innerText?.trim() ||
+      hostDoc.querySelector("h1[class*='posting-headline']")?.innerText?.trim() ||
+      hostDoc.querySelector("h1")?.innerText?.trim();
     if (company || role) entities.push({ type: "job_posting", company: company || "", role: role || "", source: hostname });
   }
 
@@ -1030,6 +1793,7 @@ const extractPageEntities = () => {
 };
 
 const createFloatingFAB = () => {
+  if (!IS_TOP_FRAME) return;
   if (_fab && document.body.contains(_fab)) return;
 
   _fab = document.createElement("button");
@@ -1059,6 +1823,7 @@ const createFloatingFAB = () => {
   // Set initial badge
   const count = state.capturedContexts.length;
   if (count > 0) { badge.textContent = count; badge.style.display = "flex"; }
+  syncContextFabVisibility();
 };
 
 // ─── Button State Management ───────────────────────────────────────────────────
@@ -1202,8 +1967,10 @@ const showModal = (field, button) => {
   closeAllModals();
 
   const hasContent = getFieldValue(field).trim().length > 10;
+  const platformKey = detectPlatformKey();
   const activeCount = state.capturedContexts.filter((c) => c.active).length;
-  const alreadySaved = state.capturedContexts.some((c) => c.url === window.location.href);
+  const currentUrl = getLocationSnapshot().href || window.location.href;
+  const alreadySaved = state.capturedContexts.some((c) => c.url === currentUrl);
 
   const modal = document.createElement("div");
   modal.className = "tfa-modal";
@@ -1237,7 +2004,7 @@ const showModal = (field, button) => {
     actions.push({ icon: "↗", label: "Expand", action: "expand" });
   }
 
-  {
+  if (platformKey !== "canvas") {
     const ctxLabel = activeCount > 0
       ? `Add page · ${activeCount} active`
       : alreadySaved ? "Update page context" : "Add page to context";
@@ -1379,11 +2146,25 @@ const getOrCreateButton = (field) => {
   button.className = "tfa-icon-button";
   button.type = "button";
   button.title = "Fill with AI";
+  // Keep critical styles inline so iframe contexts (e.g., TinyMCE about:blank)
+  // still render correctly even if page CSS overrides button defaults.
+  button.style.width = "28px";
+  button.style.height = "28px";
+  button.style.padding = "0";
+  button.style.border = "none";
+  button.style.borderRadius = "50%";
+  button.style.background = "transparent";
+  button.style.cursor = "pointer";
+  button.style.display = "flex";
+  button.style.alignItems = "center";
+  button.style.justifyContent = "center";
+  button.style.boxShadow = "0 2px 8px rgba(0,0,0,0.2)";
 
   const img = document.createElement("img");
   img.src = getLogoUrl();
   img.alt = "AI Fill";
   img.className = "tfa-logo";
+
   button.appendChild(img);
 
   // Single click → show modal (after short debounce to detect double-click)
@@ -1454,6 +2235,7 @@ const positionButton = (field, button) => {
 
 const isEditableField = (field) => {
   if (!field) return false;
+  if (isCanvasEditorIframe(field)) return true;
   if (
     field.disabled ||
     field.readOnly ||
@@ -1462,6 +2244,29 @@ const isEditableField = (field) => {
     return false;
   if (field.isContentEditable) return true;
   return field.tagName === "TEXTAREA" || field.tagName === "INPUT";
+};
+
+const isCanvasEditorIframe = (field) => {
+  if (!(field instanceof Element) || field.tagName !== "IFRAME") return false;
+  if (detectPlatformKey() !== "canvas") return false;
+  return (
+    field.matches(".tox-edit-area__iframe") ||
+    field.matches('.ic-RichContentEditor iframe[id$="_ifr"]') ||
+    (field.id || "").endsWith("_ifr")
+  );
+};
+
+const getCanvasEditorBody = (iframeEl) => {
+  if (!isCanvasEditorIframe(iframeEl)) return null;
+  try {
+    const doc = iframeEl.contentDocument;
+    const body = doc?.body || null;
+    if (!body) return null;
+    if (!body.isContentEditable) return null;
+    return body;
+  } catch (_) {
+    return null;
+  }
 };
 
 const isVisibleField = (field) => {
@@ -1550,6 +2355,71 @@ const isLikelyPersonalInfoField = (field) => {
   return personalPatterns.some((pattern) => combined.includes(pattern));
 };
 
+const isTextInputLike = (field) => {
+  if (!(field instanceof Element) || field.tagName !== "INPUT") return false;
+  const type = (field.type || "").toLowerCase();
+  return type !== "checkbox" && type !== "radio";
+};
+
+const resolveEditableField = (target) => {
+  if (!(target instanceof Element)) return null;
+
+  if (isCanvasEditorIframe(target)) return target;
+
+  if (target.tagName === "TEXTAREA" || isTextInputLike(target)) return target;
+
+  if (!target.isContentEditable) return null;
+
+  // Normalize nested contenteditable descendants (e.g., p/span inside TinyMCE body)
+  // to one stable root so we create exactly one icon per editor.
+  let root = target;
+  while (
+    root.parentElement &&
+    root.parentElement.isContentEditable &&
+    root.parentElement !== root.ownerDocument.body
+  ) {
+    root = root.parentElement;
+  }
+  return root;
+};
+
+const getCanvasEditorContainer = (field) =>
+  field?.closest?.(
+    ".ic-RichContentEditor, .discussion-reply-box, .tox, .tox-tinymce, .tox-editor-container"
+  ) || null;
+
+const pruneDuplicateButtonsForField = (field) => {
+  if (!(field instanceof Element)) return;
+
+  if (isCanvasEditorIframe(field)) {
+    const currentContainer = getCanvasEditorContainer(field);
+    state.buttons.forEach((button, trackedField) => {
+      if (trackedField === field || !(trackedField instanceof Element)) return;
+      if (!isCanvasEditorIframe(trackedField)) return;
+      const sameId =
+        Boolean(field.id) && Boolean(trackedField.id) && field.id === trackedField.id;
+      const sameContainer =
+        currentContainer &&
+        getCanvasEditorContainer(trackedField) === currentContainer;
+      if (!sameId && !sameContainer) return;
+      if (button?.parentElement) button.remove();
+      state.buttons.delete(trackedField);
+    });
+    return;
+  }
+
+  if (!field.isContentEditable) return;
+  state.buttons.forEach((button, trackedField) => {
+    if (trackedField === field || !(trackedField instanceof Element)) return;
+    if (!trackedField.isContentEditable) return;
+    const sameTree =
+      field.contains(trackedField) || trackedField.contains(field);
+    if (!sameTree) return;
+    if (button?.parentElement) button.remove();
+    state.buttons.delete(trackedField);
+  });
+};
+
 const isMessagingField = (field) => {
   const ariaLabel = (field.getAttribute("aria-label") || "").toLowerCase();
   const placeholder = (
@@ -1588,6 +2458,8 @@ const isMessagingField = (field) => {
 
 const insertText = (field, answerText) => {
   const hostname = window.location.hostname.toLowerCase();
+  const editorBody = isCanvasEditorIframe(field) ? getCanvasEditorBody(field) : null;
+  const effectiveField = editorBody || field;
 
   // Apply LinkedIn character limit
   if (hostname.includes("linkedin.com") && answerText.length > 2900) {
@@ -1603,26 +2475,30 @@ const insertText = (field, answerText) => {
         : truncated;
   }
 
-  if (field.isContentEditable) {
-    let targetField = field;
+  if (effectiveField.isContentEditable) {
+    let targetField = effectiveField;
     const qlEditor =
-      field.querySelector(".ql-editor") ||
-      (field.classList.contains("ql-editor") ? field : null);
+      effectiveField.querySelector?.(".ql-editor") ||
+      (effectiveField.classList?.contains?.("ql-editor") ? effectiveField : null);
     if (qlEditor) targetField = qlEditor;
 
     targetField.focus();
 
-    const selection = window.getSelection();
-    const range = document.createRange();
+    const targetDoc = targetField.ownerDocument || document;
+    const targetWin = targetDoc.defaultView || window;
+    const selection = targetWin.getSelection();
+    const range = targetDoc.createRange();
     range.selectNodeContents(targetField);
     selection.removeAllRanges();
     selection.addRange(range);
 
-    const execSuccess = document.execCommand("insertText", false, answerText);
+    const execSuccess =
+      typeof targetDoc.execCommand === "function" &&
+      targetDoc.execCommand("insertText", false, answerText);
 
     if (!execSuccess) {
       targetField.innerHTML = "";
-      const p = document.createElement("p");
+      const p = targetDoc.createElement("p");
       p.textContent = answerText;
       targetField.appendChild(p);
     }
@@ -1641,18 +2517,18 @@ const insertText = (field, answerText) => {
       "value"
     )?.set;
 
-    if (field.tagName === "TEXTAREA" && nativeTextareaSetter) {
-      nativeTextareaSetter.call(field, answerText);
-    } else if (field.tagName === "INPUT" && nativeInputSetter) {
-      nativeInputSetter.call(field, answerText);
+    if (effectiveField.tagName === "TEXTAREA" && nativeTextareaSetter) {
+      nativeTextareaSetter.call(effectiveField, answerText);
+    } else if (effectiveField.tagName === "INPUT" && nativeInputSetter) {
+      nativeInputSetter.call(effectiveField, answerText);
     } else {
-      field.value = answerText;
+      effectiveField.value = answerText;
     }
   }
 
   // Dispatch events for React/Vue/Angular frameworks
-  if (field.isContentEditable) {
-    field.dispatchEvent(
+  if (effectiveField.isContentEditable) {
+    effectiveField.dispatchEvent(
       new InputEvent("beforeinput", {
         bubbles: true,
         cancelable: true,
@@ -1662,7 +2538,7 @@ const insertText = (field, answerText) => {
     );
   }
 
-  field.dispatchEvent(
+  effectiveField.dispatchEvent(
     new InputEvent("input", {
       bubbles: true,
       cancelable: true,
@@ -1670,24 +2546,25 @@ const insertText = (field, answerText) => {
       data: answerText,
     })
   );
-  field.dispatchEvent(new Event("change", { bubbles: true }));
+  effectiveField.dispatchEvent(new Event("change", { bubbles: true }));
 
-  if (field.isContentEditable) {
-    field.dispatchEvent(
+  if (effectiveField.isContentEditable) {
+    effectiveField.dispatchEvent(
       new KeyboardEvent("keydown", { bubbles: true, key: "Unidentified" })
     );
-    field.dispatchEvent(
+    effectiveField.dispatchEvent(
       new KeyboardEvent("keyup", { bubbles: true, key: "Unidentified" })
     );
   }
 
-  field.dispatchEvent(new Event("blur", { bubbles: true }));
+  effectiveField.dispatchEvent(new Event("blur", { bubbles: true }));
 
   setTimeout(() => {
-    field.focus();
-    field.dispatchEvent(new Event("focus", { bubbles: true }));
+    effectiveField.focus();
+    effectiveField.dispatchEvent(new Event("focus", { bubbles: true }));
     if (hostname.includes("linkedin.com")) {
-      const form = field.closest("form") || field.closest(".msg-form");
+      const form =
+        effectiveField.closest?.("form") || effectiveField.closest?.(".msg-form");
       if (form) form.dispatchEvent(new Event("input", { bubbles: true }));
     }
   }, 50);
@@ -1704,12 +2581,14 @@ const generateAndFill = async (field, button, options = {}) => {
   setButtonLoading(button);
 
   try {
-    const question = getQuestionText(field) || "Write a response";
-    const pageContext = extractPageContext(field);
+    const contextPack = extractContextPack(field);
+    const pageContext = buildPageContextFromPack(contextPack);
+    const question = getQuestionText(field, contextPack) || "Write a response";
     const fieldValue = getFieldValue(field);
-    const platformKey = detectPlatformKey();
+    const platformKey = contextPack.platformKey || detectPlatformKey();
+    const fieldHints = extractFieldHints(field, contextPack);
 
-    const activeContexts = state.capturedContexts.filter((c) => c.active);
+    let activeContexts = state.capturedContexts.filter((c) => c.active);
 
     const response = await chrome.runtime.sendMessage({
       type: "generateAnswer",
@@ -1720,6 +2599,8 @@ const generateAndFill = async (field, button, options = {}) => {
       action,
       instruction,
       capturedContexts: activeContexts.length > 0 ? activeContexts : null,
+      fieldHints,
+      contextPack,
     });
 
     if (!response?.ok) {
@@ -1768,6 +2649,7 @@ const showToast = (message, isError = false) => {
 
 // Rate limit: one extraction per 5 minutes per tab session
 let _lastMemoryExtraction = 0;
+let _lastContextRefreshPrompt = 0;
 
 // Action toast: persists until user acts (Save/Skip) or 12 s timeout
 const showActionToast = (insight, section) => {
@@ -1862,6 +2744,23 @@ const triggerMemoryExtraction = async (generatedText, platformKey, pageContext, 
         showActionToast(content, category);
         await new Promise((r) => setTimeout(r, 200));
       }
+
+      // High-signal insight: nudge the user to refresh persistent settings context.
+      // This keeps long-term "always on" background context aligned with new reality.
+      if (
+        category !== "persona" &&
+        (memory.importance || 1) >= 3 &&
+        (memory.confidence || 0) >= 0.9
+      ) {
+        const nowTs = Date.now();
+        if (nowTs - _lastContextRefreshPrompt > 30 * 60 * 1000) {
+          _lastContextRefreshPrompt = nowTs;
+          const label = CAT_LABELS[category] || category;
+          showToast(
+            `High-signal ${label} info detected. Consider updating ${label} context in Settings.`
+          );
+        }
+      }
     }
   } catch (_) {
     // Memory extraction is best-effort — silently ignore errors
@@ -1871,7 +2770,7 @@ const triggerMemoryExtraction = async (generatedText, platformKey, pageContext, 
 // ─── Field Scanning & Button Management ───────────────────────────────────────
 
 const getPlatformSelectors = () => {
-  const hostname = window.location.hostname.toLowerCase();
+  const { hostname, pathname } = getLocationSnapshot();
   let selectors = [];
 
   if (hostname.includes("mail.google.com")) {
@@ -1917,6 +2816,8 @@ const getPlatformSelectors = () => {
       ...PLATFORM_SELECTORS.reddit,
       ...PLATFORM_SELECTORS.general,
     ];
+  } else if (isCanvasLocation(hostname, pathname)) {
+    selectors = [...PLATFORM_SELECTORS.canvas];
   } else {
     selectors = PLATFORM_SELECTORS.general;
   }
@@ -1928,9 +2829,15 @@ const scanAndAddButtons = () => {
   state.scanScheduled = false;
 
   const selector = getPlatformSelectors();
-  const fields = document.querySelectorAll(selector);
+  const candidates = document.querySelectorAll(selector);
+  const seen = new Set();
 
-  fields.forEach((field) => {
+  candidates.forEach((candidate) => {
+    const field = resolveEditableField(candidate);
+    if (!field || seen.has(field)) return;
+    seen.add(field);
+    pruneDuplicateButtonsForField(field);
+
     if (!isEditableField(field) || !isVisibleField(field)) return;
 
     if (state.buttons.has(field)) {
@@ -1939,7 +2846,8 @@ const scanAndAddButtons = () => {
     }
 
     const rect = field.getBoundingClientRect();
-    if (rect.width < 100 || rect.height < 20) return;
+    const minHeight = field.isContentEditable ? 8 : 20;
+    if (rect.width < 100 || rect.height < minHeight) return;
     if (isSearchField(field)) return;
     if (isLikelyPersonalInfoField(field)) return;
 
@@ -1952,6 +2860,7 @@ const scanAndAddButtons = () => {
     const button = getOrCreateButton(field);
     positionButton(field, button);
   });
+  syncContextFabVisibility();
 };
 
 const updateButtonPositions = () => {
@@ -1974,6 +2883,7 @@ const updateButtonPositions = () => {
       }
     });
     state.scrollTicking = false;
+    syncContextFabVisibility();
   });
 };
 
@@ -1984,6 +2894,7 @@ const cleanupOrphanedButtons = () => {
       state.buttons.delete(field);
     }
   });
+  syncContextFabVisibility();
 };
 
 const scheduleScan = () => {
@@ -2004,6 +2915,16 @@ const scheduleScan = () => {
       cleanupOrphanedButtons();
     }, 150);
   }
+};
+
+const observeBodyMutations = () => {
+  if (!document.body || !state.observer) return;
+  state.observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: OBSERVER_ATTRIBUTE_FILTER,
+  });
 };
 
 // ─── Initialization ────────────────────────────────────────────────────────────
@@ -2037,39 +2958,13 @@ const initializeButtons = () => {
     if (shouldScan) scheduleScan();
   });
 
-  if (document.body) {
-    state.observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: [
-        "class",
-        "style",
-        "hidden",
-        "aria-hidden",
-        "contenteditable",
-        "role",
-      ],
-    });
-  }
+  observeBodyMutations();
 
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       state.observer?.disconnect();
     } else if (document.body) {
-      state.observer?.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: [
-          "class",
-          "style",
-          "hidden",
-          "aria-hidden",
-          "contenteditable",
-          "role",
-        ],
-      });
+      observeBodyMutations();
       scheduleScan();
     }
   });
@@ -2084,9 +2979,7 @@ const initializeButtons = () => {
   document.addEventListener(
     "input",
     (e) => {
-      if (
-        e.target?.matches?.('input, textarea, [contenteditable="true"]')
-      ) {
+      if (e.target?.matches?.(EDITABLE_INPUT_SELECTOR)) {
         scheduleScan();
       }
     },
@@ -2098,15 +2991,15 @@ const initializeButtons = () => {
   // including LinkedIn panels that use class names not in our selector list.
   // Guard: skip fields inside the extension's own UI (class names start with "tfa-").
   document.addEventListener("focusin", (e) => {
-    const field = e.target;
-    if (!(field instanceof Element)) return;
-    if (!field.isContentEditable && field.tagName !== "TEXTAREA" &&
-      !(field.tagName === "INPUT" && field.type !== "checkbox" && field.type !== "radio")) return;
+    const field = resolveEditableField(e.target);
+    if (!field) return;
+    pruneDuplicateButtonsForField(field);
     if (field.closest('[class*="tfa-"]')) return; // skip extension's own UI
 
     if (state.buttons.has(field)) {
       // Already tracked — just reposition in case it was hidden
       positionButton(field, state.buttons.get(field));
+      syncContextFabVisibility();
       return;
     }
 
@@ -2114,6 +3007,7 @@ const initializeButtons = () => {
 
     const btn = getOrCreateButton(field);
     positionButton(field, btn);
+    syncContextFabVisibility();
   }, { passive: true, capture: true });
 };
 
@@ -2134,8 +3028,10 @@ const initializeExtension = async () => {
   proactivelyCacheJobDescription();
 };
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initializeExtension);
-} else {
-  initializeExtension();
+if (shouldInitializeInThisFrame()) {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initializeExtension);
+  } else {
+    initializeExtension();
+  }
 }

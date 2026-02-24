@@ -73,6 +73,13 @@
               <option value="gpt-5-nano">GPT-5 Nano</option>
             </select>
           </div>
+          <div class="field field-memory">
+            <label for="openaiEmbeddingModel">Embedding Model <span class="field-hint">vector index</span></label>
+            <select id="openaiEmbeddingModel">
+              <option value="text-embedding-3-small">text-embedding-3-small</option>
+              <option value="text-embedding-3-large">text-embedding-3-large</option>
+            </select>
+          </div>
         </div>
 
         <div class="tab-panel provider-panel" data-panel="anthropic">
@@ -128,6 +135,12 @@
             <select id="geminiMemoryModel">
               <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
               <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
+            </select>
+          </div>
+          <div class="field field-memory">
+            <label for="geminiEmbeddingModel">Embedding Model <span class="field-hint">vector index</span></label>
+            <select id="geminiEmbeddingModel">
+              <option value="gemini-embedding-001">gemini-embedding-001</option>
             </select>
           </div>
         </div>

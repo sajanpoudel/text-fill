@@ -13,8 +13,30 @@ const loadMemories = async () => {
   return memories;
 };
 
+const refreshEmbeddingIndex = async () => {
+  const { memoryEmbeddings = {} } = await chrome.storage.local.get("memoryEmbeddings");
+  embeddingIndex = memoryEmbeddings;
+  return memoryEmbeddings;
+};
+
 const persistMemories = async (memories) => {
   await chrome.storage.local.set({ memories });
+};
+
+const replaceMemoryInState = (memory) => {
+  const idx = allMemories.findIndex((m) => m.id === memory.id);
+  if (idx >= 0) allMemories[idx] = memory;
+  return idx;
+};
+
+const applyMemoryUpdate = async (id, changes, { reloadEmbeddings = false } = {}) => {
+  const res = await chrome.runtime.sendMessage({ type: "updateMemory", id, changes });
+  if (!res?.ok || !res.memory) {
+    return { ok: false, error: res?.error || "Update failed" };
+  }
+  replaceMemoryInState(res.memory);
+  if (reloadEmbeddings) await refreshEmbeddingIndex();
+  return { ok: true, memory: res.memory };
 };
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
@@ -25,6 +47,21 @@ const showToast = (msg, isError = false) => {
   el.className = "mem-toast show" + (isError ? " error" : "");
   clearTimeout(_toastTimer);
   _toastTimer = setTimeout(() => { el.className = "mem-toast"; }, 2500);
+};
+
+const setBackfillReport = (text = "", isError = false) => {
+  const el = document.getElementById("backfillReport");
+  if (!el) return;
+  const normalized = (text || "").trim();
+  if (!normalized) {
+    el.style.display = "none";
+    el.textContent = "";
+    el.style.borderColor = "#e5e7eb";
+    return;
+  }
+  el.style.display = "block";
+  el.textContent = normalized;
+  el.style.borderColor = isError ? "#fca5a5" : "#e5e7eb";
 };
 
 // ── Embedding utils (plain JS, no WASM needed at this scale) ─────────────────
@@ -40,10 +77,11 @@ const normalizeVector = (v) => {
 };
 
 // K-means clustering on pre-normalized embedding vectors (cosine = dot product).
+// Embedding-only clustering: memories without embeddings are excluded.
 // Returns an array of clusters, each being an array of memory ids.
 const kMeansClustering = (ids, k, maxIter = 20) => {
   const validIds = ids.filter((id) => embeddingIndex[id]);
-  if (validIds.length < 2) return [validIds];
+  if (validIds.length < 2) return validIds.length ? [validIds] : [];
   k = Math.min(k, validIds.length);
 
   const dim = embeddingIndex[validIds[0]].length;
@@ -79,12 +117,6 @@ const kMeansClustering = (ids, k, maxIter = 20) => {
 
   const clusters = Array.from({ length: k }, () => []);
   validIds.forEach((id, i) => clusters[assignments[i]].push(id));
-  // Also add ids with no embedding to the largest cluster
-  const noEmbedIds = ids.filter((id) => !embeddingIndex[id]);
-  if (noEmbedIds.length > 0) {
-    const largest = clusters.reduce((a, b) => a.length >= b.length ? a : b);
-    noEmbedIds.forEach((id) => largest.push(id));
-  }
   return clusters.filter((c) => c.length > 0);
 };
 
@@ -94,7 +126,14 @@ const clusterLabel = (memIds) => {
   const entities = mems.flatMap((m) => m.entities || []);
   const tags = mems.flatMap((m) => m.tags || []);
   const topTerms = [...new Set([...entities, ...tags])].slice(0, 3);
-  return topTerms.length > 0 ? topTerms.join(", ") : "General";
+  if (topTerms.length > 0) return topTerms.join(", ");
+
+  const topTypes = [...new Set(mems.map((m) => m.type).filter(Boolean))].slice(0, 2);
+  if (topTypes.length > 0) return topTypes.join(" · ");
+
+  const seed = mems[0]?.content || "";
+  const phrase = seed.split(/\s+/).slice(0, 4).join(" ").trim();
+  return phrase || "General";
 };
 
 // ── Filter + sort ─────────────────────────────────────────────────────────────
@@ -169,13 +208,12 @@ const renderStars = (importance, cardId) => {
     star.addEventListener("click", async (e) => {
       e.stopPropagation();
       const newVal = Number(star.dataset.val);
-      const idx = allMemories.findIndex((m) => m.id === cardId);
-      if (idx >= 0) {
-        allMemories[idx].importance = newVal;
-        allMemories[idx].updatedAt = Date.now();
-        await persistMemories(allMemories);
-        renderAll();
+      const result = await applyMemoryUpdate(cardId, { importance: newVal });
+      if (!result.ok) {
+        showToast(result.error, true);
+        return;
       }
+      renderAll();
     });
     wrap.appendChild(star);
   }
@@ -238,15 +276,16 @@ const createCard = (memory) => {
       <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.5"/>
     </svg>`;
     restoreBtn.addEventListener("click", async () => {
-      const idx = allMemories.findIndex((m) => m.id === memory.id);
-      if (idx >= 0) {
-        allMemories[idx].tier = "active";
-        allMemories[idx].forgetScore = 0;
-        allMemories[idx].updatedAt = Date.now();
-        await persistMemories(allMemories);
-        showToast("Memory restored");
-        renderAll();
+      const result = await applyMemoryUpdate(memory.id, {
+        tier: "active",
+        forgetScore: 0,
+      });
+      if (!result.ok) {
+        showToast(result.error, true);
+        return;
       }
+      showToast("Memory restored");
+      renderAll();
     });
     actions.appendChild(restoreBtn);
   }
@@ -261,13 +300,15 @@ const createCard = (memory) => {
       : '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>'}
   </svg>`;
   privBtn.addEventListener("click", async () => {
-    const idx = allMemories.findIndex((m) => m.id === memory.id);
-    if (idx >= 0) {
-      allMemories[idx].private = !allMemories[idx].private;
-      allMemories[idx].updatedAt = Date.now();
-      await persistMemories(allMemories);
-      renderAll();
+    const current = allMemories.find((m) => m.id === memory.id) || memory;
+    const result = await applyMemoryUpdate(memory.id, {
+      private: !Boolean(current.private),
+    });
+    if (!result.ok) {
+      showToast(result.error, true);
+      return;
     }
+    renderAll();
   });
 
   // Edit button
@@ -322,14 +363,17 @@ const createCard = (memory) => {
   saveBtn.addEventListener("click", async () => {
     const newContent = textarea.value.trim();
     if (!newContent) return;
-    const idx = allMemories.findIndex((m) => m.id === memory.id);
-    if (idx >= 0) {
-      allMemories[idx].content = newContent;
-      allMemories[idx].updatedAt = Date.now();
-      await persistMemories(allMemories);
-      showToast("Memory updated");
-      renderAll();
+    const result = await applyMemoryUpdate(
+      memory.id,
+      { content: newContent },
+      { reloadEmbeddings: true }
+    );
+    if (!result.ok) {
+      showToast(result.error, true);
+      return;
     }
+    showToast("Memory updated");
+    renderAll();
   });
 
   const cancelBtn = document.createElement("button");
@@ -405,6 +449,12 @@ const createCard = (memory) => {
     acc.textContent = `used ${memory.accessCount}×`;
     meta.appendChild(acc);
   }
+  if ((memory.related || []).length > 0) {
+    const rel = document.createElement("span");
+    rel.className = "mem-meta-mentions";
+    rel.textContent = `linked ${(memory.related || []).length}`;
+    meta.appendChild(rel);
+  }
   const time = document.createElement("span");
   time.textContent = relativeTime(memory.updatedAt || memory.createdAt);
   meta.appendChild(time);
@@ -431,10 +481,12 @@ const renderClusters = (list) => {
 
   // Group by category first, then cluster within each
   const cats = [...new Set(list.map((m) => m.category))];
+  let renderedAny = false;
   cats.forEach((cat) => {
     const catMems = list.filter((m) => m.category === cat);
     const k = Math.min(3, Math.max(1, Math.floor(catMems.length / 3)));
     const clusters = kMeansClustering(catMems.map((m) => m.id), k);
+    if (clusters.length === 0) return;
 
     const catSection = document.createElement("div");
     catSection.className = "cluster-category";
@@ -478,7 +530,12 @@ const renderClusters = (list) => {
     });
 
     listEl.appendChild(catSection);
+    renderedAny = true;
   });
+
+  if (!renderedAny) {
+    listEl.innerHTML = `<div class="mem-empty"><p>No embedded memories to cluster yet. Run backfill embeddings first.</p></div>`;
+  }
 };
 
 // ── Stats bar ─────────────────────────────────────────────────────────────────
@@ -524,6 +581,42 @@ const renderStats = () => {
     stat.appendChild(val);
     statsEl.appendChild(stat);
   }
+
+  const embedded = active.filter((m) => embeddingIndex[m.id]).length;
+  if (active.length > 0) {
+    const stat = document.createElement("div");
+    stat.className = "mem-stat";
+    const dot = document.createElement("span");
+    dot.className = "mem-stat-dot dot-work";
+    const label = document.createElement("span");
+    label.className = "mem-stat-label";
+    label.textContent = "Embedded";
+    const val = document.createElement("span");
+    val.className = "mem-stat-val";
+    val.textContent = `${embedded}/${active.length}`;
+    stat.appendChild(dot);
+    stat.appendChild(label);
+    stat.appendChild(val);
+    statsEl.appendChild(stat);
+  }
+
+  if (active.length > embedded) {
+    const missing = active.length - embedded;
+    const stat = document.createElement("div");
+    stat.className = "mem-stat";
+    const dot = document.createElement("span");
+    dot.className = "mem-stat-dot dot-archived";
+    const label = document.createElement("span");
+    label.className = "mem-stat-label";
+    label.textContent = "Need backfill";
+    const val = document.createElement("span");
+    val.className = "mem-stat-val";
+    val.textContent = `${missing}`;
+    stat.appendChild(dot);
+    stat.appendChild(label);
+    stat.appendChild(val);
+    statsEl.appendChild(stat);
+  }
 };
 
 // ── Render ────────────────────────────────────────────────────────────────────
@@ -542,7 +635,7 @@ const renderAll = () => {
   // Cluster toggle button state
   clusterBtn.classList.toggle("active", clusterView);
   // Cluster view only makes sense for non-archived categories
-  const canCluster = activeCategory !== "archived" && list.length >= 3;
+  const canCluster = activeCategory !== "archived" && list.length >= 2;
   clusterBtn.style.display = canCluster ? "" : "none";
 
   renderStats();
@@ -577,6 +670,23 @@ const optimizeMemories = async () => {
   btn.disabled = true;
   btn.textContent = "Optimizing…";
 
+  let merged = 0;
+  let dropped = 0;
+  try {
+    const repairRes = await chrome.runtime.sendMessage({
+      type: "repairMemories",
+      force: true,
+    });
+    if (repairRes?.ok && Array.isArray(repairRes.memories)) {
+      allMemories = repairRes.memories;
+      merged = repairRes?.stats?.merged || 0;
+      dropped = repairRes?.stats?.dropped || 0;
+      await refreshEmbeddingIndex();
+    }
+  } catch (_) {
+    // Repair step is best-effort.
+  }
+
   const active = allMemories.filter((m) => m.tier !== "archived");
 
   // Use forgetScore if available, otherwise fall back to importance × mentions
@@ -597,7 +707,7 @@ const optimizeMemories = async () => {
 
     // Clean up embedding index for removed memories
     if (embeddingIndex && evicted.length > 0) {
-      const { memoryEmbeddings = {} } = await chrome.storage.local.get("memoryEmbeddings");
+      const memoryEmbeddings = await refreshEmbeddingIndex();
       evicted.forEach((m) => delete memoryEmbeddings[m.id]);
       await chrome.storage.local.set({ memoryEmbeddings });
       embeddingIndex = memoryEmbeddings;
@@ -611,14 +721,91 @@ const optimizeMemories = async () => {
 
   btn.disabled = false;
   btn.textContent = "Optimize & Deduplicate";
-  showToast(removed > 0 ? `Removed ${removed} low-value memories` : "Already optimized");
+  const summary = [
+    merged > 0 ? `${merged} merged` : "",
+    dropped > 0 ? `${dropped} dropped` : "",
+    removed > 0 ? `${removed} trimmed` : "",
+  ].filter(Boolean).join(" · ");
+  showToast(summary || "Already optimized");
   renderAll();
+};
+
+const runBackfillEmbeddings = async () => {
+  const btn = document.getElementById("btnBackfillEmbeddings");
+  if (!btn) return;
+
+  btn.disabled = true;
+  btn.textContent = "Backfilling…";
+  setBackfillReport("");
+
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "backfillEmbeddings" });
+    if (!res?.ok) {
+      const err = res?.error || "Backfill failed";
+      setBackfillReport(`Backfill failed:\n${err}`, true);
+      showToast(err, true);
+      return;
+    }
+
+    const stats = res.stats || {};
+    const details = Array.isArray(stats.errorDetails) ? stats.errorDetails : [];
+    const lines = [
+      `Provider: ${stats.provider || "n/a"}`,
+      `Model: ${stats.model || "n/a"}`,
+      `Total memories: ${stats.total || 0}`,
+      `Missing embeddings: ${stats.missing || 0}`,
+      `Attempted: ${stats.attempted || 0}`,
+      `Embedded: ${stats.embedded || 0}`,
+      `Errors: ${stats.errors || 0}`,
+    ];
+    if (stats.error) {
+      lines.push("", `Error: ${stats.error}`);
+    }
+    if (details.length > 0) {
+      lines.push("", "Per-item errors:");
+      details.forEach((d, i) => {
+        const id = d?.id || "n/a";
+        const msg = d?.error || "Unknown error";
+        lines.push(`${i + 1}. [${id}] ${msg}`);
+      });
+    }
+    setBackfillReport(lines.join("\n"), (stats.errors || 0) > 0 || Boolean(stats.error));
+
+    await refreshEmbeddingIndex();
+    renderAll();
+
+    if ((stats.errors || 0) > 0 || stats.error) {
+      showToast("Backfill completed with errors", true);
+    } else {
+      showToast("Backfill complete");
+    }
+  } catch (err) {
+    const msg = err?.message || String(err);
+    setBackfillReport(`Backfill failed:\n${msg}`, true);
+    showToast(msg, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Backfill embeddings";
+  }
 };
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 const init = async () => {
   allMemories = await loadMemories();
+  try {
+    const repairRes = await chrome.runtime.sendMessage({
+      type: "repairMemories",
+      force: false,
+    });
+    if (repairRes?.ok && repairRes.ran && Array.isArray(repairRes.memories)) {
+      allMemories = repairRes.memories;
+      await refreshEmbeddingIndex();
+    }
+  } catch (_) {
+    // If maintenance call fails, continue with what is already loaded.
+  }
   renderAll();
+  setBackfillReport("");
 
   // Search
   document.getElementById("memSearch").addEventListener("input", (e) => {
@@ -648,12 +835,16 @@ const init = async () => {
     allMemories = [];
     await persistMemories(allMemories);
     await chrome.storage.local.remove("memoryEmbeddings");
+    setBackfillReport("");
     showToast("All memories cleared");
     renderAll();
   });
 
   // Optimize
   document.getElementById("btnOptimize").addEventListener("click", optimizeMemories);
+  document
+    .getElementById("btnBackfillEmbeddings")
+    .addEventListener("click", runBackfillEmbeddings);
 };
 
 init();
