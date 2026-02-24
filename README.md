@@ -1,8 +1,8 @@
 # Text Fill
 
-**Your browser companion that learns who you are and helps you write — everywhere.**
+**Your browser companion that learns who you are and helps you write -  everywhere.**
 
-Text Fill lives in your browser and watches your back. It learns your voice, remembers what matters to you, and helps you write better responses across every site you use — emails, job applications, LinkedIn messages, tweets, comments, forms, and more.
+Text Fill lives in your browser and watches your back. It learns your voice, remembers what matters to you, and helps you write better responses across every site you use -  emails, job applications, LinkedIn messages, tweets, comments, forms, and more.
 
 The longer you use it, the better it knows you.
 
@@ -14,31 +14,31 @@ The longer you use it, the better it knows you.
 
 Most writing tools make you repeat yourself. You paste your resume every time, re-explain your background, switch between modes. Text Fill doesn't work that way.
 
-It builds a living memory of you — your job, your skills, your tone, how you write, what you care about. Every time you generate something, it pulls in the context that actually matters for that specific moment. On LinkedIn, it knows your work story. On Twitter, it matches your voice. On a job board, it reads the job description and connects it to your experience automatically.
+It builds a living memory of you -  your job, your skills, your tone, how you write, what you care about. Every time you generate something, it pulls in the context that actually matters for that specific moment. On LinkedIn, it knows your work story. On Twitter, it matches your voice. On a job board, it reads the job description and connects it to your experience automatically.
 
 **Single-click** the icon next to any text field to open the action menu.
 **Double-click** to generate instantly with no menu.
 
 ---
 
-## Memory — The Core
+## Memory -  The Core
 
 Text Fill learns from you over time. As you generate, it quietly extracts facts worth remembering:
 
-- **Work** — your job title, skills, projects, career goals, companies you're targeting
-- **Social** — your interests, communities, how you spend your time
-- **Personal** — your name, location, values, relationships
-- **Persona** — your writing voice: the words you use, the rhythm of your sentences, what makes your writing distinctly yours
+- **Work** -  your job title, skills, projects, career goals, companies you're targeting
+- **Social** -  your interests, communities, how you spend your time
+- **Personal** -  your name, location, values, relationships
+- **Persona** -  your writing voice: the words you use, the rhythm of your sentences, what makes your writing distinctly yours
 
-Memory is selective. It only saves things it's genuinely confident about (85%+ threshold). Persona — your writing identity — is held to an even higher bar (95%) because it should only reflect patterns that are unmistakably you, drawn from your own words, not from what the AI generated.
+Memory is selective. It only saves things it's genuinely confident about (85%+ threshold). Persona -  your writing identity -  is held to an even higher bar (95%) because it should only reflect patterns that are unmistakably you, drawn from your own words, not from what the AI generated.
 
 ### Semantic Search
 
-When you have an OpenAI or Gemini API key, Text Fill uses vector embeddings to find the most relevant memories for each context — not just keyword matching, but genuine semantic similarity. The right facts surface at the right moment.
+When you have an OpenAI or Gemini API key, Text Fill uses vector embeddings to find the most relevant memories for each context -  not just keyword matching, but genuine semantic similarity. The right facts surface at the right moment.
 
 ### Forgetting Curve
 
-Memories don't last forever. Text Fill uses a spaced-repetition forgetting model inspired by Ebbinghaus: memories you haven't used or reinforced in a while gradually fade. High-value memories archive before they delete. Low-value ones are quietly cleaned up. The system self-maintains — you never have to manage it manually.
+Memories don't last forever. Text Fill uses a spaced-repetition forgetting model inspired by Ebbinghaus: memories you haven't used or reinforced in a while gradually fade. High-value memories archive before they delete. Low-value ones are quietly cleaned up. The system self-maintains -  you never have to manage it manually.
 
 **Caps:** 500 active memories, 200 archived. 
 
@@ -57,7 +57,7 @@ Open **Settings → Manage Memory** to see everything Text Fill has learned:
 
 ## Context Library
 
-Sometimes the context you need is on a different page. The floating button at the bottom-right of every page opens the **Context Library** — a cross-tab context manager.
+Sometimes the context you need is on a different page. The floating button at the bottom-right of every page opens the **Context Library** -  a cross-tab context manager.
 
 Save any page as context (a job description, a company's about page, a person's LinkedIn profile) and it's automatically included in your next generation, no matter which tab you're writing from.
 
@@ -87,9 +87,9 @@ On job boards (Greenhouse, Lever, Ashby, Workday, Workable, iCIMS, etc.) it auto
 
 Alongside automatic memory, you can give Text Fill a foundation to work from in Settings:
 
-- **Career & Work** — your resume, skills, job history. Used on LinkedIn, Gmail, job boards, Slack, Notion.
-- **Social & Personal** — your interests, personality, how you like to come across online. Used on Twitter, Instagram, Reddit, Facebook, Discord.
-- **Always Active** — facts that apply everywhere: your name, preferred tone, things to always or never say.
+- **Career & Work** -  your resume, skills, job history. Used on LinkedIn, Gmail, job boards, Slack, Notion.
+- **Social & Personal** -  your interests, personality, how you like to come across online. Used on Twitter, Instagram, Reddit, Facebook, Discord.
+- **Always Active** -  facts that apply everywhere: your name, preferred tone, things to always or never say.
 
 You can paste text directly or upload a PDF or text file.
 
