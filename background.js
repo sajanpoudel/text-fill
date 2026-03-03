@@ -1144,12 +1144,12 @@ const PLATFORM_PROFILES = {
   gmail: {
     name: "Gmail",
     instructions:
-      "You are writing an email in Gmail. Be professional yet personable. Match the conversation thread tone. Keep emails clear and concise. Use appropriate greeting and sign-off when the context calls for it.",
+      "You are writing an email in Gmail. Be professional yet personable. Be humane and genuine when needed. Match the conversation thread tone. Keep emails clear and concise. Use appropriate greeting and sign-off when the context calls for it.",
   },
   linkedin: {
     name: "LinkedIn",
     instructions:
-      "You are writing on LinkedIn. Be professional yet authentic and genuinely human. For messages: warm, direct, and get to the point. For posts: insightful, genuine, thought-provoking. For comments: thoughtful and additive. Never sound like a corporate account or a recruiter template.",
+      "You are writing on LinkedIn. Be authentic and genuinely human. For posts: insightful, genuine, thought-provoking. For comments: thoughtful and additive. Never sound like a corporate account or a recruiter template.",
   },
   twitter: {
     name: "Twitter/X",
@@ -1401,6 +1401,17 @@ const buildPrompt = ({
 }) => {
   const profile =
     PLATFORM_PROFILES[platformKey] || PLATFORM_PROFILES.general;
+  const selectedContexts = Array.isArray(capturedContexts)
+    ? capturedContexts
+        .filter(
+          (ctx) =>
+            ctx &&
+            ctx.active !== false &&
+            typeof ctx.text === "string" &&
+            ctx.text.trim()
+        )
+        .slice(-4)
+    : [];
   const taskInstruction =
     ACTION_INSTRUCTIONS[action] || ACTION_INSTRUCTIONS.generate;
   const fieldType = classifyFieldType(
@@ -1439,8 +1450,11 @@ const buildPrompt = ({
         "Start directly. No preamble.",
         "Use active voice. Be confident, specific, and genuine.",
         "When personal context is provided, use it naturally without explicitly referencing it ('based on my background' → just use the background).",
-        "Context priority rule: follow Foreground Context first, then Field/Question, then Background Context, then long-term memory.",
+        "Context priority rule: follow Foreground Context first, then Field/Question, then User-selected Context, then Background Context, then long-term memory.",
         "If Foreground and Background conflict, trust Foreground.",
+        selectedContexts.length > 0
+          ? "When User-selected Context exists, treat it as required source material and use concrete details from it unless it conflicts with explicit instructions."
+          : "",
         academicMode
           ? "Academic mode: prioritize assignment prompt, rubric, and question only. Ignore unrelated personal/career memory unless the user explicitly asks to include it."
           : "",
@@ -1451,27 +1465,31 @@ const buildPrompt = ({
 
   const userParts = [];
 
-  if (includeLongTermMemory && generalContext?.trim()) {
-    userParts.push(`=== Your Background ===\n${generalContext.trim()}`);
-  }
-
-  if (includeLongTermMemory && learnedMemory?.trim()) {
-    userParts.push(learnedMemory.trim());
-  }
-
-  if (Array.isArray(capturedContexts) && capturedContexts.length > 0) {
-    capturedContexts.forEach((ctx) => {
-      if (ctx?.text) {
-        const label = ctx.title || ctx.hostname || ctx.url || "another page";
-        userParts.push(`=== Context from: ${label} ===\n${ctx.text.trim()}`);
-      }
-    });
-  }
-
+  // Highest-priority context first: foreground + user query/instruction + user-selected contexts.
   if (contextPack?.foregroundContext?.trim()) {
     userParts.push(
       `=== Foreground Context (Highest Priority) ===\n${contextPack.foregroundContext.trim()}`
     );
+  }
+
+  if (question?.trim()) {
+    userParts.push(`=== Field / Question (High Priority) ===\n${question.trim()}`);
+  }
+
+  if (instruction?.trim()) {
+    userParts.push(`=== Additional Instruction (High Priority) ===\n${instruction.trim()}`);
+  }
+
+  if (selectedContexts.length > 0) {
+    userParts.push(
+      "=== Required Use of User-selected Context ===\nUse concrete facts from the User-selected Context blocks below. Do not ignore them."
+    );
+    selectedContexts.forEach((ctx) => {
+      const label = ctx.title || ctx.hostname || ctx.url || "another page";
+      userParts.push(
+        `=== User-selected Context (High Priority): ${label} ===\n${ctx.text.trim().slice(0, 2600)}`
+      );
+    });
   }
 
   if (contextPack?.counterpart?.name || audienceType !== "professional") {
@@ -1495,16 +1513,30 @@ const buildPrompt = ({
     );
   }
 
-  if (contextPack?.backgroundContext?.trim()) {
+  const backgroundContextText = contextPack?.backgroundContext?.trim();
+  if (backgroundContextText) {
+    const clippedBackground = selectedContexts.length
+      ? backgroundContextText.slice(0, 1800)
+      : backgroundContextText;
     userParts.push(
-      `=== Background Context (Secondary) ===\n${contextPack.backgroundContext.trim()}`
+      `=== Background Context (Secondary) ===\n${clippedBackground}`
     );
   } else if (pageContext?.trim()) {
     userParts.push(`=== Current Page Context ===\n${pageContext.trim()}`);
   }
 
-  if (question?.trim()) {
-    userParts.push(`=== Field / Question ===\n${question.trim()}`);
+  // Existing content is important for rewrite/expand/shorten actions.
+  if (fieldValue?.trim()) {
+    userParts.push(`=== Existing Content ===\n${fieldValue.trim()}`);
+  }
+
+  // Lower-priority long-term memories/context.
+  if (includeLongTermMemory && generalContext?.trim()) {
+    userParts.push(`=== Your Background (Lower Priority) ===\n${generalContext.trim()}`);
+  }
+
+  if (includeLongTermMemory && learnedMemory?.trim()) {
+    userParts.push(learnedMemory.trim());
   }
 
   userParts.push(
@@ -1521,14 +1553,6 @@ const buildPrompt = ({
       .filter(Boolean)
       .join("\n")
   );
-
-  if (fieldValue?.trim()) {
-    userParts.push(`=== Existing Content ===\n${fieldValue.trim()}`);
-  }
-
-  if (instruction?.trim()) {
-    userParts.push(`=== Additional Instruction ===\n${instruction.trim()}`);
-  }
 
   userParts.push(`=== Task ===\n${taskInstruction}`);
 
@@ -2114,6 +2138,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
 
       const platformKey = message.platformKey || "general";
+      const capturedContextCount = Array.isArray(message.capturedContexts)
+        ? message.capturedContexts.filter(
+            (ctx) =>
+              ctx &&
+              ctx.active !== false &&
+              typeof ctx.text === "string" &&
+              ctx.text.trim()
+          ).length
+        : 0;
+      if (platformKey === "gmail" || capturedContextCount > 0) {
+        console.debug("[TextFill] generateAnswer request", {
+          platformKey,
+          capturedContextCount,
+          questionChars: (message.question || "").length,
+          fieldValueChars: (message.fieldValue || "").length,
+          foregroundChars: message.contextPack?.foregroundContext?.length || 0,
+          backgroundChars: message.contextPack?.backgroundContext?.length || 0,
+        });
+      }
 
       const structuredContext = buildContextBlock(platformKey, {
         workContext:   workContextText   || "",

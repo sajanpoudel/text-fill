@@ -1450,6 +1450,95 @@ const getLogoUrl = () => chrome.runtime.getURL("logo.png");
 let _fab = null;
 let _contextPanel = null;
 
+const normalizeCapturedContexts = (contexts = []) =>
+  contexts
+    .filter((ctx) => ctx && typeof ctx === "object")
+    .map((ctx) => ({
+      ...ctx,
+      id:
+        typeof ctx.id === "string" && ctx.id
+          ? ctx.id
+          : `ctx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      title: typeof ctx.title === "string" ? ctx.title : "",
+      url: typeof ctx.url === "string" ? ctx.url : "",
+      hostname: typeof ctx.hostname === "string" ? ctx.hostname : "",
+      text: typeof ctx.text === "string" ? ctx.text : "",
+      time: Number.isFinite(ctx.time) ? ctx.time : Date.now(),
+      // Backward-compatible default: contexts without this flag are active.
+      active: ctx.active !== false,
+    }))
+    .filter((ctx) => ctx.text.trim());
+
+const normalizeCapturedPageText = (text = "", maxLength = 4000) =>
+  String(text || "")
+    .replace(/\r/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+    .slice(0, maxLength);
+
+const extractCapturedPageText = (hostDoc, platformKey) => {
+  const mainRoot =
+    hostDoc.querySelector("main, article, [role='main']") ||
+    hostDoc.body ||
+    document.body;
+
+  if (platformKey === "canvas") {
+    const canvasRoots = [
+      hostDoc.querySelector("[data-resource-type='discussion_topic.body']"),
+      hostDoc.querySelector("[data-testid='discussion-topic-container']"),
+      hostDoc.querySelector(
+        ".assignment-description, .ic-Assignment-description, .discussion-topic, .quiz-submission, .submission-details"
+      ),
+      mainRoot,
+      hostDoc.body || document.body,
+    ].filter(Boolean);
+
+    for (const root of canvasRoots) {
+      const focused = collectKeywordSnippets(root, ASSIGNMENT_KEYWORDS, {
+        maxSnippets: 12,
+        maxTotal: 3600,
+        maxNodes: 1000,
+      });
+      if (focused && focused.length > 180) {
+        return normalizeCapturedPageText(focused, 4000);
+      }
+      const broad = extractSectionText(root, 4200);
+      if (broad && broad.length > 600) {
+        return normalizeCapturedPageText(broad, 4000);
+      }
+    }
+  }
+
+  const broad =
+    extractSectionText(mainRoot, 4200) ||
+    extractSectionText(hostDoc.body || document.body, 4200);
+  return normalizeCapturedPageText(broad, 4000);
+};
+
+const syncCapturedContextsFromStorage = async () => {
+  try {
+    const stored = await chrome.storage.local.get("capturedContexts");
+    state.capturedContexts = normalizeCapturedContexts(stored.capturedContexts);
+  } catch (_) {
+    state.capturedContexts = [];
+  }
+  return state.capturedContexts;
+};
+
+const getActiveCapturedContexts = async () => {
+  const contexts = await syncCapturedContextsFromStorage();
+  return contexts.filter((c) => c.active !== false && c.text.trim());
+};
+
+const persistCapturedContexts = async (contexts) => {
+  const normalized = normalizeCapturedContexts(contexts);
+  state.capturedContexts = normalized;
+  await chrome.storage.local.set({ capturedContexts: normalized });
+  updateContextIndicators();
+  return normalized;
+};
+
 const capturePageContext = async (button = null) => {
   if (button) setButtonLoading(button);
   try {
@@ -1458,24 +1547,30 @@ const capturePageContext = async (button = null) => {
     const title = loc.title || document.title || "";
     const url = loc.href || window.location.href || "";
     const hostname = loc.hostname || window.location.hostname || "";
-    const pageText =
-      extractSectionText(hostDoc.body || document.body, 4000) ||
-      extractSectionText(document.body, 4000);
+    const platformKey = detectPlatformKey();
+    const pageText = extractCapturedPageText(hostDoc, platformKey);
+    if (!pageText) {
+      if (button) resetButton(button);
+      showToast("No usable page context found to save", true);
+      return;
+    }
     const id = `ctx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
     const entry = { id, title, url, hostname, text: pageText, time: Date.now(), active: true };
 
+    const latest = await syncCapturedContextsFromStorage();
+    const next = Array.isArray(latest) ? [...latest] : [];
+
     // Deduplicate by URL — update if already saved
-    const existingIdx = state.capturedContexts.findIndex((c) => c.url === url);
+    const existingIdx = next.findIndex((c) => c.url === url);
     if (existingIdx >= 0) {
-      state.capturedContexts[existingIdx] = entry;
+      next[existingIdx] = entry;
     } else {
-      state.capturedContexts.push(entry);
+      next.push(entry);
     }
 
-    await chrome.storage.local.set({ capturedContexts: state.capturedContexts });
+    await persistCapturedContexts(next);
     if (button) resetButton(button);
-    updateContextIndicators();
     showToast(`Context saved: ${(title || hostname).slice(0, 40)}`);
 
     // Entity extraction + relational linking (fire-and-forget)
@@ -1501,28 +1596,30 @@ const capturePageContext = async (button = null) => {
 };
 
 const clearCapturedContext = async (id = null) => {
+  const latest = await syncCapturedContextsFromStorage();
+  let next = Array.isArray(latest) ? [...latest] : [];
   if (id) {
-    state.capturedContexts = state.capturedContexts.filter((c) => c.id !== id);
+    next = next.filter((c) => c.id !== id);
   } else {
-    state.capturedContexts = [];
+    next = [];
   }
-  await chrome.storage.local.set({ capturedContexts: state.capturedContexts });
-  updateContextIndicators();
+  await persistCapturedContexts(next);
   if (!id) showToast("All contexts cleared");
 };
 
 const toggleContextActive = async (id) => {
-  const ctx = state.capturedContexts.find((c) => c.id === id);
+  const latest = await syncCapturedContextsFromStorage();
+  const next = Array.isArray(latest) ? [...latest] : [];
+  const ctx = next.find((c) => c.id === id);
   if (ctx) {
-    ctx.active = !ctx.active;
-    await chrome.storage.local.set({ capturedContexts: state.capturedContexts });
-    updateContextIndicators();
+    ctx.active = ctx.active === false;
+    await persistCapturedContexts(next);
   }
 };
 
 // Update the dot on a single field button
 const updateContextIndicator = (button) => {
-  const activeCount = state.capturedContexts.filter((c) => c.active).length;
+  const activeCount = state.capturedContexts.filter((c) => c.active !== false).length;
   let dot = button.querySelector(".tfa-context-dot");
   if (activeCount > 0) {
     if (!dot) {
@@ -1605,14 +1702,15 @@ const renderContextList = (listEl) => {
   }
 
   [...state.capturedContexts].reverse().forEach((ctx) => {
+    const isActive = ctx.active !== false;
     const row = document.createElement("div");
-    row.className = `tfa-cp-row${ctx.active ? "" : " tfa-cp-row-inactive"}`;
+    row.className = `tfa-cp-row${isActive ? "" : " tfa-cp-row-inactive"}`;
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.className = "tfa-cp-check";
-    checkbox.checked = ctx.active;
-    checkbox.title = ctx.active ? "Deactivate" : "Activate";
+    checkbox.checked = isActive;
+    checkbox.title = isActive ? "Deactivate" : "Activate";
     checkbox.addEventListener("change", async () => {
       await toggleContextActive(ctx.id);
     });
@@ -1968,7 +2066,7 @@ const showModal = (field, button) => {
 
   const hasContent = getFieldValue(field).trim().length > 10;
   const platformKey = detectPlatformKey();
-  const activeCount = state.capturedContexts.filter((c) => c.active).length;
+  const activeCount = state.capturedContexts.filter((c) => c.active !== false).length;
   const currentUrl = getLocationSnapshot().href || window.location.href;
   const alreadySaved = state.capturedContexts.some((c) => c.url === currentUrl);
 
@@ -2588,7 +2686,16 @@ const generateAndFill = async (field, button, options = {}) => {
     const platformKey = contextPack.platformKey || detectPlatformKey();
     const fieldHints = extractFieldHints(field, contextPack);
 
-    let activeContexts = state.capturedContexts.filter((c) => c.active);
+    const activeContexts = await getActiveCapturedContexts();
+    if (platformKey === "gmail" || activeContexts.length > 0) {
+      console.debug("[TextFill] generateAndFill payload", {
+        platformKey,
+        activeCapturedContexts: activeContexts.length,
+        foregroundChars: contextPack?.foregroundContext?.length || 0,
+        backgroundChars: contextPack?.backgroundContext?.length || 0,
+        questionChars: question.length,
+      });
+    }
 
     const response = await chrome.runtime.sendMessage({
       type: "generateAnswer",
@@ -3015,18 +3122,20 @@ const initializeExtension = async () => {
   setupUrlChangeDetection();
 
   // Load context library from storage
-  try {
-    const stored = await chrome.storage.local.get("capturedContexts");
-    if (Array.isArray(stored.capturedContexts)) {
-      state.capturedContexts = stored.capturedContexts;
-    }
-  } catch (_) { /* ignore */ }
+  await syncCapturedContextsFromStorage();
 
   initializeButtons();
   createFloatingFAB();
   updateContextIndicators();
   proactivelyCacheJobDescription();
 };
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local" || !changes.capturedContexts) return;
+  const next = changes.capturedContexts.newValue;
+  state.capturedContexts = normalizeCapturedContexts(next);
+  updateContextIndicators();
+});
 
 if (shouldInitializeInThisFrame()) {
   if (document.readyState === "loading") {
