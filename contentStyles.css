@@ -366,6 +366,10 @@
   overflow: hidden;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   animation: tfa-modal-in 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  /* Ensure host page's pointer-events:none never cascades into our modal */
+  pointer-events: auto !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
 }
 
 @keyframes tfa-modal-in {
@@ -390,6 +394,10 @@
   outline: none;
   box-sizing: border-box;
   border-radius: 0;
+  pointer-events: auto !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  cursor: text !important;
 }
 
 .tfa-modal-input::placeholder {

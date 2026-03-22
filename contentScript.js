@@ -1998,6 +1998,104 @@ const resetButton = (button) => {
 
 // ─── Modal System ──────────────────────────────────────────────────────────────
 
+// ─── Universal Focus Protection ───────────────────────────────────────────────
+//
+// The problem: host pages (GitHub, LinkedIn, Jira, etc.) have modal dialogs
+// with focus traps. When our Text Fill modal opens on top of them, the host
+// trap steals focus from our instruction input using one or more of these:
+//
+//   1. JS focusin at document/element  — catches focus arriving outside trap
+//   2. JS focusout at dialog/document  — catches focus leaving trap, restores it
+//   3. pointerdown at document         — catches clicks outside, restores focus
+//   4. inert / aria-hidden on backdrop — makes elements outside dialog non-interactive
+//   5. rAF/setInterval polling         — checks every frame, forces focus back
+//
+// This function installs defences against all five mechanisms and returns a
+// cleanup function that removes every listener and restores any changed attrs.
+//
+const setupFocusProtection = (instructionInput, modal, trapContainer = null) => {
+  // ── 1 & 2: window-capture focusin / focusout ─────────────────────────────
+  // window capture fires before document capture, before element — so for
+  // traps registered AFTER our content script, we stop them here.
+  const onFocusIn  = (e) => { if (modal.contains(e.target))        e.stopImmediatePropagation(); };
+  const onFocusOut = (e) => { if (modal.contains(e.relatedTarget)) e.stopImmediatePropagation(); };
+  window.addEventListener("focusin",  onFocusIn,  true);
+  window.addEventListener("focusout", onFocusOut, true);
+
+  // ── 3: window-capture pointerdown ────────────────────────────────────────
+  const onPtrDown = (e) => { if (modal.contains(e.target)) e.stopImmediatePropagation(); };
+  window.addEventListener("pointerdown", onPtrDown, true);
+
+  // ── 4: remove inert / aria-hidden from modal's ancestors ─────────────────
+  // Host dialogs may mark the background as inert="" / aria-hidden="true".
+  // Strip those from our modal's ancestor chain and restore on cleanup.
+  const restorations = [];
+  let el = modal.parentElement;
+  while (el && el !== document.documentElement) {
+    if (el.hasAttribute("inert")) {
+      el.removeAttribute("inert");
+      restorations.push([el, "inert", ""]);
+    }
+    if (el.getAttribute("aria-hidden") === "true") {
+      el.removeAttribute("aria-hidden");
+      restorations.push([el, "aria-hidden", "true"]);
+    }
+    el = el.parentElement;
+  }
+
+  // ── 5: inert every focusable element inside the trap container ───────────────
+  //
+  // The `inert` attribute is enforced at the browser level — no JS mechanism
+  // (event handlers, .focus() calls, saved prototype references, rAF polling)
+  // can focus an inert element.  We use it to neutralise the host focus trap.
+  //
+  // Previous approach inerted only direct <dialog> children; that missed the
+  // textarea when it was nested deeper (e.g. inside a wrapper div).
+  // Now we querySelectorAll for every focusable descendant of the trap container
+  // and inert them individually — depth-independent and reliable.
+  //
+  // Our modal's contents are excluded (filter below), so our input and buttons
+  // remain fully interactive.  Everything is restored on cleanup.
+  //
+  const inertedElements = [];
+  if (trapContainer) {
+    const FOCUSABLE = "input, textarea, button, a[href], select, [tabindex], [contenteditable]";
+    Array.from(trapContainer.querySelectorAll(FOCUSABLE))
+      .filter(el => !modal.contains(el) && !el.hasAttribute("inert"))
+      .forEach(el => {
+        el.setAttribute("inert", "");
+        inertedElements.push(el);
+      });
+  }
+
+  // ── 6: prototype override — secondary defence for role="dialog" sites ─────
+  // For body-mounted modals (LinkedIn etc.), blocks .focus() theft calls made
+  // by JS focus traps in the first 600 ms after the user clicks the input.
+  const origFocus = HTMLElement.prototype.focus;
+  let blockUntil = 0;
+  const activateBlock = () => { blockUntil = Date.now() + 600; };
+  instructionInput.addEventListener("mousedown", activateBlock, true);
+
+  HTMLElement.prototype.focus = function focusOverride(opts) {
+    if (!modal.isConnected) {
+      HTMLElement.prototype.focus = origFocus;
+      return origFocus.call(this, opts);
+    }
+    if (modal.contains(this)) return origFocus.call(this, opts);
+    if (Date.now() < blockUntil) return; // block theft for 600 ms after click
+    return origFocus.call(this, opts);
+  };
+
+  return () => {
+    window.removeEventListener("focusin",    onFocusIn,  true);
+    window.removeEventListener("focusout",   onFocusOut, true);
+    window.removeEventListener("pointerdown", onPtrDown,  true);
+    if (HTMLElement.prototype.focus !== origFocus) HTMLElement.prototype.focus = origFocus;
+    inertedElements.forEach(el => el.removeAttribute("inert"));
+    restorations.forEach(([e, attr, val]) => e.setAttribute(attr, val));
+  };
+};
+
 let _buttonIdCounter = 0;
 
 const getButtonId = (button) => {
@@ -2014,12 +2112,18 @@ const getModalForButton = (button) =>
 
 const closeModalForButton = (button) => {
   const modal = getModalForButton(button);
-  if (modal) modal.remove();
+  if (modal) {
+    if (typeof modal._cleanup === "function") modal._cleanup();
+    modal.remove();
+  }
   delete button.dataset.modalOpen;
 };
 
 const closeAllModals = () => {
-  document.querySelectorAll(".tfa-modal").forEach((m) => m.remove());
+  document.querySelectorAll(".tfa-modal").forEach((m) => {
+    if (typeof m._cleanup === "function") m._cleanup();
+    m.remove();
+  });
   state.buttons.forEach((btn) => delete btn.dataset.modalOpen);
 };
 
@@ -2030,21 +2134,20 @@ const positionModal = (modal, button) => {
   const MODAL_W = 224;
   const MODAL_H_ESTIMATE = 220;
 
-  // Default: align right edge of modal with button, below button
-  let left = btnRect.right + window.scrollX - MODAL_W;
-  let top = btnRect.bottom + window.scrollY + 6;
+  // Use viewport coordinates — position:fixed is always viewport-relative,
+  // whether the modal is at document.body or inside a native <dialog> top layer.
+  let left = btnRect.right - MODAL_W;
+  let top  = btnRect.bottom + 6;
 
-  // Clamp horizontally
   if (left < 8) left = 8;
   if (left + MODAL_W > viewportW - 8) left = viewportW - MODAL_W - 8;
 
-  // If too close to bottom, show above button
-  if (top + MODAL_H_ESTIMATE > viewportH + window.scrollY - 8) {
-    top = btnRect.top + window.scrollY - MODAL_H_ESTIMATE - 6;
+  if (top + MODAL_H_ESTIMATE > viewportH - 8) {
+    top = btnRect.top - MODAL_H_ESTIMATE - 6;
   }
 
-  modal.style.position = "absolute";
-  modal.style.top = `${Math.max(top, window.scrollY + 8)}px`;
+  modal.style.position = "fixed";
+  modal.style.top  = `${Math.max(top, 8)}px`;
   modal.style.left = `${Math.max(left, 8)}px`;
 };
 
@@ -2179,12 +2282,23 @@ const showModal = (field, button) => {
 
   modal.appendChild(actionsDiv);
 
-  // Position and mount
-  document.body.appendChild(modal);
+  // Mount strategy:
+  //  • Native <dialog showModal()> (GitHub): browser enforces focus stays inside
+  //    the dialog at the OS level — no JS override can bypass this.  We MUST
+  //    mount our modal as a descendant of the <dialog> so our input is inside
+  //    the allowed focus boundary.
+  //  • [role="dialog"] / no dialog (LinkedIn, body-level): mount at body.
+  //    These dialogs often use CSS transforms that break position:fixed when
+  //    we are a child; the JS focus trap is defeated by inert + event interceptors.
+  const nativeDialog = field.closest("dialog");
+  const roleDialog   = field.closest('[role="dialog"]');
+  const trapContainer = nativeDialog || roleDialog || null;
+  (nativeDialog || document.body).appendChild(modal);
   positionModal(modal, button);
 
-  // Focus instruction input
-  setTimeout(() => instructionInput.focus(), 10);
+  // Universal focus protection — pass the trap container so inert targets the
+  // right scope regardless of how deep the textarea is nested.
+  modal._cleanup = setupFocusProtection(instructionInput, modal, trapContainer);
 
   // Close on outside click
   const outsideHandler = (e) => {
