@@ -1,0 +1,46 @@
+{
+  "name": "text-fill-v2",
+  "version": "2.0.0",
+  "description": "AI-powered writing assistant Chrome extension",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "prepare": "wxt prepare"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^1.1.0",
+    "@convex-dev/agent": "^0.1.9",
+    "@convex-dev/auth": "^0.0.87",
+    "@floating-ui/dom": "^1.7.6",
+    "@radix-ui/react-dialog": "^1.1.4",
+    "@radix-ui/react-label": "^2.1.1",
+    "@radix-ui/react-select": "^2.1.4",
+    "@radix-ui/react-separator": "^1.1.1",
+    "@radix-ui/react-slot": "^1.1.1",
+    "@radix-ui/react-switch": "^1.1.2",
+    "@radix-ui/react-tabs": "^1.1.2",
+    "@radix-ui/react-toast": "^1.2.4",
+    "ai": "^4.1.0",
+    "clsx": "^2.1.1",
+    "convex": "^1.17.0",
+    "dom-to-semantic-markdown": "^1.5.0",
+    "lucide-react": "^0.469.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "resend": "^6.9.4",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/chrome": "^0.1.38",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "@wxt-dev/module-react": "^1.1.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.2",
+    "wxt": "^0.20.20"
+  }
+}
