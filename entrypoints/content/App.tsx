@@ -3,6 +3,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
   type ErrorInfo,
   type ReactNode,
 } from "react";
@@ -492,6 +493,23 @@ export function ContentApp() {
       ? resolveEditableRoot(document.activeElement)
       : null;
 
+  // Track active field in a ref so the keyboard shortcut handler can read it without stale closures
+  const activeFieldRef = useRef<Element | null>(null);
+
+  // Alt+Shift+G: quick-generate on the currently active field
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.altKey && e.shiftKey && (e.key === "g" || e.key === "G")) {
+        e.preventDefault();
+        e.stopPropagation();
+        const field = activeFieldRef.current;
+        if (field) field.dispatchEvent(new CustomEvent("tfa-quick-generate", { bubbles: false }));
+      }
+    };
+    document.addEventListener("keydown", handler, true);
+    return () => document.removeEventListener("keydown", handler, true);
+  }, []);
+
   const candidateFields: Element[] = [];
   const seenFields = new Set<Element>();
   const pushCandidate = (candidate: Element | null) => {
@@ -512,6 +530,7 @@ export function ContentApp() {
         scoreField(b, currentActiveElement, focusedField, hoveredField) -
         scoreField(a, currentActiveElement, focusedField, hoveredField)
     )[0] ?? null;
+  activeFieldRef.current = activeField;
   const showFab = window.top === window;
 
   // Stop rendering entirely if the extension context has been invalidated.

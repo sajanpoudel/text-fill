@@ -40,7 +40,7 @@ export default defineConfig({
         matches: ["<all_urls>"],
       },
     ],
-    permissions: ["storage", "activeTab", "alarms", "identity", "cookies"],
+    permissions: ["storage", "activeTab", "alarms", "identity", "cookies", "clipboardWrite"],
     host_permissions: [
       "https://*.convex.cloud/*",
       "https://*.convex.site/*",

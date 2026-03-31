@@ -9,6 +9,7 @@ import {
   type Placement,
 } from "@floating-ui/dom";
 import { GenerateModal } from "./GenerateModal.tsx";
+import { SuggestionPreview } from "./SuggestionPreview.tsx";
 import { extractPageContext } from "../../src/lib/platform";
 import type { PlatformKey } from "../../src/lib/platform";
 import { insertText } from "../../src/lib/insert-text";
@@ -63,6 +64,7 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
   const [showModal, setShowModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [previewText, setPreviewText] = useState<string | null>(null);
   const [floating, setFloating] = useState<{
     x: number;
     y: number;
@@ -77,6 +79,7 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
     setShowModal(false);
     setLoading(false);
     setSuccess(false);
+    setPreviewText(null);
     setFloating(null);
     setAnchorRect(
       isRenderableField(field) ? field.getBoundingClientRect() : null
@@ -160,29 +163,46 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
     };
   }, [field, showModal]);
 
-  // Shared generate handler — used by both double-click and the modal's Generate button
-  // so both paths show the same spinner-on-icon → success behaviour.
+  // Shared generate handler — used by click, double-click, keyboard shortcut, and modal.
+  // insertDirectly: true → inserts immediately (double-click/keyboard)
+  // insertDirectly: false/undefined → shows preview card (single-click/modal)
   const handleGenerate = useCallback(async (opts: {
     instruction: string;
     pageContext?: string;
     fieldMaxLength?: number;
+    tone?: number;
+    domain?: string;
+    insertDirectly?: boolean;
   }) => {
     setShowModal(false);
+    setPreviewText(null);
     setLoading(true);
     try {
       const pageContext = opts.pageContext ?? extractPageContext(field);
       const response = await chrome.runtime.sendMessage({
         type: "GENERATE",
         action: "generate",
-        payload: { instruction: opts.instruction, pageContext, platform, fieldMaxLength: opts.fieldMaxLength },
+        payload: {
+          instruction: opts.instruction,
+          pageContext,
+          platform,
+          fieldMaxLength: opts.fieldMaxLength,
+          tone: opts.tone,
+          domain: opts.domain,
+        },
       });
       if (response?.error) throw new Error(response.error);
       if (response?.text) {
-        // Defer insertion so focus-protection cleanup has time to run
-        setTimeout(() => insertText(field, response.text, platform), 80);
-        setSuccess(true);
-        showToast("✓ Text inserted");
-        setTimeout(() => setSuccess(false), 1500);
+        if (opts.insertDirectly) {
+          // Double-click / keyboard shortcut: insert directly, show success
+          setTimeout(() => insertText(field, response.text, platform), 80);
+          setSuccess(true);
+          showToast("✓ Text inserted");
+          setTimeout(() => setSuccess(false), 1500);
+        } else {
+          // Single-click / modal Generate: show preview card
+          setPreviewText(response.text);
+        }
       }
     } catch (err: any) {
       showToast(err?.message ?? "Generation failed", "error");
@@ -191,8 +211,22 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
     }
   }, [field, platform, showToast]);
 
+  // Listen for Alt+Shift+G quick-generate custom event dispatched by App.tsx
+  useEffect(() => {
+    const handler = () => {
+      if (!loading) void handleGenerate({ instruction: "", insertDirectly: true });
+    };
+    field.addEventListener("tfa-quick-generate", handler);
+    return () => field.removeEventListener("tfa-quick-generate", handler);
+  }, [field, loading, handleGenerate]);
+
   const handleClick = useCallback(() => {
     if (loading) return;
+    // Clicking the icon while preview is showing dismisses the preview
+    if (previewText !== null) {
+      setPreviewText(null);
+      return;
+    }
     clickCount.current += 1;
     if (clickTimer.current) clearTimeout(clickTimer.current);
 
@@ -201,14 +235,14 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
       clickCount.current = 0;
 
       if (count >= 2) {
-        // Double-click: instant generate with no instruction
-        void handleGenerate({ instruction: "" });
+        // Double-click: generate and insert directly (no preview)
+        void handleGenerate({ instruction: "", insertDirectly: true });
       } else {
-        // Single click: toggle modal
-        setShowModal((v) => !v);
+        // Single click: generate and show preview card
+        void handleGenerate({ instruction: "" });
       }
     }, DOUBLE_CLICK_MS);
-  }, [loading, handleGenerate]);
+  }, [loading, handleGenerate, previewText]);
 
   const isVisible = floating?.visible ?? false;
 
@@ -248,7 +282,7 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
           onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
           onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
           disabled={loading}
-          title="Click: options · Double-click: instant generate"
+          title="Click: generate · Double-click: instant insert · Alt+Shift+G: quick generate"
           onMouseEnter={(e) => {
             e.currentTarget.style.transform = "scale(1.12)";
             e.currentTarget.style.boxShadow = "0 10px 30px rgba(15,23,42,0.24), 0 4px 14px rgba(15,23,42,0.18)";
@@ -333,6 +367,27 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
             </div>
           )}
         </button>
+      )}
+
+      {/* Suggestion preview card (single-click generate result) */}
+      {previewText !== null && (
+        <SuggestionPreview
+          text={previewText}
+          field={field}
+          onAccept={() => {
+            const text = previewText;
+            setPreviewText(null);
+            setTimeout(() => insertText(field, text, platform), 80);
+            setSuccess(true);
+            showToast("✓ Text inserted");
+            setTimeout(() => setSuccess(false), 1500);
+          }}
+          onDismiss={() => setPreviewText(null)}
+          onOptions={() => {
+            setPreviewText(null);
+            setShowModal(true);
+          }}
+        />
       )}
 
       {showModal && anchorRect && (

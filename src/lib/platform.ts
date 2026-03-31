@@ -16,6 +16,7 @@ export type PlatformKey =
   | "slack"
   | "discord"
   | "canvas"
+  | "googledocs"
   | "general";
 
 function isBlankLikeUrl(href: string): boolean {
@@ -86,6 +87,7 @@ export function detectPlatformKey(hostname: string): PlatformKey {
   if (normalized.includes("discord.com")) return "discord";
   if (normalized.includes("instructure.com") || normalized.includes("canvas"))
     return "canvas";
+  if (normalized === "docs.google.com") return "googledocs";
   return "general";
 }
 
@@ -164,6 +166,11 @@ export const PLATFORM_SELECTORS: Record<string, string[]> = {
     'div[data-qa="message_input"] [contenteditable="true"]',
     'div.ql-editor[contenteditable="true"]',
     'div[role="textbox"][contenteditable="true"]',
+  ],
+  googledocs: [
+    ".kix-editor-main-container",
+    ".docs-editor",
+    '[contenteditable="true"][class*="docs-texteventtarget"]',
   ],
   general: [
     'textarea:not([readonly]):not([disabled])',

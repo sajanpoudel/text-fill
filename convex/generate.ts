@@ -21,8 +21,9 @@ const PLATFORM_CONTEXTS: Record<string, string[]> = {
   instagram: ["social", "always"],
   slack:     ["work", "always"],
   discord:   ["social", "always"],
-  canvas:    [],
-  general:   ["work", "social", "always"],
+  canvas:     [],
+  googledocs: ["work", "always"],
+  general:    ["work", "social", "always"],
 };
 
 // Build structured context block from the user's stored work/social/always text
@@ -114,6 +115,11 @@ const PLATFORM_PROFILES: Record<string, { name: string; instructions: string; ma
     name: "Canvas LMS",
     instructions:
       "You are writing for a class assignment or discussion in Canvas. Follow the prompt and rubric exactly. Prioritize clarity, structure, and evidence. Use the requested academic tone and citation style when specified.",
+  },
+  googledocs: {
+    name: "Google Docs",
+    instructions:
+      "You are writing content for a Google Docs document. Structure your response with appropriate paragraphs. Match the document's existing style and tone. Use clear, well-organized prose.",
   },
   general: {
     name: "General",
@@ -391,6 +397,21 @@ const capturedCtxSchema = v.object({
   active: v.optional(v.boolean()),
 });
 
+// Tone (1=Casual … 5=Formal) and domain modifiers for the generate action
+const TONE_MODIFIERS: Record<number, string> = {
+  1: "extremely casual and conversational — like texting a close friend",
+  2: "casual and relaxed, friendly and approachable",
+  4: "professional and polished, business-appropriate",
+  5: "formal and precise, suitable for official or legal correspondence",
+};
+
+const DOMAIN_MODIFIERS: Record<string, string> = {
+  sales: "Persuasive sales framing: lead with value and benefits, end with a clear low-friction call to action. Be compelling but authentic, never pushy.",
+  legal: "Legal/compliance precision: be unambiguous and definitive. Use clear language without colloquialisms. Avoid hedging unless factually necessary.",
+  technical: "Technical domain: use accurate terminology. Be specific and concrete. Explain complex concepts clearly without dumbing down.",
+  academic: "Academic writing: evidence-based reasoning, formal structure, avoid personal anecdotes unless instructed. Cite or acknowledge uncertainty where appropriate.",
+};
+
 export const generate = action({
   args: {
     instruction: v.string(),
@@ -399,6 +420,8 @@ export const generate = action({
     platform: v.optional(v.string()),
     threadId: v.optional(v.string()),
     fieldMaxLength: v.optional(v.number()),
+    tone: v.optional(v.number()),
+    domain: v.optional(v.string()),
   },
   handler: async (ctx, args): Promise<{ text: string; threadId: string }> => {
     const userId = await getAuthUserId(ctx);
@@ -496,6 +519,19 @@ export const generate = action({
       // Other short-limit fields (Twitter, etc.) — soft guidance
       system += `\n\nThis field has a ${charLimit}-character limit. Keep your response under ${charLimit} characters.`;
       user += `\n\nField character limit: ${charLimit}. Stay under ${charLimit} characters.`;
+    }
+
+    // Tone modifier (1=Casual … 5=Formal; 3=Balanced is the default, no modifier needed)
+    const toneKey = args.tone !== undefined ? Math.round(args.tone) : 3;
+    const toneMod = TONE_MODIFIERS[toneKey];
+    if (toneMod) {
+      system += `\n\nTone instruction: Write in a ${toneMod} tone.`;
+    }
+
+    // Domain modifier
+    const domainMod = args.domain && args.domain !== "general" ? DOMAIN_MODIFIERS[args.domain] : null;
+    if (domainMod) {
+      system += `\n\nDomain instruction: ${domainMod}`;
     }
 
     const raw = await callProvider({

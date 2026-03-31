@@ -5,6 +5,12 @@
 const LINKEDIN_CHAR_LIMIT = 3000;
 
 export function insertText(field: Element, text: string, platform?: string): void {
+  // Google Docs: canvas-based rendering — clipboard + paste is the only reliable approach
+  if (platform === "googledocs" || window.location.hostname === "docs.google.com") {
+    void _insertGoogleDocs(text);
+    return;
+  }
+
   // Enforce LinkedIn general character limit (connection note limit is enforced server-side)
   const finalText =
     platform === "linkedin" && text.length > LINKEDIN_CHAR_LIMIT
@@ -18,6 +24,33 @@ export function insertText(field: Element, text: string, platform?: string): voi
     _replaceNativeInput(field, finalText);
   } else if ((field as HTMLElement).isContentEditable) {
     _replaceContentEditable(field as HTMLElement, finalText);
+  }
+}
+
+// Google Docs uses canvas for rendering — text can only be inserted via clipboard paste.
+async function _insertGoogleDocs(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    // Focus the editor surface
+    const editor = document.querySelector<HTMLElement>(
+      ".kix-editor-main-container, .docs-editor-container, .kix-appview-editor"
+    );
+    if (editor) {
+      editor.click();
+      editor.focus();
+    }
+    // Ctrl+A to select all existing content, then Ctrl+V to paste replacement
+    const fireKey = (key: string, code: string, ctrlKey: boolean) => {
+      const target = document.activeElement ?? document.body;
+      target.dispatchEvent(
+        new KeyboardEvent("keydown", { key, code, ctrlKey, bubbles: true, cancelable: true })
+      );
+    };
+    fireKey("a", "KeyA", true);
+    await new Promise<void>((r) => setTimeout(r, 30));
+    fireKey("v", "KeyV", true);
+  } catch {
+    // Clipboard write may fail if permission is denied — silent fallback.
   }
 }
 

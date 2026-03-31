@@ -17,7 +17,7 @@ interface Props {
   anchorRect: DOMRect;
   activeContextCount: number;
   onClose: () => void;
-  onGenerate: (opts: { instruction: string; pageContext?: string; fieldMaxLength?: number }) => void;
+  onGenerate: (opts: { instruction: string; pageContext?: string; fieldMaxLength?: number; tone?: number; domain?: string }) => void;
   showToast: (message: string, type?: "success" | "error" | "info") => void;
 }
 
@@ -187,8 +187,21 @@ function detectFieldMaxLength(field: Element): number | undefined {
   return undefined;
 }
 
+const TONE_LABELS: Record<number, string> = {
+  1: "Casual",
+  2: "Casual",
+  3: "Balanced",
+  4: "Professional",
+  5: "Formal",
+};
+
+const DOMAINS = ["general", "sales", "legal", "technical", "academic"] as const;
+type Domain = typeof DOMAINS[number];
+
 export function GenerateModal({ field, platform, anchorRect, activeContextCount, onClose, onGenerate, showToast }: Props) {
   const [instruction, setInstruction] = useState("");
+  const [tone, setTone] = useState(3);
+  const [domain, setDomain] = useState<Domain>("general");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -278,7 +291,7 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
     if (action === "generate") {
       const pageContext = extractPageContext(field);
       const fieldMaxLength = detectFieldMaxLength(field);
-      onGenerate({ instruction, pageContext, fieldMaxLength });
+      onGenerate({ instruction, pageContext, fieldMaxLength, tone, domain });
       return;
     }
 
@@ -484,6 +497,67 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
             : {}),
         }}
       />
+
+      {/* Tone slider */}
+      <div style={{ padding: "8px 12px 6px", borderBottom: `1px solid ${dark ? "rgba(255,255,255,0.07)" : "#f0f0f0"}` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, userSelect: "none", WebkitUserSelect: "none" }}>
+          <span style={{ fontSize: 10.5, color: dark ? "#888" : "#999" }}>Tone</span>
+          <span style={{ fontSize: 10.5, color: dark ? "#bbb" : "#555", fontWeight: 500 }}>
+            {TONE_LABELS[tone]}
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ fontSize: 9.5, color: dark ? "#555" : "#bbb", userSelect: "none" }}>C</span>
+          <input
+            type="range"
+            min={1}
+            max={5}
+            step={1}
+            value={tone}
+            onChange={(e) => setTone(Number(e.target.value))}
+            style={{
+              flex: 1,
+              height: 3,
+              margin: 0,
+              cursor: "pointer",
+              accentColor: "#3b82f6",
+              outline: "none",
+            }}
+          />
+          <span style={{ fontSize: 9.5, color: dark ? "#555" : "#bbb", userSelect: "none" }}>F</span>
+        </div>
+      </div>
+
+      {/* Domain chips */}
+      <div style={{ padding: "6px 12px 6px", borderBottom: `1px solid ${dark ? "rgba(255,255,255,0.07)" : "#f0f0f0"}` }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {DOMAINS.map((d) => (
+            <button
+              key={d}
+              type="button"
+              onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              onClick={() => setDomain(d)}
+              style={{
+                padding: "2px 7px",
+                borderRadius: 10,
+                fontSize: 10.5,
+                fontFamily: "inherit",
+                border: domain === d ? "none" : `1px solid ${dark ? "rgba(255,255,255,0.12)" : "#e0e0e0"}`,
+                background: domain === d ? "#3b82f6" : "transparent",
+                color: domain === d ? "#fff" : (dark ? "#aaa" : "#666"),
+                cursor: "pointer",
+                fontWeight: domain === d ? 600 : 400,
+                userSelect: "none",
+                WebkitUserSelect: "none",
+                transition: "all 0.1s",
+              }}
+            >
+              {d.charAt(0).toUpperCase() + d.slice(1)}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Action buttons */}
       <div style={{ display: "flex", flexDirection: "column" }}>
