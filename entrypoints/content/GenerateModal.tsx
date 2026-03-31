@@ -2,29 +2,29 @@ import {
   useState,
   useRef,
   useEffect,
-  type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { insertText } from "../../src/lib/insert-text";
-import { extractPageContext } from "../../src/lib/platform";
+import { insertText } from "../../src/lib/insert-text.ts";
+import { extractPageContext } from "../../src/lib/platform.ts";
 import { loadContexts, saveContexts } from "./ContextFAB.tsx";
-import type { PlatformKey } from "../../src/lib/platform";
+import type { PlatformKey } from "../../src/lib/platform.ts";
 
 interface Props {
   field: Element;
   platform: PlatformKey;
   anchorRect: DOMRect;
   activeContextCount: number;
+  instruction: string;
+  onInstructionChange: (v: string) => void;
   onClose: () => void;
   onGenerate: (opts: { instruction: string; pageContext?: string; fieldMaxLength?: number; tone?: number; domain?: string }) => void;
   showToast: (message: string, type?: "success" | "error" | "info") => void;
 }
 
-const MODAL_W = 224;
+const MODAL_W = 268;
 
 function setupFocusProtection(
-  instructionInput: HTMLInputElement,
+  instructionInput: HTMLElement,
   modal: HTMLDivElement,
   trapContainer: HTMLElement | null
 ) {
@@ -198,17 +198,27 @@ const TONE_LABELS: Record<number, string> = {
 const DOMAINS = ["general", "sales", "legal", "technical", "academic"] as const;
 type Domain = typeof DOMAINS[number];
 
-export function GenerateModal({ field, platform, anchorRect, activeContextCount, onClose, onGenerate, showToast }: Props) {
-  const [instruction, setInstruction] = useState("");
+export function GenerateModal({ field, platform, anchorRect, activeContextCount, instruction, onInstructionChange, onClose, onGenerate, showToast }: Props) {
   const [tone, setTone] = useState(3);
   const [domain, setDomain] = useState<Domain>("general");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
-  const dark = isPageDark();
-
+  const isDark = isPageDark();
   const hasContent = getFieldValue(field).trim().length > 10;
+
+  // ── Colours ──────────────────────────────────────────────────────────────────
+  const bg       = isDark ? "#111111" : "#ffffff";
+  const border   = isDark ? "#282828" : "#e8e8e8";
+  const text     = isDark ? "#f0f0f0" : "#0a0a0a";
+  const textSub  = isDark ? "#888" : "#6b6b6b";
+  const textMuted = isDark ? "#555" : "#aaa";
+  const inputBg  = isDark ? "#1a1a1a" : "#f7f7f7";
+  const divider  = isDark ? "#222" : "#f0f0f0";
+  const hoverBg  = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)";
+  const btnBg    = isDark ? "#f0f0f0" : "#0a0a0a";
+  const btnText  = isDark ? "#0a0a0a" : "#ffffff";
 
   useEffect(() => {
     setTimeout(() => inputRef.current?.focus(), 30);
@@ -235,11 +245,7 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
     }
 
     const safeFocus = () => {
-      try {
-        input.focus();
-      } catch {
-        // Ignore site-specific focus traps.
-      }
+      try { input.focus(); } catch { /* ignore site focus traps */ }
     };
 
     const raf = requestAnimationFrame(safeFocus);
@@ -252,13 +258,11 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
     };
   }, [field]);
 
-  // Close on outside click — use composedPath() to handle shadow DOM retargeting
+  // Outside click: mousedown bubble phase + contains — avoids capture-phase
+  // interference that was firing onClose() before button clicks could run.
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      // composedPath() traverses shadow boundaries; check if modal is in the path
-      const path = e.composedPath ? e.composedPath() : [];
-      const isInsideModal = modalRef.current && (path.includes(modalRef.current) || path.some((el) => el === modalRef.current));
-      if (!isInsideModal) {
+      if (modalRef.current && !modalRef.current.contains(e.target as Node)) {
         onClose();
       }
     };
@@ -266,28 +270,27 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
       if (e.key === "Escape") onClose();
     };
     setTimeout(() => {
-      document.addEventListener("click", handler, true);
+      document.addEventListener("mousedown", handler);
       document.addEventListener("keydown", escHandler);
     }, 50);
     return () => {
-      document.removeEventListener("click", handler, true);
+      document.removeEventListener("mousedown", handler);
       document.removeEventListener("keydown", escHandler);
     };
   }, [onClose]);
 
-  // Calculate position (fixed, viewport-relative)
+  // Position (fixed, viewport-relative)
   const viewportW = window.innerWidth;
   const viewportH = window.innerHeight;
-  const MODAL_H_EST = hasContent ? 260 : 180;
+  const MODAL_H_EST = hasContent ? 310 : 272;
   let left = anchorRect.right - MODAL_W;
   let top = anchorRect.bottom + 6;
   if (left < 8) left = 8;
   if (left + MODAL_W > viewportW - 8) left = viewportW - MODAL_W - 8;
   if (top + MODAL_H_EST > viewportH - 8) top = Math.max(8, anchorRect.top - MODAL_H_EST - 6);
+  const maxModalH = viewportH - Math.max(top, 8) - 8;
 
   async function runAction(action: string) {
-    // For "generate", hand off to FieldButton so the modal closes immediately
-    // and the icon shows the spinner — same UX as double-click.
     if (action === "generate") {
       const pageContext = extractPageContext(field);
       const fieldMaxLength = detectFieldMaxLength(field);
@@ -300,7 +303,6 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
     try {
       const existingText = getFieldValue(field).slice(0, 2000);
       const pageContext = extractPageContext(field);
-
       const fieldMaxLength = detectFieldMaxLength(field);
 
       const payload =
@@ -316,16 +318,10 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
 
       if (response?.error) throw new Error(response.error);
       if (response?.text) {
-        // Client-side hard truncation — final safety net in case server truncation
-        // or fieldMaxLength detection missed the limit.
         let safeText: string = response.text;
         if (fieldMaxLength && fieldMaxLength > 0 && safeText.length > fieldMaxLength) {
           safeText = safeText.slice(0, fieldMaxLength).replace(/\s+\S*$/, "").trim();
         }
-        // Close the modal BEFORE inserting so the focus-protection cleanup runs first.
-        // That cleanup removes `inert` from LinkedIn's fields and restores the
-        // patched HTMLElement.prototype.focus — without this, execCommand fails
-        // because the target is inerted, causing Quill to reset the text seconds later.
         onClose();
         showToast("✓ Text inserted");
         setTimeout(() => insertText(field, safeText, platform), 80);
@@ -367,106 +363,7 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
     onClose();
   }
 
-  // ── Styles (using inline styles to avoid shadow DOM CSS leakage) ──────────
-
-  const modalStyle: React.CSSProperties = {
-    position: "fixed",
-    zIndex: 2147483647,
-    top: Math.max(top, 8),
-    left: Math.max(left, 8),
-    width: MODAL_W,
-    background: dark ? "#1c1c1e" : "#ffffff",
-    border: `1px solid ${dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)"}`,
-    borderRadius: 12,
-    boxShadow: "0 4px 6px rgba(0,0,0,0.05), 0 10px 30px rgba(0,0,0,0.14)",
-    overflow: "hidden",
-    fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
-    fontSize: 13,
-    pointerEvents: "auto",
-    userSelect: "text",
-    WebkitUserSelect: "text",
-  };
-
-  const inputStyle: React.CSSProperties = {
-    width: "100%",
-    border: "none",
-    borderBottom: `1px solid ${dark ? "rgba(255,255,255,0.08)" : "#f0f0f0"}`,
-    padding: "10px 12px",
-    fontSize: 13,
-    fontFamily: "inherit",
-    color: dark ? "#f0f0f0" : "#111",
-    background: dark ? "#2c2c2e" : "#fafafa",
-    outline: "none",
-    boxSizing: "border-box",
-    borderRadius: 0,
-    cursor: "text",
-    userSelect: "text",
-  };
-
-  const sepStyle: React.CSSProperties = {
-    height: 1,
-    background: dark ? "rgba(255,255,255,0.07)" : "#f0f0f0",
-    margin: "2px 0",
-    flexShrink: 0,
-  };
-
-  function makeBtn(variant: "primary" | "secondary" | "settings" | "default") {
-    return {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      width: "100%",
-      padding: "9px 12px",
-      border: "none",
-      background: "transparent",
-      fontSize: variant === "secondary" || variant === "settings" ? 12 : 13,
-      fontFamily: "inherit",
-      color: dark
-        ? variant === "primary" ? "#60a5fa"
-          : variant === "settings" ? "#666"
-          : "#ccc"
-        : variant === "primary" ? "#1d4ed8"
-          : variant === "settings" ? "#888"
-          : "#333",
-      fontWeight: variant === "primary" ? 600 : 400,
-      cursor: "pointer",
-      textAlign: "left" as const,
-      transition: "background 0.1s",
-      userSelect: "none" as const,
-      WebkitUserSelect: "none" as const,
-    };
-  }
-
-  function BtnHover({ style, hoverBg, onClick, disabled, children }: {
-    style: React.CSSProperties;
-    hoverBg: string;
-    onClick: () => void;
-    disabled?: boolean;
-    children: React.ReactNode;
-  }) {
-    const [hovered, setHovered] = useState(false);
-    const swallowPointer = (e: ReactPointerEvent | ReactMouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-    };
-    return (
-      <button
-        type="button"
-        style={{ ...style, background: hovered ? hoverBg : "transparent", opacity: disabled ? 0.5 : 1 }}
-        onClick={onClick}
-        onPointerDown={swallowPointer}
-        onMouseDown={swallowPointer}
-        disabled={disabled}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-      >
-        {children}
-      </button>
-    );
-  }
-
-  const hoverBgDefault = dark ? "rgba(255,255,255,0.07)" : "#f5f5f5";
-  const hoverBgPrimary = dark ? "rgba(96,165,250,0.12)" : "#eff6ff";
+  const stopDown = (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); };
 
   const mountNode =
     (field instanceof Element ? field.closest("dialog") : null) ??
@@ -475,82 +372,151 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
   if (!mountNode) return null;
 
   return createPortal(
-    <div ref={modalRef} data-tfa-ui="modal" style={modalStyle}>
-      {/* Instruction input */}
-      <input
+    <div
+      ref={modalRef}
+      data-tfa-ui="modal"
+      onMouseDown={(e) => e.stopPropagation()}
+      style={{
+        position: "fixed",
+        zIndex: 2147483647,
+        top: Math.max(top, 8),
+        left: Math.max(left, 8),
+        width: MODAL_W,
+        maxHeight: maxModalH,
+        background: bg,
+        border: `1px solid ${border}`,
+        borderRadius: 12,
+        boxShadow: `0 4px 24px rgba(0,0,0,${isDark ? "0.5" : "0.12"}), 0 0 0 0.5px ${border}`,
+        fontFamily: `-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif`,
+        fontSize: 13,
+        overflow: "hidden",
+        pointerEvents: "auto",
+        userSelect: "text",
+        WebkitUserSelect: "text",
+      }}
+    >
+      {/* ── Instruction textarea ── */}
+      <textarea
         ref={inputRef}
-        type="text"
         value={instruction}
-        onChange={(e) => setInstruction(e.target.value)}
+        rows={2}
+        onChange={(e) => onInstructionChange(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            runAction("generate");
-          }
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runAction("generate"); }
           if (e.key === "Escape") onClose();
         }}
-        placeholder="Optional instruction..."
+        placeholder="Optional instruction… (Enter to generate)"
         style={{
-          ...inputStyle,
-          ...(instruction
-            ? { background: dark ? "#333" : "#fff", borderBottomColor: dark ? "rgba(255,255,255,0.14)" : "#e0e0e0" }
-            : {}),
+          display: "block",
+          width: "100%",
+          boxSizing: "border-box",
+          padding: "11px 12px 10px",
+          fontSize: 13,
+          lineHeight: 1.5,
+          border: "none",
+          borderBottom: `1px solid ${divider}`,
+          background: bg,
+          color: text,
+          resize: "none",
+          outline: "none",
+          fontFamily: "inherit",
+          borderRadius: 0,
         }}
       />
 
-      {/* Tone slider */}
-      <div style={{ padding: "8px 12px 6px", borderBottom: `1px solid ${dark ? "rgba(255,255,255,0.07)" : "#f0f0f0"}` }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, userSelect: "none", WebkitUserSelect: "none" }}>
-          <span style={{ fontSize: 10.5, color: dark ? "#888" : "#999" }}>Tone</span>
-          <span style={{ fontSize: 10.5, color: dark ? "#bbb" : "#555", fontWeight: 500 }}>
-            {TONE_LABELS[tone]}
-          </span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-          <span style={{ fontSize: 9.5, color: dark ? "#555" : "#bbb", userSelect: "none" }}>C</span>
-          <input
-            type="range"
-            min={1}
-            max={5}
-            step={1}
-            value={tone}
-            onChange={(e) => setTone(Number(e.target.value))}
-            style={{
-              flex: 1,
-              height: 3,
-              margin: 0,
-              cursor: "pointer",
-              accentColor: "#3b82f6",
-              outline: "none",
-            }}
-          />
-          <span style={{ fontSize: 9.5, color: dark ? "#555" : "#bbb", userSelect: "none" }}>F</span>
-        </div>
+      {/* ── Action buttons ── */}
+      <div style={{ padding: "10px 11px 8px", display: "flex", flexDirection: "column", gap: 5 }}>
+        {/* Primary: Generate */}
+        <button
+          type="button"
+          onClick={() => runAction("generate")}
+          onMouseDown={stopDown}
+          disabled={loading}
+          style={{
+            width: "100%",
+            padding: "8px 12px",
+            background: btnBg,
+            color: btnText,
+            border: "none",
+            borderRadius: 7,
+            fontSize: 13,
+            fontWeight: 600,
+            fontFamily: "inherit",
+            cursor: loading ? "wait" : "pointer",
+            opacity: loading ? 0.6 : 1,
+          }}
+        >
+          {loading ? "Generating…" : "Generate"}
+        </button>
+
+        {/* Secondary: content actions */}
+        {hasContent && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
+            {(["rewrite", "shorten", "expand"] as const).map((action) => (
+              <button
+                key={action}
+                type="button"
+                onClick={() => runAction(action)}
+                onMouseDown={stopDown}
+                disabled={loading}
+                style={{
+                  padding: "6px 4px",
+                  border: `1px solid ${border}`,
+                  borderRadius: 6,
+                  background: "transparent",
+                  color: textSub,
+                  fontSize: 12,
+                  fontFamily: "inherit",
+                  cursor: loading ? "wait" : "pointer",
+                  opacity: loading ? 0.5 : 1,
+                }}
+              >
+                {action === "rewrite" ? "Rewrite" : action === "shorten" ? "Shorter" : "Expand"}
+            </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Domain chips */}
-      <div style={{ padding: "6px 12px 6px", borderBottom: `1px solid ${dark ? "rgba(255,255,255,0.07)" : "#f0f0f0"}` }}>
+      {/* ── Settings: tone + domain ── */}
+      <div style={{ borderTop: `1px solid ${divider}`, padding: "8px 11px 7px" }}>
+        {/* Tone */}
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3, userSelect: "none", WebkitUserSelect: "none" }}>
+            <span style={{ fontSize: 11, color: textMuted }}>Tone</span>
+            <span style={{ fontSize: 11, color: textSub, fontWeight: 500 }}>{TONE_LABELS[tone]}</span>
+          </div>
+          <input
+            type="range"
+            min={1} max={5} step={1}
+            value={tone}
+            onChange={(e) => setTone(Number(e.target.value))}
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{ display: "block", width: "100%", accentColor: isDark ? "#f0f0f0" : "#0a0a0a", cursor: "pointer" }}
+          />
+        </div>
+
+        {/* Domain chips */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
           {DOMAINS.map((d) => (
             <button
               key={d}
               type="button"
-              onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              onPointerDown={stopDown}
+              onMouseDown={stopDown}
               onClick={() => setDomain(d)}
               style={{
                 padding: "2px 7px",
                 borderRadius: 10,
                 fontSize: 10.5,
                 fontFamily: "inherit",
-                border: domain === d ? "none" : `1px solid ${dark ? "rgba(255,255,255,0.12)" : "#e0e0e0"}`,
-                background: domain === d ? "#3b82f6" : "transparent",
-                color: domain === d ? "#fff" : (dark ? "#aaa" : "#666"),
+                border: domain === d ? "none" : `1px solid ${border}`,
+                background: domain === d ? (isDark ? "#f0f0f0" : "#0a0a0a") : "transparent",
+                color: domain === d ? (isDark ? "#0a0a0a" : "#ffffff") : textSub,
                 cursor: "pointer",
                 fontWeight: domain === d ? 600 : 400,
                 userSelect: "none",
                 WebkitUserSelect: "none",
-                transition: "all 0.1s",
               }}
             >
               {d.charAt(0).toUpperCase() + d.slice(1)}
@@ -559,60 +525,37 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
         </div>
       </div>
 
-      {/* Action buttons */}
-      <div style={{ display: "flex", flexDirection: "column" }}>
-        {/* Generate */}
-        <BtnHover style={makeBtn("primary")} hoverBg={hoverBgPrimary} onClick={() => runAction("generate")} disabled={loading}>
-          <span>{loading ? "Generating…" : "Generate"}</span>
-        </BtnHover>
-
-        {/* Content-dependent actions */}
-        {hasContent && (
-          <>
-            <BtnHover style={makeBtn("default")} hoverBg={hoverBgDefault} onClick={() => runAction("rewrite")} disabled={loading}>
-              <span>Rewrite &amp; improve</span>
-            </BtnHover>
-            <BtnHover style={makeBtn("default")} hoverBg={hoverBgDefault} onClick={() => runAction("shorten")} disabled={loading}>
-              <span>Make shorter</span>
-            </BtnHover>
-            <BtnHover style={makeBtn("default")} hoverBg={hoverBgDefault} onClick={() => runAction("expand")} disabled={loading}>
-              <span>Expand</span>
-            </BtnHover>
-          </>
-        )}
-
-        {/* Separator */}
-        <div style={sepStyle} />
-
-        {/* Capture context — hide on canvas (academic mode) */}
-        {platform !== "canvas" && (
-          <BtnHover style={makeBtn("secondary")} hoverBg={hoverBgDefault} onClick={captureContext}>
-            <span>
-              {activeContextCount > 0
-                ? `Add page · ${activeContextCount} active`
-                : "Add page to context"}
-            </span>
-          </BtnHover>
-        )}
-
-        {/* Separator */}
-        <div style={sepStyle} />
-
-        {/* Settings */}
-        <BtnHover style={makeBtn("settings")} hoverBg={hoverBgDefault} onClick={openSettings}>
-          <span>Settings</span>
-        </BtnHover>
+      {/* ── Footer ── */}
+      <div style={{
+        borderTop: `1px solid ${divider}`,
+        padding: "6px 11px",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+      }}>
+        {platform !== "canvas" ? (
+          <button
+            type="button"
+            onClick={captureContext}
+            onMouseDown={stopDown}
+            style={{ background: "none", border: "none", padding: "3px 2px", fontSize: 11.5, color: textMuted, cursor: "pointer", fontFamily: "inherit" }}
+          >
+            {activeContextCount > 0 ? `+ Context · ${activeContextCount} active` : "+ Add context"}
+          </button>
+        ) : <span />}
+        <button
+          type="button"
+          onClick={openSettings}
+          onMouseDown={stopDown}
+          style={{ background: "none", border: "none", padding: "3px 2px", fontSize: 11.5, color: textMuted, cursor: "pointer", fontFamily: "inherit" }}
+        >
+          Settings
+        </button>
       </div>
 
-      {/* Error */}
+      {/* ── Error ── */}
       {error && (
-        <div style={{
-          padding: "8px 12px",
-          fontSize: 12,
-          color: "#dc2626",
-          background: "#fee2e2",
-          borderTop: "1px solid #fecaca",
-        }}>
+        <div style={{ fontSize: 12, color: "#dc2626", background: "#fff5f5", borderTop: "1px solid #fee2e2", padding: "7px 11px" }}>
           {error}
         </div>
       )}

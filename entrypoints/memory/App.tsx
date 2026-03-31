@@ -140,14 +140,14 @@ function SummaryCard({
   icon: ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+    <div className="rounded-xl border border-gray-200 bg-white p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-xs font-medium uppercase tracking-[0.14em] text-gray-500">{label}</div>
           <div className="mt-2 text-2xl font-semibold text-gray-950">{value}</div>
           <div className="mt-1 text-xs text-gray-500">{hint}</div>
         </div>
-        <div className="rounded-xl bg-gray-100 p-2 text-gray-600">{icon}</div>
+        <div className="rounded-lg bg-gray-100 p-2 text-gray-500">{icon}</div>
       </div>
     </div>
   );
@@ -236,24 +236,20 @@ function MemoryList() {
   const loading = allMemories === undefined && !searchResults;
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#eef2ff,_#f8fafc_45%,_#f8fafc)]">
+    <div className="min-h-screen bg-white">
       <div className="mx-auto max-w-6xl px-4 py-8">
         <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
-            <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-indigo-200 bg-white/80 px-3 py-1 text-xs font-medium text-indigo-700 backdrop-blur">
-              <Sparkles className="h-3.5 w-3.5" />
-              Long-term memory control
-            </div>
-            <h1 className="flex items-center gap-2 text-3xl font-bold text-gray-950">
-              <Brain className="h-7 w-7 text-indigo-600" />
+            <h1 className="flex items-center gap-2 text-2xl font-semibold text-gray-950 tracking-tight">
+              <Brain className="h-7 w-7 text-gray-800" />
               Memory Bank
             </h1>
-            <p className="mt-2 max-w-2xl text-sm text-gray-600">
+            <p className="mt-1 text-sm text-gray-500 max-w-2xl">
               Review what the extension has learned, surface high-value persona memories,
               and keep low-signal memories from cluttering retrieval.
             </p>
           </div>
-          <div className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600 shadow-sm">
+          <div className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-xs text-gray-500">
             <SlidersHorizontal className="h-4 w-4 text-gray-400" />
             {searchResults
               ? `${filteredMemories.length} filtered semantic results`
@@ -269,7 +265,7 @@ function MemoryList() {
           <SummaryCard label="At Risk" value={metrics.atRisk} hint="Forget score 60%+" icon={<Clock3 className="h-4 w-4" />} />
         </div>
 
-        <div className="mb-6 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="mb-5 rounded-2xl border border-gray-200 bg-white p-4">
           <form onSubmit={handleSearch} className="mb-4 flex flex-col gap-3 md:flex-row">
             <div className="relative flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
@@ -287,7 +283,7 @@ function MemoryList() {
             <button
               type="submit"
               disabled={searching}
-              className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50"
             >
               <Search className="h-4 w-4" />
               {searching ? "Searching…" : "Search"}
@@ -337,7 +333,7 @@ function MemoryList() {
                     className={cn(
                       "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
                       categoryFilter === category
-                        ? "border-indigo-600 bg-indigo-600 text-white"
+                        ? "border-gray-900 bg-gray-900 text-white"
                         : "border-gray-200 bg-white text-gray-600 hover:border-gray-300"
                     )}
                   >
@@ -368,21 +364,21 @@ function MemoryList() {
           </div>
 
           {searchResults && (
-            <div className="mt-4 rounded-2xl border border-indigo-100 bg-indigo-50/70 px-4 py-3 text-sm text-indigo-900">
+            <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
               {searchResults.length} semantic matches for{" "}
-              <span className="font-semibold">“{searchQuery}”</span>. Filters and sort still apply.
+              <span className="font-semibold">"{searchQuery}"</span>. Filters and sort still apply.
             </div>
           )}
         </div>
 
         <div className="space-y-3">
           {loading ? (
-            <div className="rounded-3xl border border-gray-200 bg-white p-8 text-center text-gray-400 shadow-sm">
+            <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center text-gray-400">
               Loading memories…
             </div>
           ) : filteredMemories.length === 0 ? (
             <div className="rounded-3xl border border-dashed border-gray-300 bg-white/70 py-20 text-center text-gray-400">
-              <Brain className="mx-auto mb-3 h-12 w-12 text-gray-200" />
+              <Brain className="mx-auto mb-3 h-8 w-8 text-gray-200" />
               <p className="text-sm">No memories match this view</p>
             </div>
           ) : (
@@ -399,7 +395,7 @@ function MemoryList() {
                   className={cn(
                     "rounded-3xl border bg-white p-5 shadow-sm transition-colors",
                     isPersona
-                      ? "border-amber-200 bg-[linear-gradient(180deg,#fffaf0_0%,#ffffff_55%)]"
+                      ? "border-gray-300 bg-gray-50"
                       : "border-gray-200 hover:border-gray-300"
                   )}
                 >
@@ -415,7 +411,7 @@ function MemoryList() {
                       <div className="flex flex-wrap gap-2">
                         <button
                           onClick={() => saveEdit(memory._id as Id<"memories">)}
-                          className="inline-flex items-center gap-1 rounded-xl bg-indigo-600 px-3 py-2 text-xs font-medium text-white"
+                          className="inline-flex items-center gap-1 rounded-xl bg-gray-900 px-3 py-2 text-xs font-medium text-white"
                         >
                           <Check className="h-3.5 w-3.5" /> Save
                         </button>
@@ -436,13 +432,13 @@ function MemoryList() {
                               className={cn(
                                 "rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em]",
                                 isPersona
-                                  ? "bg-amber-100 text-amber-800"
+                                  ? "bg-gray-900 text-white"
                                   : category === "work"
-                                    ? "bg-blue-50 text-blue-700"
+                                    ? "bg-gray-100 text-gray-700"
                                     : category === "social"
-                                      ? "bg-pink-50 text-pink-700"
+                                      ? "bg-gray-100 text-gray-700"
                                       : category === "personal"
-                                        ? "bg-emerald-50 text-emerald-700"
+                                        ? "bg-gray-100 text-gray-700"
                                         : "bg-gray-100 text-gray-600"
                               )}
                             >
@@ -452,7 +448,7 @@ function MemoryList() {
                               {memory.status}
                             </span>
                             {typeof memory.score === "number" && (
-                              <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-medium text-indigo-700">
+                              <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-medium text-gray-700">
                                 {Math.round(memory.score * 100)}% match
                               </span>
                             )}
@@ -481,7 +477,7 @@ function MemoryList() {
                                 className={cn(
                                   "rounded-full px-2.5 py-1 text-xs",
                                   memory.forgetScore >= 0.6
-                                    ? "bg-red-50 text-red-700"
+                                    ? "bg-gray-200 text-gray-800"
                                     : "bg-gray-100 text-gray-700"
                                 )}
                               >
@@ -593,7 +589,7 @@ function MemoryList() {
                                   href={memory.sourceUrl}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="inline-flex items-center gap-1 text-indigo-600 hover:underline"
+                                  className="inline-flex items-center gap-1 text-gray-800 hover:underline"
                                 >
                                   <LinkIcon className="h-3.5 w-3.5" />
                                   Open source

@@ -148,7 +148,7 @@ function normalizeAnswer(text: string): string {
   return text
     .replace(/[—–]/g, ",")
     .replace(/\*\s*\*\s*\*/g, "\n\n")
-    .replace(/\s*,\s*/g, ", ")
+    .replace(/[ \t]*,[ \t]*/g, ", ")
     .replace(/\s+\./g, ".")
     .replace(/\s+\!/g, "!")
     .replace(/\s+\?/g, "?")
@@ -211,8 +211,7 @@ function buildPrompt(opts: {
         "Start directly. No preamble.",
         "Use active voice. Be confident, specific, and genuine.",
         "When personal context is provided, use it naturally without explicitly referencing it ('based on my background' → just use the background).",
-        "Context priority rule: Foreground Context first (what the recipient posted/their profile), then the Additional Instruction, then User-selected Context, then About the Writer and Writer's Known Facts — use ALL of them, they are the writer's voice and credentials.",
-        "If Foreground and Background conflict, trust Foreground.",
+        "Context priority: Foreground Context (the current page/recipient/situation) is ABSOLUTE — it defines who you are writing to right now and must not be contradicted. Additional Instruction is high priority. About the Writer and Writer's Known Facts provide background on the writer's voice, style, and general credentials ONLY — never use them to claim the writer is currently applying to a specific company, in a specific role, or in a past situation that may no longer apply. If a memory-based fact conflicts with what Foreground Context shows, discard the memory and trust Foreground Context.",
         hasCapturedContext
           ? "When User-selected Context exists, treat it as required source material and use concrete details from it unless it conflicts with explicit instructions."
           : "",
@@ -299,8 +298,6 @@ async function callProvider(opts: {
   }
 
   if (provider === "gemini") {
-    // Use structured JSON output so Gemini reliably preserves paragraph breaks.
-    // The model returns { paragraphs: string[] } which we join with \n\n.
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
@@ -311,35 +308,16 @@ async function callProvider(opts: {
           generationConfig: {
             maxOutputTokens: 2048,
             temperature: 0.7,
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: "OBJECT",
-              properties: {
-                paragraphs: { type: "ARRAY", items: { type: "STRING" } },
-              },
-              required: ["paragraphs"],
-            },
           },
         }),
       }
     );
     const data = await res.json() as any;
     if (!res.ok) throw new Error(`Gemini error: ${data?.error?.message ?? JSON.stringify(data)}`);
-    const rawText = (data.candidates?.[0]?.content?.parts ?? [])
+    return (data.candidates?.[0]?.content?.parts ?? [])
       .map((p: any) => p.text ?? "")
       .join("")
       .trim();
-    try {
-      const parsed = JSON.parse(rawText);
-      if (Array.isArray(parsed?.paragraphs)) {
-        const parts = (parsed.paragraphs as unknown[])
-          .filter((p): p is string => typeof p === "string" && p.trim() !== "");
-        if (parts.length > 0) return parts.join("\n\n");
-      }
-    } catch {
-      // JSON parse failed — fall through and return raw text
-    }
-    return rawText;
   }
 
   // Default: OpenAI Responses API
@@ -451,12 +429,20 @@ export const generate = action({
             provider: embeddingConfig.provider,
             model: embeddingConfig.model,
             apiKey: embeddingConfig.apiKey,
-            limit: 15,
+            limit: 8,
           })
         : [];
 
+    // Patterns that indicate ephemeral application/outreach events — these
+    // should never surface as "facts" when writing to a different person.
+    const EPHEMERAL_PATTERNS =
+      /\b(applied to|submitted.*application|sent.*application|applying to|interviewing at|interview at|application.*to|outreach to|reached out to)\b/i;
+
     const relevantMemories = memories
-      .filter((m) => m.status === "active" && m.score > 0.5)
+      .filter((m) => m.status === "active" && m.score > 0.65)
+      // Drop ephemeral application-event memories that have no place in
+      // connection notes, DMs, or any message to a specific recipient.
+      .filter((m) => !EPHEMERAL_PATTERNS.test(m.text))
       .filter((memory, index, all) => {
         const fingerprint = getMemoryFingerprint({
           text: memory.text,
@@ -473,7 +459,11 @@ export const generate = action({
           ) === index
         );
       });
-    const memoryContext = relevantMemories.map((m) => `- ${m.text}`).join("\n");
+    // Cap each memory entry and the total block to avoid flooding the context
+    const memoryContext = relevantMemories
+      .map((m) => `- ${m.text.slice(0, 120)}`)
+      .join("\n")
+      .slice(0, 600);
 
     // Build platform-filtered context from user's work/social/always sections
     const parsed = parseContextText(profile?.contextText);
@@ -505,10 +495,10 @@ export const generate = action({
     });
 
     if (isConnectNote) {
-      system += "\n\nCRITICAL: This is a LinkedIn connection note with a HARD 300-character limit. Your entire response MUST be 300 characters or fewer. Count every character carefully.";
+      system += "\n\nCRITICAL: This is a LinkedIn connection note with a HARD 300-character limit. Your entire response MUST be 300 characters or fewer. Count every character carefully. Base the note ONLY on the recipient's profile shown in Foreground Context. Do NOT reference specific past job applications, companies the writer has applied to, or past interactions from memory — those are from completely different contexts and would be false and embarrassing here.";
       user += "\n\n=== HARD CHARACTER LIMIT ===\nMaximum 300 characters total. Write a brief, genuine connection note that stays strictly under 300 characters.";
     } else if (isInmail) {
-      system += "\n\nThis is a LinkedIn InMail message. Write 2-4 short paragraphs: open with a specific observation about the recipient, then your relevant value or reason for reaching out, then a clear low-friction ask. Each paragraph should be 1-3 sentences. Use a blank line between paragraphs.";
+      system += "\n\nThis is a LinkedIn InMail message. Write 2-4 short paragraphs: open with a specific observation about the recipient from Foreground Context, then your relevant value or reason for reaching out, then a clear low-friction ask. Each paragraph should be 1-3 sentences. Use a blank line between paragraphs. Do NOT reference specific past job applications or companies from memory — focus on what you can see about this specific recipient.";
     } else if (isDm) {
       system += "\n\nThis is a LinkedIn direct message in an ongoing conversation. Keep it conversational and concise — 1-3 short paragraphs at most.";
     } else if (isComment) {

@@ -60,14 +60,10 @@ export function getLocationSnapshot(): {
 }
 
 export function getHostDocument(): Document {
-  try {
-    const href = window.location.href ?? "";
-    if (isBlankLikeUrl(href) && window.top && window.top !== window) {
-      return window.top.document;
-    }
-  } catch {
-    // Ignore and fall back to current document.
-  }
+  // Always query the current frame's document. Platform detection may still
+  // fall back to the top window's location for about:blank frames, but field
+  // discovery and context extraction must stay local once the content script
+  // is injected into subframes.
   return document;
 }
 
@@ -117,6 +113,9 @@ export const PLATFORM_SELECTORS: Record<string, string[]> = {
     'div[aria-label*="Start a post"]',
     'div.share-creation-state__text-editor [contenteditable="true"]',
     'div[contenteditable="true"][role="textbox"]',
+    // Connection note textarea (the "Add a note to your invitation" modal)
+    'textarea.connect-button-send-invite__custom-message',
+    'textarea[name="message"]',
   ],
   messenger: [
     'div[contenteditable="true"][role="textbox"]',
@@ -183,6 +182,73 @@ export const PLATFORM_SELECTORS: Record<string, string[]> = {
     'div.ql-editor',
   ],
 };
+
+type DeepQueryRoot = Document | ShadowRoot | Element;
+
+function collectOpenQueryRoots(root: DeepQueryRoot = getHostDocument()): DeepQueryRoot[] {
+  const roots: DeepQueryRoot[] = [root];
+  const queue: DeepQueryRoot[] = [root];
+  const visitedShadowRoots = new Set<ShadowRoot>();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) continue;
+
+    for (const el of Array.from(current.querySelectorAll("*"))) {
+      if (!(el instanceof HTMLElement)) continue;
+      const shadowRoot = el.shadowRoot;
+      if (!shadowRoot || visitedShadowRoots.has(shadowRoot)) continue;
+
+      visitedShadowRoots.add(shadowRoot);
+      roots.push(shadowRoot);
+      queue.push(shadowRoot);
+    }
+  }
+
+  return roots;
+}
+
+export function querySelectorAllDeep(
+  selector: string,
+  root: DeepQueryRoot = getHostDocument()
+): Element[] {
+  const results: Element[] = [];
+  const seen = new Set<Element>();
+
+  for (const queryRoot of collectOpenQueryRoots(root)) {
+    try {
+      if (
+        queryRoot instanceof Element &&
+        queryRoot.matches(selector) &&
+        !seen.has(queryRoot)
+      ) {
+        seen.add(queryRoot);
+        results.push(queryRoot);
+      }
+    } catch {
+      // Invalid selector — skip root-level self match.
+    }
+
+    try {
+      queryRoot.querySelectorAll(selector).forEach((el) => {
+        if (seen.has(el)) return;
+        seen.add(el);
+        results.push(el);
+      });
+    } catch {
+      // Invalid selector — skip this query root.
+    }
+  }
+
+  return results;
+}
+
+export function querySelectorDeep(
+  selector: string,
+  root: DeepQueryRoot = getHostDocument()
+): Element | null {
+  return querySelectorAllDeep(selector, root)[0] ?? null;
+}
 
 const MAX_FOREGROUND_CONTEXT_CHARS = 2600;
 const MAX_BACKGROUND_CONTEXT_CHARS = 1800;
@@ -276,8 +342,24 @@ function pickPersonLikeCandidate(candidates: string[]): string {
 }
 
 /** Returns a context tag describing the LinkedIn field type, or null if unknown. */
-function detectLinkedInFieldType(field: Element): string | null {
+export function detectLinkedInFieldType(field: Element): string | null {
   const el = field as HTMLElement;
+  const labelText = [
+    el.getAttribute?.("aria-label") ?? "",
+    el.getAttribute?.("data-placeholder") ?? "",
+    el.getAttribute?.("placeholder") ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  // Connection note modal textarea
+  if (
+    (el.matches?.("textarea.connect-button-send-invite__custom-message") ||
+      (el.getAttribute?.("name") === "message" &&
+        field.closest('[role="dialog"]')))
+  ) {
+    return "[CONNECTION_NOTE]";
+  }
 
   // InMail subject: <input name="subject"> inside a dialog
   if (el.getAttribute?.("name") === "subject" && field.closest('[role="dialog"]')) {
@@ -288,6 +370,20 @@ function detectLinkedInFieldType(field: Element): string | null {
   const dialog = field.closest('[role="dialog"]');
   if (dialog && dialog.querySelector('input[name="subject"]')) {
     return "[INMAIL_MESSAGE]";
+  }
+
+  // LinkedIn direct-message composer overlays use msg-form__contenteditable
+  // even before the thread view is fully materialized.
+  if (
+    el.matches?.(".msg-form__contenteditable") ||
+    field.closest(".msg-form__msg-content-container")
+  ) {
+    if (
+      labelText.includes("write a message") ||
+      labelText.includes("message")
+    ) {
+      return "[DM_MESSAGE]";
+    }
   }
 
   // DM thread (bubbles or full message thread view)
@@ -316,11 +412,97 @@ function detectLinkedInFieldType(field: Element): string | null {
   return null;
 }
 
+/**
+ * Parses the first entry of the LinkedIn Experience section to extract the
+ * person's current role and company. This is more reliable than trying to
+ * regex-parse the headline, which can contain multiple roles, pipes, and
+ * ambiguous "at" occurrences.
+ */
+function extractCurrentRoleFromExperience(expEl: Element | null): string | null {
+  if (!expEl) return null;
+
+  // LinkedIn renders experience as a list; first item = most recent = current
+  const firstEntry =
+    expEl.querySelector("li.artdeco-list__item") ??
+    expEl.querySelector("li.pvs-list__item--line-separated") ??
+    expEl.querySelector("li");
+
+  if (!firstEntry) return null;
+
+  // LinkedIn 2024+ uses aria-hidden spans for the visible text content.
+  // The pattern is: [0] title, [1] "Company · Type", [2] "Date – Present"
+  const ariaSpans = Array.from(
+    firstEntry.querySelectorAll<HTMLElement>("span[aria-hidden='true']")
+  )
+    .map((s) => s.innerText?.trim() ?? "")
+    .filter((s) => s.length > 1 && s.length < 160);
+
+  if (ariaSpans.length >= 2) {
+    const title = ariaSpans[0];
+    const companyLine = ariaSpans[1].split("·")[0].trim(); // "Google · Full-time" → "Google"
+    const isCurrent = ariaSpans.some((s) => /present/i.test(s));
+    if (title && companyLine) {
+      return isCurrent ? `${title} at ${companyLine} (current)` : `${title} at ${companyLine}`;
+    }
+  }
+
+  // Fallback: first two non-empty lines of innerText
+  const lines = ((firstEntry as HTMLElement).innerText ?? "")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 1 && s.length < 120);
+
+  if (lines.length >= 2) {
+    const title = lines[0];
+    const company = lines[1].split("·")[0].trim();
+    if (title && company) return `${title} at ${company}`;
+  }
+
+  return null;
+}
+
+/**
+ * Tries to extract the recipient's name and headline from within a LinkedIn
+ * connect/InMail dialog. LinkedIn shows a mini-profile card inside these
+ * dialogs, which is more accurate than reading the full page when multiple
+ * profiles might be loaded (e.g., after navigating between tabs).
+ */
+function extractProfileFromConnectDialog(dialogEl: Element): {
+  name: string;
+  headline: string;
+} | null {
+  // LinkedIn has used several class patterns for the profile card in dialogs
+  const profileCard =
+    dialogEl.querySelector("[class*='send-invite'][class*='content']") ??
+    dialogEl.querySelector("[class*='entity-lockup']") ??
+    dialogEl.querySelector("[class*='artdeco-entity']") ??
+    dialogEl;
+
+  const nameEl =
+    profileCard.querySelector<HTMLElement>(
+      "[class*='entity-lockup__title'], [class*='lockup__title'], [class*='entity__title']"
+    ) ??
+    dialogEl.querySelector<HTMLElement>("h2, h3");
+
+  const headlineEl =
+    profileCard.querySelector<HTMLElement>(
+      "[class*='entity-lockup__subtitle'], [class*='lockup__subtitle'], [class*='entity__subtitle']"
+    ) ??
+    profileCard.querySelector<HTMLElement>("[class*='headline'], [class*='subtitle']");
+
+  const rawName = nameEl?.innerText?.trim() ?? "";
+  // Strip dialog title prefixes like "Connect with", "Message", "Invite"
+  const name = rawName.replace(/^(Connect with|Invite|Message)\s+/i, "").trim();
+  const headline = headlineEl?.innerText?.trim() ?? "";
+
+  return name.length > 1 ? { name, headline } : null;
+}
+
 function extractLinkedInProfileInfo(): {
   name: string;
   headline: string;
-  employer: string;
-  profileRoot: HTMLElement | null;
+  currentRole: string;
+  profileSections: string;
 } | null {
   if (!window.location.hostname.includes("linkedin.com")) return null;
 
@@ -337,27 +519,67 @@ function extractLinkedInProfileInfo(): {
     document.querySelector<HTMLElement>("[class*='top-card-layout__headline']")?.innerText?.trim() ??
     "";
 
-  const atMatch = headline.match(
-    /(?:at|@)\s+([A-Z][A-Za-z0-9&,.()' -]+?)(?:\s*[\|\u00b7\u2022]|$)/
-  );
-  const pipeMatch = headline.match(
-    /^([A-Z][A-Za-z0-9&,.()' -]+?)\s*[\|\u00b7\u2022]/
-  );
-  const employer =
-    atMatch?.[1]?.trim() ??
-    pipeMatch?.[1]?.trim() ??
-    document
-      .querySelector<HTMLElement>("[class*='top-card__employer']")
-      ?.innerText?.trim() ??
-    "";
-
   if (!name && !headline) return null;
+
+  // ── Extract key profile sections individually ─────────────────────────────
+  const sectionParts: string[] = [];
+
+  if (name) sectionParts.push(`Name: ${name}`);
+  if (headline) sectionParts.push(`Headline: ${headline}`);
+
+  // About section
+  const aboutEl =
+    document.querySelector("#about")?.closest("section") ??
+    document.querySelector<HTMLElement>("[data-section='summary'], .pv-about-section");
+  if (aboutEl) {
+    const aboutText = extractSectionText(aboutEl, 700)
+      .replace(/^About\s*/i, "").trim();
+    if (aboutText) sectionParts.push(`About:\n${aboutText}`);
+  }
+
+  // Experience section — parse first entry for current role, then include raw text
+  const expEl =
+    document.querySelector("#experience")?.closest("section") ??
+    document.querySelector<HTMLElement>("[data-section='experience'], .experience-section");
+  let currentRole = "";
+  if (expEl) {
+    const parsed = extractCurrentRoleFromExperience(expEl);
+    if (parsed) {
+      currentRole = parsed;
+      sectionParts.push(`Current role: ${parsed}`);
+    }
+    // Include full experience text for additional context (past roles, tenure)
+    const expText = extractSectionText(expEl, 600)
+      .replace(/^Experience\s*/i, "").trim();
+    if (expText) sectionParts.push(`Experience:\n${expText}`);
+  }
+
+  // Education section
+  const eduEl =
+    document.querySelector("#education")?.closest("section") ??
+    document.querySelector<HTMLElement>("[data-section='education'], .education-section");
+  if (eduEl) {
+    const eduText = extractSectionText(eduEl, 400)
+      .replace(/^Education\s*/i, "").trim();
+    if (eduText) sectionParts.push(`Education:\n${eduText}`);
+  }
+
+  // Recent activity / posts
+  const activityEl =
+    document.querySelector("#recent-activity-top-card") ??
+    document.querySelector("#activity")?.closest("section") ??
+    document.querySelector<HTMLElement>(".pv-recent-activity-section");
+  if (activityEl) {
+    const actText = extractSectionText(activityEl, 500)
+      .replace(/^(Activity|Recent activity)\s*/i, "").trim();
+    if (actText) sectionParts.push(`Recent activity:\n${actText}`);
+  }
 
   return {
     name,
     headline,
-    employer,
-    profileRoot,
+    currentRole,
+    profileSections: sectionParts.join("\n\n"),
   };
 }
 
@@ -536,6 +758,63 @@ export function isVisibleField(field: Element): boolean {
   return r.width > 0 && r.height > 0;
 }
 
+function isRenderableAnchor(el: Element | null): el is Element {
+  if (!el || !(el instanceof Element)) return false;
+  if (!isElementVisible(el)) return false;
+  const rect = el.getBoundingClientRect();
+  return (
+    rect.bottom >= 0 &&
+    rect.right >= 0 &&
+    rect.top <= window.innerHeight &&
+    rect.left <= window.innerWidth
+  );
+}
+
+export function getVisibleFieldAnchor(field: Element): Element | null {
+  if (!(field as Node).isConnected) return null;
+
+  const candidates: Array<Element | null> = [field];
+
+  if (getLocationSnapshot().hostname.includes("linkedin.com")) {
+    candidates.push(
+      field.closest(".msg-form__msg-content-container"),
+      field.closest(".msg-form__container"),
+      field.closest(".comments-comment-box__form-container"),
+      field.closest(".comments-comment-texteditor"),
+      field.closest(".share-creation-state__text-editor"),
+      field.closest(".feed-shared-update-v2__comments-container"),
+      field.closest('[role="dialog"]')
+    );
+  }
+
+  let node: Element | null = field;
+  while (node) {
+    const parent: HTMLElement | null = node.parentElement;
+    if (parent) {
+      if (parent !== document.body && parent !== document.documentElement) {
+        candidates.push(parent);
+      }
+      node = parent;
+      continue;
+    }
+
+    const root = node.getRootNode();
+    if (root instanceof ShadowRoot) {
+      candidates.push(root.host);
+      node = root.host;
+      continue;
+    }
+
+    node = null;
+  }
+
+  for (const candidate of candidates) {
+    if (isRenderableAnchor(candidate)) return candidate;
+  }
+
+  return null;
+}
+
 /** Returns true if this field is a search/filter input (skip these) */
 export function isSearchField(field: Element): boolean {
   const el = field as HTMLElement;
@@ -556,7 +835,7 @@ export function isSearchField(field: Element): boolean {
 export function isPersonalInfoField(field: Element): boolean {
   const el = field as HTMLInputElement;
   const type = (el.type ?? "").toLowerCase();
-  if (["password", "hidden", "submit", "button", "reset", "checkbox", "radio", "file", "range", "color"].includes(type)) return true;
+  if (["password", "hidden", "submit", "button", "reset", "checkbox", "radio", "file", "range", "color", "number", "tel", "email", "date", "time", "datetime-local", "month", "week", "url"].includes(type)) return true;
 
   const attrs = [
     el.getAttribute("autocomplete") ?? "",
@@ -571,6 +850,7 @@ export function isPersonalInfoField(field: Element): boolean {
     "state", "country", "birth", "dob", "age", "ssn", "social", "credit",
     "card", "cvv", "expire", "salary", "rate", "price", "amount", "quantity",
     "username", "login", "sign-in", "signin",
+    "name", "fname", "lname", "firstname", "lastname", "fullname",
   ];
   return personalTerms.some((t) => attrs.some((a) => a.includes(t)));
 }
@@ -594,15 +874,12 @@ export function findTextFields(platform: PlatformKey): Element[] {
   const seen = new Set<Element>();
   const results: Element[] = [];
   for (const sel of selectors) {
-    try {
-      document.querySelectorAll(sel).forEach((el) => {
-        if (!seen.has(el) && isValidTextField(el)) {
-          seen.add(el);
-          results.push(el);
-        }
-      });
-    } catch {
-      // Invalid selector — skip
+    for (const el of querySelectorAllDeep(sel)) {
+      if (el.closest?.("[data-tfa-ui]")) continue;
+      if (!seen.has(el) && isValidTextField(el)) {
+        seen.add(el);
+        results.push(el);
+      }
     }
   }
   return results;
@@ -806,49 +1083,51 @@ export function extractPageContext(field: Element): string {
     }
 
     // ── Profile + counterparty context ───────────────────────────────────────
+    // For connection notes: prefer the mini-profile card INSIDE the dialog
+    // (always correct) over reading the full page profile (may be stale/wrong
+    // person if the user navigated between tabs).
     const counterparty = extractCounterpartyContext(field, composeBoundary, platform);
     const profile = pathname.includes("/in/") ? extractLinkedInProfileInfo() : null;
 
+    // Try to extract the recipient's name/headline from the connect dialog itself.
+    // This is the most reliable source when a dialog is open — it shows the exact
+    // person being connected to, regardless of what profile page is loaded behind it.
+    const dialogProfileCard = dialogRoot ? extractProfileFromConnectDialog(dialogRoot) : null;
+
     if (isConnectionNote) {
-      // Return immediately with the 300-char constraint marker.
-      // Include profile info for personalization if we're on a profile page.
-      const profileSummary = profile
-        ? domToMarkdown(profile.profileRoot, MAX_FOREGROUND_CONTEXT_CHARS)
+      // Prefer dialog card (most accurate) → page profile → counterparty heuristic
+      const recipientName = dialogProfileCard?.name ?? profile?.name ?? counterparty?.name ?? "";
+      const recipientHeadline = dialogProfileCard?.headline ?? profile?.headline ?? "";
+      const recipientRole = profile?.currentRole ?? "";
+
+      const audienceLine = recipientName
+        ? `Audience: ${recipientName}${recipientHeadline ? ` — ${recipientHeadline}` : ""}${recipientRole ? `\nCurrent role: ${recipientRole}` : ""}`
         : "";
-      const audienceLine = profile?.name
-        ? `Audience: ${profile.name}${profile.headline ? ` - ${profile.headline}` : ""}${profile.employer ? ` @ ${profile.employer}` : ""}`
-        : counterparty?.name
-          ? `Audience: ${counterparty.name}${counterparty.roleHint ? ` (${counterparty.roleHint})` : ""}`
-          : "";
+
       return buildStructuredPageContext([
         "[CONNECT_NOTE_300]",
         title ? `Page: ${title}` : "",
         url ? `URL: ${url}` : "",
         audienceLine,
-        profileSummary ? `Profile context:\n${profileSummary}` : "",
+        profile?.profileSections ? `Profile context:\n${profile.profileSections}` : "",
       ]);
     }
 
     if (profile) {
-      const profileSummary = domToMarkdown(
-        profile.profileRoot,
-        MAX_FOREGROUND_CONTEXT_CHARS
-      );
-      const dialogText =
-        dialogRoot && dialogRoot !== profile.profileRoot
-          ? domToMarkdown(dialogRoot, MAX_DIALOG_CONTEXT_CHARS)
-          : "";
+      const dialogText = dialogRoot
+        ? domToMarkdown(dialogRoot, MAX_DIALOG_CONTEXT_CHARS)
+        : "";
+
+      const audienceLine = profile.name
+        ? `Audience: ${profile.name}${profile.headline ? ` — ${profile.headline}` : ""}${profile.currentRole ? `\nCurrent role: ${profile.currentRole}` : ""}`
+        : "";
 
       return buildStructuredPageContext([
         fieldTypeTag,
         title ? `Page: ${title}` : "",
         url ? `URL: ${url}` : "",
-        profile.name
-          ? `Audience: ${profile.name}${
-              profile.headline ? ` - ${profile.headline}` : ""
-            }${profile.employer ? ` @ ${profile.employer}` : ""}`
-          : "",
-        profileSummary ? `Foreground context:\n${profileSummary}` : "",
+        audienceLine,
+        profile.profileSections ? `Profile context:\n${profile.profileSections}` : "",
         dialogText ? `Active dialog:\n${dialogText}` : "",
       ]);
     }

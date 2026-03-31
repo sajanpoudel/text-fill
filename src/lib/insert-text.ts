@@ -109,36 +109,56 @@ function _replaceContentEditable(el: HTMLElement, text: string): void {
   sel?.removeAllRanges();
   sel?.addRange(range);
 
-  // Quill editors (LinkedIn, Slack, etc.) represent paragraphs as <p> DOM nodes.
-  // document.execCommand("insertText") inserts a raw text node — HTML then collapses
-  // \n\n to whitespace, so all paragraphs merge into one visible line.
-  // Bypass execCommand for Quill and write <p> elements directly; Quill's
-  // MutationObserver will pick up the DOM change and sync its internal delta.
-  //
-  // For non-Quill contenteditable (Gmail, etc.) execCommand is the safer path
-  // because it fires React's synthetic event chain correctly.
+  function escapeLine(line: string): string {
+    return line
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
   let inserted = false;
-  if (!qlEditor) {
+
+  if (!text.includes("\n")) {
+    // Single-line: execCommand("insertText") is the safest path for all editors.
     inserted =
       typeof targetDoc.execCommand === "function" &&
       targetDoc.execCommand("insertText", false, text);
+  } else if (qlEditor) {
+    // Multi-line in Quill (LinkedIn, Slack):
+    // Chrome fires execCommand("insertText") through the editing pipeline including
+    // the beforeinput event. Quill intercepts beforeinput and treats each \n as a
+    // paragraph separator, creating proper <p> blocks. This is the correct approach
+    // (used by the original extension) and preserves all paragraph formatting.
+    inserted =
+      typeof targetDoc.execCommand === "function" &&
+      targetDoc.execCommand("insertText", false, text);
+  } else {
+    // Multi-line in non-Quill editors (Outlook, Gmail, etc.).
+    // These editors use <div> blocks. execCommand("insertHTML") with <div> elements
+    // inserts through the editor's own pipeline so formatting is preserved.
+    const html = text
+      .split("\n\n")
+      .map((para) => {
+        if (!para.trim()) return "<div><br></div>";
+        const inner = para.split("\n").map(escapeLine).join("<br>");
+        return `<div>${inner}</div>`;
+      })
+      .join("<div><br></div>");
+    inserted =
+      typeof targetDoc.execCommand === "function" &&
+      targetDoc.execCommand("insertHTML", false, html);
   }
 
   if (!inserted) {
-    // Direct HTML paragraph insertion — works for Quill and as a fallback elsewhere.
-    // Split on \n\n → separate <p> elements (paragraph breaks).
-    // Split on \n   → <br> within the same <p> (line breaks).
+    // Last-resort fallback: direct DOM manipulation with <p> elements.
+    // Quill picks this up via MutationObserver; other editors use it as a failsafe.
     target.innerHTML = "";
-    const paragraphs = text.split("\n\n");
-    for (const para of paragraphs) {
+    for (const para of text.split("\n\n")) {
       const p = targetDoc.createElement("p");
       if (!para.trim()) {
-        p.innerHTML = "<br>"; // empty paragraph (Quill blank line)
+        p.innerHTML = "<br>";
       } else {
-        const lines = para.split("\n").map((line) =>
-          line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-        );
-        p.innerHTML = lines.join("<br>");
+        p.innerHTML = para.split("\n").map(escapeLine).join("<br>");
       }
       target.appendChild(p);
     }

@@ -3,16 +3,14 @@ import {
   autoUpdate,
   computePosition,
   flip,
-  hide,
   offset,
   shift,
   type Placement,
 } from "@floating-ui/dom";
 import { GenerateModal } from "./GenerateModal.tsx";
-import { SuggestionPreview } from "./SuggestionPreview.tsx";
-import { extractPageContext } from "../../src/lib/platform";
-import type { PlatformKey } from "../../src/lib/platform";
-import { insertText } from "../../src/lib/insert-text";
+import { extractPageContext, getVisibleFieldAnchor } from "../../src/lib/platform.ts";
+import type { PlatformKey } from "../../src/lib/platform.ts";
+import { insertText } from "../../src/lib/insert-text.ts";
 
 interface Props {
   field: Element;
@@ -22,7 +20,7 @@ interface Props {
 }
 
 const DOUBLE_CLICK_MS = 280;
-const BUTTON_SIZE = 30;
+const BUTTON_SIZE = 28;
 
 function getPreferredPlacement(_field: Element): Placement {
   // Always anchor to the top-right corner of the field (inside).
@@ -32,14 +30,7 @@ function getPreferredPlacement(_field: Element): Placement {
 }
 
 function isRenderableField(field: Element): boolean {
-  if (!document.contains(field)) return false;
-  const el = field as HTMLElement;
-  const style = window.getComputedStyle(el);
-  if (style.display === "none" || style.visibility === "hidden") {
-    return false;
-  }
-  const rect = field.getBoundingClientRect();
-  return rect.width > 0 && rect.height > 0;
+  return getVisibleFieldAnchor(field) !== null;
 }
 
 function makeAnchorRect(x: number, y: number): DOMRect {
@@ -62,9 +53,10 @@ function makeAnchorRect(x: number, y: number): DOMRect {
 export function FieldButton({ field, platform, activeContextCount, showToast }: Props) {
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const [instruction, setInstruction] = useState("");
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [previewText, setPreviewText] = useState<string | null>(null);
+  const [logoBroken, setLogoBroken] = useState(false);
   const [floating, setFloating] = useState<{
     x: number;
     y: number;
@@ -79,11 +71,8 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
     setShowModal(false);
     setLoading(false);
     setSuccess(false);
-    setPreviewText(null);
     setFloating(null);
-    setAnchorRect(
-      isRenderableField(field) ? field.getBoundingClientRect() : null
-    );
+    setAnchorRect(getVisibleFieldAnchor(field)?.getBoundingClientRect() ?? null);
   }, [field]);
 
   useEffect(() => {
@@ -100,18 +89,19 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
 
     const update = async () => {
       try {
+        const reference = getVisibleFieldAnchor(field);
         if (
           cancelled ||
           !button.isConnected ||
           !document.contains(button) ||
-          !isRenderableField(field)
+          !reference
         ) {
           if (!cancelled) setFloating(null);
           return;
         }
 
         const placement = getPreferredPlacement(field);
-        const { x, y, middlewareData } = await computePosition(field, button, {
+        const { x, y } = await computePosition(reference, button, {
           strategy: "fixed",
           placement,
           middleware: [
@@ -124,7 +114,6 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
               fallbackPlacements: ["bottom-end", "top-start", "bottom-start"],
             }),
             shift({ padding: 8 }),
-            hide({ strategy: "referenceHidden" }),
           ],
         });
 
@@ -132,24 +121,39 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
           cancelled ||
           !button.isConnected ||
           !document.contains(button) ||
-          !isRenderableField(field)
+          !reference
         ) {
           return;
         }
 
-        const hidden = middlewareData.hide?.referenceHidden === true;
-        setFloating({ x, y, visible: !hidden });
+        // floating-ui's referenceHidden strategy triggers incorrectly on sites
+        // like LinkedIn where fields are inside overflow containers (modals/dialogs)
+        // even when the field is clearly visible. Use a direct viewport check instead.
+        const rect = reference.getBoundingClientRect();
+        const inViewport =
+          rect.bottom > 0 &&
+          rect.top < window.innerHeight &&
+          rect.right > 0 &&
+          rect.left < window.innerWidth &&
+          rect.width > 0 &&
+          rect.height > 0;
+        setFloating({ x, y, visible: inViewport });
         setAnchorRect(makeAnchorRect(x, y));
       } catch {
         if (cancelled) return;
         setFloating(null);
-        setAnchorRect(isRenderableField(field) ? field.getBoundingClientRect() : null);
+        setAnchorRect(getVisibleFieldAnchor(field)?.getBoundingClientRect() ?? null);
       }
     };
 
     let cleanup = () => {};
     try {
-      cleanup = autoUpdate(field, button, () => {
+      const reference = getVisibleFieldAnchor(field);
+      if (!reference) {
+        setFloating(null);
+        return () => {};
+      }
+      cleanup = autoUpdate(reference, button, () => {
         void update();
       });
       void update();
@@ -164,18 +168,15 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
   }, [field, showModal]);
 
   // Shared generate handler — used by click, double-click, keyboard shortcut, and modal.
-  // insertDirectly: true → inserts immediately (double-click/keyboard)
-  // insertDirectly: false/undefined → shows preview card (single-click/modal)
+  // Always inserts directly into the field without a preview step.
   const handleGenerate = useCallback(async (opts: {
     instruction: string;
     pageContext?: string;
     fieldMaxLength?: number;
     tone?: number;
     domain?: string;
-    insertDirectly?: boolean;
   }) => {
     setShowModal(false);
-    setPreviewText(null);
     setLoading(true);
     try {
       const pageContext = opts.pageContext ?? extractPageContext(field);
@@ -193,16 +194,10 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
       });
       if (response?.error) throw new Error(response.error);
       if (response?.text) {
-        if (opts.insertDirectly) {
-          // Double-click / keyboard shortcut: insert directly, show success
-          setTimeout(() => insertText(field, response.text, platform), 80);
-          setSuccess(true);
-          showToast("✓ Text inserted");
-          setTimeout(() => setSuccess(false), 1500);
-        } else {
-          // Single-click / modal Generate: show preview card
-          setPreviewText(response.text);
-        }
+        setTimeout(() => insertText(field, response.text, platform), 80);
+        setSuccess(true);
+        showToast("✓ Text inserted");
+        setTimeout(() => setSuccess(false), 1500);
       }
     } catch (err: any) {
       showToast(err?.message ?? "Generation failed", "error");
@@ -214,7 +209,7 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
   // Listen for Alt+Shift+G quick-generate custom event dispatched by App.tsx
   useEffect(() => {
     const handler = () => {
-      if (!loading) void handleGenerate({ instruction: "", insertDirectly: true });
+      if (!loading) void handleGenerate({ instruction: "" });
     };
     field.addEventListener("tfa-quick-generate", handler);
     return () => field.removeEventListener("tfa-quick-generate", handler);
@@ -222,29 +217,25 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
 
   const handleClick = useCallback(() => {
     if (loading) return;
-    // Clicking the icon while preview is showing dismisses the preview
-    if (previewText !== null) {
-      setPreviewText(null);
-      return;
-    }
     clickCount.current += 1;
     if (clickTimer.current) clearTimeout(clickTimer.current);
 
-    clickTimer.current = setTimeout(async () => {
+    clickTimer.current = setTimeout(() => {
       const count = clickCount.current;
       clickCount.current = 0;
 
       if (count >= 2) {
-        // Double-click: generate and insert directly (no preview)
-        void handleGenerate({ instruction: "", insertDirectly: true });
-      } else {
-        // Single click: generate and show preview card
+        // Double-click: generate and insert directly (no modal)
         void handleGenerate({ instruction: "" });
+      } else {
+        // Single click: open modal for optional instruction + tone/domain settings
+        setShowModal(true);
       }
     }, DOUBLE_CLICK_MS);
-  }, [loading, handleGenerate, previewText]);
+  }, [loading, handleGenerate]);
 
   const isVisible = floating?.visible ?? false;
+  const isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
 
   const btnStyle: React.CSSProperties = {
     position: "fixed",
@@ -254,20 +245,19 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
     width: BUTTON_SIZE,
     height: BUTTON_SIZE,
     padding: 0,
-    border: "1px solid rgba(148,163,184,0.28)",
+    border: `1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.1)"}`,
     borderRadius: "50%",
-    background: window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "rgba(15,23,42,0.94)"
-      : "rgba(255,255,255,0.96)",
+    background: isDark ? "rgba(12,12,12,0.97)" : "rgba(255,255,255,0.97)",
     cursor: loading ? "wait" : "pointer",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    boxShadow: "0 8px 24px rgba(15,23,42,0.18), 0 2px 8px rgba(15,23,42,0.12)",
-    overflow: "visible",
-    transition: "transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease",
+    boxShadow: isDark
+      ? "0 1px 4px rgba(0,0,0,0.5), 0 0 0 0.5px rgba(255,255,255,0.05)"
+      : "0 1px 4px rgba(0,0,0,0.10), 0 0 0 0.5px rgba(0,0,0,0.06)",
+    overflow: "hidden",
+    transition: "transform 0.12s ease, opacity 0.12s ease",
     pointerEvents: isVisible ? "auto" : "none",
-    backdropFilter: "blur(10px)",
     opacity: isVisible ? 1 : 0,
   };
 
@@ -284,25 +274,44 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
           disabled={loading}
           title="Click: generate · Double-click: instant insert · Alt+Shift+G: quick generate"
           onMouseEnter={(e) => {
-            e.currentTarget.style.transform = "scale(1.12)";
-            e.currentTarget.style.boxShadow = "0 10px 30px rgba(15,23,42,0.24), 0 4px 14px rgba(15,23,42,0.18)";
+            e.currentTarget.style.transform = "scale(1.1)";
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.transform = "scale(1)";
-            e.currentTarget.style.boxShadow = "0 8px 24px rgba(15,23,42,0.18), 0 2px 8px rgba(15,23,42,0.12)";
           }}
         >
-          <img
-            src={logoUrl}
-            alt="Text Fill"
-            style={{
-              width: BUTTON_SIZE,
-              height: BUTTON_SIZE,
-              objectFit: "cover",
-              borderRadius: "50%",
-              display: "block",
-            }}
-          />
+          {!logoBroken ? (
+            <img
+              src={logoUrl}
+              alt="Text Fill"
+              onError={() => setLogoBroken(true)}
+              style={{
+                width: BUTTON_SIZE,
+                height: BUTTON_SIZE,
+                objectFit: "cover",
+                borderRadius: "50%",
+                display: "block",
+              }}
+            />
+          ) : (
+            <span
+              style={{
+                width: BUTTON_SIZE,
+                height: BUTTON_SIZE,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                borderRadius: "50%",
+                fontSize: 11,
+                lineHeight: 1,
+                fontWeight: 700,
+                color: isDark ? "#f0f0f0" : "#0a0a0a",
+                fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+              }}
+            >
+              TF
+            </span>
+          )}
 
           {loading && (
             <div style={{
@@ -310,7 +319,7 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
               top: 0, left: 0,
               width: BUTTON_SIZE, height: BUTTON_SIZE,
               borderRadius: "50%",
-              background: "rgba(0,0,0,0.6)",
+              background: isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.55)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -333,7 +342,7 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
               top: 0, left: 0,
               width: BUTTON_SIZE, height: BUTTON_SIZE,
               borderRadius: "50%",
-              background: "rgba(16,185,129,0.92)",
+              background: "rgba(22,163,74,0.9)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -349,14 +358,14 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
               position: "absolute",
               bottom: -2, right: -2,
               minWidth: 9, height: 9,
-              background: "#3b82f6",
+              background: isDark ? "#f0f0f0" : "#0a0a0a",
               border: "2px solid #fff",
               borderRadius: 5,
               pointerEvents: "none",
               zIndex: 1,
               fontSize: 7,
               fontWeight: 700,
-              color: "#fff",
+              color: isDark ? "#0a0a0a" : "#fff",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -369,33 +378,14 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
         </button>
       )}
 
-      {/* Suggestion preview card (single-click generate result) */}
-      {previewText !== null && (
-        <SuggestionPreview
-          text={previewText}
-          field={field}
-          onAccept={() => {
-            const text = previewText;
-            setPreviewText(null);
-            setTimeout(() => insertText(field, text, platform), 80);
-            setSuccess(true);
-            showToast("✓ Text inserted");
-            setTimeout(() => setSuccess(false), 1500);
-          }}
-          onDismiss={() => setPreviewText(null)}
-          onOptions={() => {
-            setPreviewText(null);
-            setShowModal(true);
-          }}
-        />
-      )}
-
       {showModal && anchorRect && (
         <GenerateModal
           field={field}
           platform={platform}
           anchorRect={anchorRect}
           activeContextCount={activeContextCount}
+          instruction={instruction}
+          onInstructionChange={setInstruction}
           onClose={() => setShowModal(false)}
           onGenerate={handleGenerate}
           showToast={showToast}

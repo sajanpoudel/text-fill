@@ -12,111 +12,117 @@ import { formatRelativeTime, truncate } from "../../src/lib/utils";
 const S = {
   popup: {
     width: 320,
-    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-    background: "#fff",
-    color: "#111",
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif",
+    background: "#ffffff",
+    color: "#0a0a0a",
+    WebkitFontSmoothing: "antialiased",
   } as React.CSSProperties,
 
   header: {
     display: "flex",
     alignItems: "center",
-    gap: 10,
-    padding: "14px 16px 12px",
+    gap: 11,
+    padding: "14px 16px 13px",
     borderBottom: "1px solid #f0f0f0",
   } as React.CSSProperties,
 
   logo: {
-    width: 32,
-    height: 32,
+    width: 30,
+    height: 30,
     borderRadius: 8,
     objectFit: "cover" as const,
   },
 
   title: {
     margin: 0,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: 700,
-    color: "#111",
+    color: "#0a0a0a",
     flex: 1,
+    letterSpacing: "-0.3px",
   } as React.CSSProperties,
 
   settingsBtn: {
     background: "none",
     border: "none",
     cursor: "pointer",
-    color: "#888",
-    padding: 4,
-    borderRadius: 6,
+    color: "#aaa",
+    padding: 6,
+    borderRadius: 7,
     display: "flex",
     alignItems: "center",
+    lineHeight: 1,
   } as React.CSSProperties,
 
   desc: {
     margin: 0,
-    fontSize: 13,
-    color: "#666",
-    padding: "12px 16px 8px",
-    lineHeight: 1.5,
+    fontSize: 12.5,
+    color: "#888",
+    padding: "11px 16px 0",
+    lineHeight: 1.55,
   } as React.CSSProperties,
 
   statsRow: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: "6px 16px 10px",
-    fontSize: 12,
-    color: "#888",
+    padding: "7px 16px 10px",
+    fontSize: 11.5,
+    color: "#bbb",
+    letterSpacing: "0.1px",
   } as React.CSSProperties,
 
   memoriesSection: {
-    borderTop: "1px solid #f4f4f5",
+    borderTop: "1px solid #f5f5f5",
   } as React.CSSProperties,
 
   memHeader: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: "10px 16px 6px",
+    padding: "10px 16px 5px",
   } as React.CSSProperties,
 
   memTitle: {
-    fontSize: 11,
+    fontSize: 10.5,
     fontWeight: 600,
     textTransform: "uppercase" as const,
-    letterSpacing: "0.5px",
-    color: "#888",
+    letterSpacing: "0.6px",
+    color: "#bbb",
   } as React.CSSProperties,
 
   memLink: {
     fontSize: 12,
-    color: "#1d4ed8",
+    color: "#0a0a0a",
     cursor: "pointer",
     background: "none",
     border: "none",
     padding: 0,
     fontFamily: "inherit",
+    fontWeight: 500,
   } as React.CSSProperties,
 
   memItem: {
     padding: "8px 16px",
     borderTop: "1px solid #f9f9f9",
-    fontSize: 13,
-    color: "#333",
-    lineHeight: 1.4,
+    fontSize: 12.5,
+    color: "#444",
+    lineHeight: 1.45,
   } as React.CSSProperties,
 
   memMeta: {
-    fontSize: 11,
-    color: "#bbb",
+    fontSize: 10.5,
+    color: "#ccc",
     marginTop: 2,
+    letterSpacing: "0.1px",
   } as React.CSSProperties,
 
   emptyMsg: {
     padding: "20px 16px",
-    fontSize: 13,
-    color: "#aaa",
+    fontSize: 12.5,
+    color: "#bbb",
     textAlign: "center" as const,
-    lineHeight: 1.5,
+    lineHeight: 1.6,
   } as React.CSSProperties,
 
   footer: {
@@ -129,8 +135,8 @@ const S = {
 
   openSettingsBtn: {
     flex: 1,
-    padding: "9px 0",
-    background: "#18181b",
+    padding: "8px 0",
+    background: "#0a0a0a",
     color: "#fff",
     border: "none",
     borderRadius: 8,
@@ -138,13 +144,14 @@ const S = {
     fontWeight: 600,
     cursor: "pointer",
     fontFamily: "inherit",
+    letterSpacing: "-0.1px",
   } as React.CSSProperties,
 
   signOutBtn: {
-    padding: "9px 14px",
+    padding: "8px 13px",
     background: "transparent",
-    color: "#888",
-    border: "1px solid #e4e4e7",
+    color: "#aaa",
+    border: "1px solid #ebebeb",
     borderRadius: 8,
     fontSize: 13,
     cursor: "pointer",
@@ -207,7 +214,7 @@ function Dashboard() {
             <div key={m._id} style={S.memItem}>
               <div>{truncate(m.text, 100)}</div>
               <div style={S.memMeta}>
-                {m.platform && <span style={{ marginRight: 6, color: "#1d4ed8" }}>{m.platform}</span>}
+                {m.platform && <span style={{ marginRight: 6, color: "#888" }}>{m.platform}</span>}
                 {formatRelativeTime(m.createdAt)}
               </div>
             </div>

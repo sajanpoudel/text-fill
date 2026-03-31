@@ -19,7 +19,8 @@ class RootBoundary extends Component<{ children: ReactNode }, { dead: boolean }>
 export default defineContentScript({
   matches: ["<all_urls>"],
   runAt: "document_idle",
-  allFrames: false,
+  allFrames: true,
+  matchAboutBlank: true,
 
   async main(ctx) {
     if (!globalThis.chrome?.runtime?.id) return;
@@ -56,10 +57,21 @@ export default defineContentScript({
 
     parent.appendChild(host);
 
+    // Keep our root as the last child of body so it always paints above
+    // site-injected modals/dialogs (e.g. LinkedIn connect/InMail overlays)
+    // that get appended to document.body after us.
+    const topObserver = new MutationObserver(() => {
+      if (host.isConnected && parent.lastChild !== host) {
+        parent.appendChild(host);
+      }
+    });
+    topObserver.observe(parent, { childList: true });
+
     const root = createRoot(host);
     root.render(createElement(RootBoundary, null, createElement(ContentApp)));
 
     ctx.onInvalidated(() => {
+      topObserver.disconnect();
       markContextInvalidated();   // stop all renders immediately
       try { root.unmount(); } catch { /* already unmounted */ }
       host.remove();

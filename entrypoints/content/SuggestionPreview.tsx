@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import { getVisibleFieldAnchor } from "../../src/lib/platform.ts";
 
 interface Props {
   text: string;
@@ -25,6 +26,51 @@ export function SuggestionPreview({ text, field, onAccept, onDismiss, onOptions 
   const dark = isPageDark();
   const cardRef = useRef<HTMLDivElement>(null);
 
+  // Lock position on mount — computed once so touchpad/mouse movement can't shift it.
+  const posRef = useRef<{ top: number; left: number; maxH: number } | null>(null);
+  if (!posRef.current) {
+    const anchor = getVisibleFieldAnchor(field) ?? field;
+    const CARD_W = 340;
+    const MIN_H = 160; // minimum usable card height
+    const MARGIN = 8;
+    const rect = anchor.getBoundingClientRect();
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+
+    // Horizontal: align to field left, clamp inside viewport
+    let left = rect.left;
+    if (left + CARD_W > vw - MARGIN) left = vw - CARD_W - MARGIN;
+    if (left < MARGIN) left = MARGIN;
+
+    // Vertical: prefer below the field; flip above when more space is available there
+    const spaceBelow = vh - rect.bottom - MARGIN;
+    const spaceAbove = rect.top - MARGIN;
+    let top: number;
+    let maxH: number;
+    if (spaceBelow >= MIN_H && spaceBelow >= spaceAbove) {
+      top = rect.bottom + MARGIN;
+      maxH = spaceBelow;
+    } else if (spaceAbove >= MIN_H) {
+      maxH = spaceAbove;
+      top = rect.top - maxH - MARGIN;
+    } else {
+      // Neither side has much room — use whichever is larger
+      if (spaceBelow >= spaceAbove) {
+        top = rect.bottom + MARGIN;
+        maxH = spaceBelow;
+      } else {
+        maxH = spaceAbove;
+        top = MARGIN;
+      }
+    }
+    // Cap at a sensible max and never exceed viewport
+    maxH = Math.min(maxH, 520);
+    top = Math.max(MARGIN, top);
+
+    posRef.current = { top, left, maxH };
+  }
+  const { top, left, maxH } = posRef.current!;
+
   // Keyboard shortcuts: Enter = accept, Esc = dismiss
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -43,36 +89,7 @@ export function SuggestionPreview({ text, field, onAccept, onDismiss, onOptions 
     return () => document.removeEventListener("keydown", handler, true);
   }, [onAccept, onDismiss]);
 
-  // Click outside card to dismiss
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      const path = e.composedPath ? e.composedPath() : [];
-      const inside = cardRef.current && path.some((el) => el === cardRef.current);
-      if (!inside) onDismiss();
-    };
-    const timer = setTimeout(() => document.addEventListener("click", handler, true), 80);
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener("click", handler, true);
-    };
-  }, [onDismiss]);
-
-  // Position card relative to field
-  const rect = field.getBoundingClientRect();
-  const CARD_W = 340;
-  const vh = window.innerHeight;
-  const vw = window.innerWidth;
-
-  let left = rect.left;
-  if (left + CARD_W > vw - 8) left = vw - CARD_W - 8;
-  if (left < 8) left = 8;
-
-  const spaceBelow = vh - rect.bottom - 8;
-  const spaceAbove = rect.top - 8;
-  const top =
-    spaceBelow >= 180 || spaceBelow >= spaceAbove
-      ? rect.bottom + 8
-      : Math.max(8, rect.top - Math.min(310, spaceAbove) - 8);
+  // No click-outside dismiss — the card only closes via Accept, Dismiss, or Options buttons.
 
   const mountNode = document.body ?? document.documentElement;
 
@@ -84,8 +101,8 @@ export function SuggestionPreview({ text, field, onAccept, onDismiss, onOptions 
         position: "fixed",
         top,
         left,
-        width: CARD_W,
-        maxHeight: 320,
+        width: 340,
+        maxHeight: maxH,
         zIndex: 2147483647,
         background: dark ? "#1c1c1e" : "#ffffff",
         border: `1px solid ${dark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.1)"}`,
@@ -105,7 +122,8 @@ export function SuggestionPreview({ text, field, onAccept, onDismiss, onOptions 
         style={{
           padding: "12px 14px 10px",
           overflowY: "auto",
-          maxHeight: 230,
+          flex: 1,
+          minHeight: 0,
           color: dark ? "#e5e5e7" : "#1a1a1a",
           lineHeight: 1.6,
           whiteSpace: "pre-wrap",

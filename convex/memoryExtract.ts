@@ -87,10 +87,14 @@ Strict rules:
 - Never emit placeholders or templates such as [Name], [Company], <name>, or blank variables
 - Never emit vague abstractions like "User is interested in connecting through values and dialogue"
 - Never emit generic networking facts like "User is familiar with the recipient's work"
+- NEVER save ephemeral events: job application submissions ("applied to X", "submitted application to Y"), one-off messages sent, or outreach attempts. These change constantly and will corrupt future context with false assumptions.
+- Only save DURABLE facts: current employer, confirmed past employer, education, stable skills, explicit long-term goals.
+- "User is applying to / interviewing at X" is NOT a durable fact — omit it.
 - Prefer concrete facts over vague labels
 - Use canonical phrasing for employer facts:
-  - prior employer: "User previously worked at X."
-  - upcoming employer: "User will be joining X."
+  - current employer (confirmed): "User currently works at X as [role]."
+  - prior employer (confirmed left): "User previously worked at X."
+  - upcoming employer (accepted offer): "User will be joining X."
 - Do not emit multiple memories for the same underlying fact
 - Maximum 2 memories
 - confidence must be >= 0.85 or return nothing
