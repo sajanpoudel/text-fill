@@ -9,7 +9,6 @@ import {
 } from "react";
 import {
   detectPlatformKey,
-  detectLinkedInFieldType,
   findTextFields,
   getVisibleFieldAnchor,
   getLocationSnapshot,
@@ -17,6 +16,7 @@ import {
   isPersonalInfoField,
   querySelectorDeep,
 } from "../../src/lib/platform.ts";
+import { detectLinkedInFieldType } from "../../src/lib/platforms/linkedin.ts";
 import { FieldButton } from "./FieldButton.tsx";
 import { ContextFAB, loadContexts } from "./ContextFAB.tsx";
 import type { CapturedContext } from "./ContextFAB.tsx";
@@ -689,10 +689,26 @@ export function ContentApp() {
       if (!document.hidden) scheduleRefresh();
     };
 
-    // SPA navigation: LinkedIn changes the URL via pushState without a full
-    // page reload. The MutationObserver fires but the RAF refresh runs before
-    // CSS transitions finish, so new fields have zero dimensions and are missed.
-    // Fix: poll for URL changes and re-scan after transitions have time to settle.
+    // SPA navigation: many SPAs (LinkedIn, Workday, Greenhouse, etc.) call
+    // history.pushState / history.replaceState directly, which does NOT fire
+    // the `popstate` event. Patch both methods to emit a synthetic custom event
+    // so we always catch URL changes regardless of which history API is used.
+    // We attach to window to avoid re-patching if the effect re-runs.
+    const SPA_EVENT = "tfa-spa-navigate";
+    if (!(window as any).__tfaHistoryPatched) {
+      (window as any).__tfaHistoryPatched = true;
+      const origPush = history.pushState.bind(history);
+      const origReplace = history.replaceState.bind(history);
+      history.pushState = function (...args) {
+        origPush(...args);
+        window.dispatchEvent(new Event(SPA_EVENT));
+      };
+      history.replaceState = function (...args) {
+        origReplace(...args);
+        window.dispatchEvent(new Event(SPA_EVENT));
+      };
+    }
+
     let lastHref = location.href;
     const onNavigation = () => {
       scheduleRefresh();
@@ -701,6 +717,7 @@ export function ContentApp() {
       setTimeout(refreshDiscoveredFields, 800);
       setTimeout(refreshDiscoveredFields, 1600);
     };
+    // Poll as a safety net in case the history patch doesn't fire (cross-origin frames, etc.)
     const navPollInterval = setInterval(() => {
       if (location.href !== lastHref) {
         lastHref = location.href;
@@ -708,7 +725,14 @@ export function ContentApp() {
       }
     }, 600);
     const onPopState = () => onNavigation();
+    const onSpaNavigate = () => {
+      if (location.href !== lastHref) {
+        lastHref = location.href;
+        onNavigation();
+      }
+    };
     window.addEventListener("popstate", onPopState);
+    window.addEventListener(SPA_EVENT, onSpaNavigate);
 
     // A click on the page may reveal a new compose field (Reply, Comment, etc.)
     // Schedule a delayed re-scan so we catch fields that animate in after the click.
@@ -728,6 +752,7 @@ export function ContentApp() {
       observer.disconnect();
       clearInterval(navPollInterval);
       window.removeEventListener("popstate", onPopState);
+      window.removeEventListener(SPA_EVENT, onSpaNavigate);
       document.removeEventListener("input", scheduleRefresh, true);
       document.removeEventListener("click", onPageClick, true);
       document.removeEventListener("visibilitychange", onVisibilityChange);

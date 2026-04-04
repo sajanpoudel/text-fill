@@ -5,26 +5,48 @@ import type { ReactNode } from "react";
 // Singleton — one client per page context (popup, options, memory viewer)
 const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL as string);
 
-// Custom storage that wraps localStorage and mirrors the refresh token to
-// chrome.storage.local so the background service worker can use it for
-// silent token refresh when the popup is closed.
+// Sync in-memory cache for auth tokens, pre-populated from chrome.storage.local.
+// This makes the storage resilient to localStorage being cleared (which happens
+// when users clear browser cookies/site data — chrome.storage.local is unaffected).
+const storageCache = new Map<string, string>();
+
+// Call this once before mounting React to seed the cache from chrome.storage.local.
+export async function initExtensionStorage(): Promise<void> {
+  const all = await chrome.storage.local.get(null);
+  for (const [k, v] of Object.entries(all)) {
+    if (typeof v === "string" && k.startsWith("__convexAuth")) {
+      storageCache.set(k, v);
+    }
+  }
+}
+
+// Custom storage backed by chrome.storage.local (via sync cache).
+// chrome.storage.local is not cleared by browser "Clear browsing data",
+// making sessions survive browser restarts and data clears.
 function makeExtensionStorage(): Storage {
-  const ls = window.localStorage;
   return {
-    get length() { return ls.length; },
-    clear() { ls.clear(); },
-    getItem: (key) => ls.getItem(key),
-    key: (index) => ls.key(index),
+    get length() { return storageCache.size; },
+    clear() {
+      const keys = [...storageCache.keys()];
+      storageCache.clear();
+      chrome.storage.local.remove(keys).catch(() => {});
+    },
+    getItem: (key) => storageCache.get(key) ?? null,
+    key: (index) => [...storageCache.keys()][index] ?? null,
     removeItem(key) {
-      ls.removeItem(key);
+      storageCache.delete(key);
+      chrome.storage.local.remove(key).catch(() => {});
+      // Backward compat: also remove generic refresh token key used by the background SW
       if (key.includes("RefreshToken")) {
         chrome.storage.local.remove("convexRefreshToken").catch(() => {});
       }
     },
     setItem(key, value) {
-      ls.setItem(key, value);
-      // @convex-dev/auth stores the refresh token under __convexAuthRefreshToken_<namespace>
-      // Mirror it to chrome.storage.local so the background SW can refresh silently
+      storageCache.set(key, value);
+      // Persist to chrome.storage.local with the actual key so initExtensionStorage
+      // can restore it on next popup open even if the in-memory cache is gone.
+      chrome.storage.local.set({ [key]: value }).catch(() => {});
+      // Also save under the generic key the background SW reads for silent refresh.
       if (key.includes("RefreshToken")) {
         chrome.storage.local.set({ convexRefreshToken: value }).catch(() => {});
       }

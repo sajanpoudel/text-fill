@@ -5,8 +5,9 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { insertText } from "../../src/lib/insert-text.ts";
-import { extractPageContext } from "../../src/lib/platform.ts";
+import { extractPageContext } from "../../src/lib/context.ts";
 import { loadContexts, saveContexts } from "./ContextFAB.tsx";
+import { isPageDark } from "../../src/lib/dom/theme.ts";
 import type { PlatformKey } from "../../src/lib/platform.ts";
 
 interface Props {
@@ -122,18 +123,6 @@ function setupFocusProtection(
     inertedElements.forEach((node) => node.removeAttribute("inert"));
     restorations.forEach(([node, attr, value]) => node.setAttribute(attr, value));
   };
-}
-
-function isPageDark(): boolean {
-  try {
-    const bg = window.getComputedStyle(document.body).backgroundColor;
-    const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-    if (!m) return window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const luma = (0.299 * +m[1] + 0.587 * +m[2] + 0.114 * +m[3]) / 255;
-    return luma < 0.5;
-  } catch {
-    return window.matchMedia("(prefers-color-scheme: dark)").matches;
-  }
 }
 
 function getFieldValue(field: Element): string {

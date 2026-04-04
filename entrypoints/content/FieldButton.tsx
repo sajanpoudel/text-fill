@@ -8,7 +8,8 @@ import {
   type Placement,
 } from "@floating-ui/dom";
 import { GenerateModal } from "./GenerateModal.tsx";
-import { extractPageContext, getVisibleFieldAnchor } from "../../src/lib/platform.ts";
+import { getVisibleFieldAnchor } from "../../src/lib/platform.ts";
+import { extractPageContext } from "../../src/lib/context.ts";
 import type { PlatformKey } from "../../src/lib/platform.ts";
 import { insertText } from "../../src/lib/insert-text.ts";
 

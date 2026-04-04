@@ -6,6 +6,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { isPageDark } from "../../src/lib/dom/theme.ts";
 
 export interface CapturedContext {
   id: string;
@@ -58,20 +59,6 @@ function extractPageText(): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim()
     .slice(0, 4000);
-}
-
-// ── Dark mode detection ───────────────────────────────────────────────────────
-
-function isPageDark(): boolean {
-  try {
-    const bg = window.getComputedStyle(document.body).backgroundColor;
-    const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-    if (!m) return window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const luma = (0.299 * +m[1] + 0.587 * +m[2] + 0.114 * +m[3]) / 255;
-    return luma < 0.5;
-  } catch {
-    return window.matchMedia("(prefers-color-scheme: dark)").matches;
-  }
 }
 
 // ── Time formatting ───────────────────────────────────────────────────────────
