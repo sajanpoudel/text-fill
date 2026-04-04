@@ -555,11 +555,13 @@ export const rewrite = action({
   args: {
     existingText: v.string(),
     instruction: v.optional(v.string()),
+    pageContext: v.optional(v.string()),
+    capturedContexts: v.optional(v.array(capturedCtxSchema)),
     platform: v.optional(v.string()),
     threadId: v.optional(v.string()),
     fieldMaxLength: v.optional(v.number()),
   },
-  handler: async (ctx, { existingText, instruction, platform, threadId }): Promise<{ text: string; threadId: string }> => {
+  handler: async (ctx, { existingText, instruction, pageContext, capturedContexts, platform, threadId }): Promise<{ text: string; threadId: string }> => {
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
     const profile = await ctx.runQuery(internal.users._getProfileByUserId, { userId });
@@ -573,7 +575,8 @@ export const rewrite = action({
     const { system, user } = buildPrompt({
       instruction: instruction ?? "Rewrite and improve this",
       action: "rewrite",
-      pageContext: "",
+      pageContext: pageContext ?? "",
+      capturedContexts,
       memoryContext: "",
       platform: plat,
       userContextText,
@@ -591,6 +594,9 @@ export const rewrite = action({
 export const shorten = action({
   args: {
     existingText: v.string(),
+    instruction: v.optional(v.string()),
+    pageContext: v.optional(v.string()),
+    capturedContexts: v.optional(v.array(capturedCtxSchema)),
     platform: v.optional(v.string()),
     threadId: v.optional(v.string()),
     fieldMaxLength: v.optional(v.number()),
@@ -623,6 +629,9 @@ export const shorten = action({
 export const expand = action({
   args: {
     existingText: v.string(),
+    instruction: v.optional(v.string()),
+    pageContext: v.optional(v.string()),
+    capturedContexts: v.optional(v.array(capturedCtxSchema)),
     platform: v.optional(v.string()),
     threadId: v.optional(v.string()),
     fieldMaxLength: v.optional(v.number()),
