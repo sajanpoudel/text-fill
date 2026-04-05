@@ -8,6 +8,7 @@ import {
   extractSectionText,
   normalizeText,
 } from "../dom/walker.ts";
+import { scanLinkedInCandidatesInPage } from "../candidate-scan.ts";
 
 // ── Compose boundary ──────────────────────────────────────────────────────────
 
@@ -567,50 +568,11 @@ export interface LinkedInSearchResult {
  * that have a visible "Connect" button. Used to seed batch connection queues.
  */
 export function scanLinkedInSearchResults(): LinkedInSearchResult[] {
-  const results: LinkedInSearchResult[] = [];
-
-  // LinkedIn renders search results inside list items; the exact class changes
-  // quarterly so we use the stable data-chameleon-result-urn attribute first,
-  // then fall back to structural selectors.
-  const cards = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "[data-chameleon-result-urn], .reusable-search__result-container, li.reusable-search__result-container"
-    )
-  );
-
-  for (const card of cards) {
-    // Only include cards with a visible Connect button
-    const connectBtn = Array.from(
-      card.querySelectorAll<HTMLElement>("button, [role='button']")
-    ).find((btn) => {
-      const text = (btn.textContent ?? "").trim().toLowerCase();
-      return text === "connect" || text.startsWith("connect");
-    });
-    if (!connectBtn) continue;
-
-    const nameEl =
-      card.querySelector<HTMLElement>(
-        ".entity-result__title-text a span[aria-hidden='true'], .entity-result__title-line a span[aria-hidden='true']"
-      ) ??
-      card.querySelector<HTMLElement>(
-        "a[href*='/in/'] span[aria-hidden='true'], .app-aware-link span[aria-hidden='true']"
-      );
-    const name = (nameEl?.innerText ?? nameEl?.textContent ?? "").trim();
-    if (!name) continue;
-
-    const headlineEl = card.querySelector<HTMLElement>(
-      ".entity-result__primary-subtitle, .entity-result__summary"
-    );
-    const headline = (headlineEl?.innerText ?? headlineEl?.textContent ?? "").trim();
-
-    const profileLink = card.querySelector<HTMLAnchorElement>("a[href*='/in/']");
-    if (!profileLink?.href) continue;
-    const profileUrl = cleanProfileUrl(profileLink.href);
-
-    results.push({ name, headline, profileUrl });
-  }
-
-  return results;
+  return scanLinkedInCandidatesInPage().candidates.map((candidate) => ({
+    name: candidate.targetName,
+    headline: candidate.headline ?? "",
+    profileUrl: candidate.targetUrl,
+  }));
 }
 
 // ── Extractor ─────────────────────────────────────────────────────────────────

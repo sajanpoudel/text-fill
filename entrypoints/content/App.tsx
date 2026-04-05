@@ -23,9 +23,11 @@ import {
 import { ChangeThreshold, scanForOpportunities } from "../../src/lib/scanner.ts";
 import { sessionObserver } from "../../src/lib/session-observer.ts";
 import { FieldButton } from "./FieldButton.tsx";
+import { AgentFAB } from "./AgentFAB.tsx";
 import { ContextFAB, VoiceFAB, loadContexts } from "./ContextFAB.tsx";
 import { SuggestionChip } from "./SuggestionChip.tsx";
 import { QueuePreviewPanel } from "./QueuePreviewPanel.tsx";
+import { useAgentCommandRelay } from "./useAgentCommandRelay.ts";
 import type { CapturedContext } from "./ContextFAB.tsx";
 import type { PlatformKey } from "../../src/lib/platform.ts";
 
@@ -512,6 +514,7 @@ export function markContextInvalidated() { _contextInvalidated = true; }
 
 export function ContentApp() {
   if (_contextInvalidated) return null;
+  useAgentCommandRelay();
   const [focusedField, setFocusedField] = useState<Element | null>(null);
   const [hoveredField, setHoveredField] = useState<Element | null>(null);
   const [discoveredFields, setDiscoveredFields] = useState<Element[]>([]);
@@ -1026,6 +1029,12 @@ export function ContentApp() {
         </FieldUiBoundary>
       ))}
       <FabBoundary>
+        <AgentFAB
+          visible={showFab}
+          platform={platform}
+          currentField={primaryField}
+          showToast={showToast}
+        />
         <VoiceFAB visible={showFab} showToast={showToast} />
         <ContextFAB
           visible={showFab}

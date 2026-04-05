@@ -1,8 +1,30 @@
 import {
   executeClickElementBySelectorInPage,
   executeElementExistsInPage,
+  executeExtractStructuredDataSnapshotInPage,
+  executeExtractTextInPage,
+  executeGetAccessibilityTreeInPage,
+  executeInsertTextBySelectorInPage,
+  executePressKeyInPage,
+  executeSetFieldValueBySelectorInPage,
+  executeScrollInPage,
+  executeSnapshotInteractivesInPage,
   executeTypeIntoFieldBySelectorInPage,
+  executeVerifyTextInPage,
+  type TextVerificationResult,
 } from "./browser-control.ts";
+import type {
+  AccessibilityNodeSnapshot,
+  BrowserObservationScope,
+  InteractiveElementSnapshot,
+  StructuredDataExtractionResult,
+  StructuredDataSnapshot,
+} from "./browser-observation.ts";
+import { projectStructuredDataFromSnapshot } from "./browser-observation.ts";
+import {
+  scanLinkedInCandidatesInPage,
+  type CandidateScanResult,
+} from "./candidate-scan.ts";
 
 export type BrowserExecutionWorld = "ISOLATED" | "MAIN";
 
@@ -61,6 +83,87 @@ export type BrowserCommand<T = unknown> =
       world?: BrowserExecutionWorld;
     }
   | {
+      kind: "press_key";
+      tabId: number;
+      key: string;
+      modifiers?: string[];
+      selector?: string;
+      world?: BrowserExecutionWorld;
+    }
+  | {
+      kind: "scroll";
+      tabId: number;
+      direction: "up" | "down";
+      amount?: number;
+      selector?: string;
+      world?: BrowserExecutionWorld;
+    }
+  | {
+      kind: "extract_text";
+      tabId: number;
+      selector?: string;
+      scope?: BrowserObservationScope;
+      maxLength?: number;
+      world?: BrowserExecutionWorld;
+    }
+  | {
+      kind: "verify_text";
+      tabId: number;
+      expectedText: string;
+      selector?: string;
+      scope?: BrowserObservationScope;
+      caseSensitive?: boolean;
+      maxLength?: number;
+      world?: BrowserExecutionWorld;
+    }
+  | {
+      kind: "take_screenshot";
+      tabId: number;
+      format?: chrome.extensionTypes.ImageFormat;
+    }
+  | {
+      kind: "snapshot_interactives";
+      tabId: number;
+      scope?: BrowserObservationScope;
+      world?: BrowserExecutionWorld;
+    }
+  | {
+      kind: "get_accessibility_tree";
+      tabId: number;
+      scope?: BrowserObservationScope;
+      world?: BrowserExecutionWorld;
+    }
+  | {
+      kind: "insert_text";
+      tabId: number;
+      selector: string;
+      text: string;
+      platform?: string;
+      world?: BrowserExecutionWorld;
+    }
+  | {
+      kind: "set_field_value";
+      tabId: number;
+      selector: string;
+      value: string | boolean | string[];
+      world?: BrowserExecutionWorld;
+    }
+  | {
+      kind: "extract_structured";
+      tabId: number;
+      schema: string;
+      promptHint?: string;
+      scope?: BrowserObservationScope;
+      world?: BrowserExecutionWorld;
+    }
+  | {
+      kind: "scan_candidates";
+      tabId: number;
+      platform: "linkedin";
+      maxResults?: number;
+      world?: BrowserExecutionWorld;
+    }
+  | {
       kind: "run_script";
       tabId: number;
       func: (...args: any[]) => T;
@@ -86,6 +189,38 @@ type BrowserWaitForElementCommand = Extract<
 >;
 type BrowserClickCommand = Extract<BrowserCommand, { kind: "click" }>;
 type BrowserTypeCommand = Extract<BrowserCommand, { kind: "type" }>;
+type BrowserPressKeyCommand = Extract<BrowserCommand, { kind: "press_key" }>;
+type BrowserScrollCommand = Extract<BrowserCommand, { kind: "scroll" }>;
+type BrowserExtractTextCommand = Extract<BrowserCommand, { kind: "extract_text" }>;
+type BrowserVerifyTextCommand = Extract<BrowserCommand, { kind: "verify_text" }>;
+type BrowserTakeScreenshotCommand = Extract<
+  BrowserCommand,
+  { kind: "take_screenshot" }
+>;
+type BrowserSnapshotInteractivesCommand = Extract<
+  BrowserCommand,
+  { kind: "snapshot_interactives" }
+>;
+type BrowserGetAccessibilityTreeCommand = Extract<
+  BrowserCommand,
+  { kind: "get_accessibility_tree" }
+>;
+type BrowserInsertTextCommand = Extract<
+  BrowserCommand,
+  { kind: "insert_text" }
+>;
+type BrowserSetFieldValueCommand = Extract<
+  BrowserCommand,
+  { kind: "set_field_value" }
+>;
+type BrowserExtractStructuredCommand = Extract<
+  BrowserCommand,
+  { kind: "extract_structured" }
+>;
+type BrowserScanCandidatesCommand = Extract<
+  BrowserCommand,
+  { kind: "scan_candidates" }
+>;
 type BrowserRunScriptCommand<T> = Extract<BrowserCommand<T>, { kind: "run_script" }>;
 
 type NormalizedBrowserCommand<T = unknown> =
@@ -102,6 +237,38 @@ type NormalizedBrowserCommand<T = unknown> =
     })
   | (BrowserClickCommand & { world: BrowserExecutionWorld })
   | (BrowserTypeCommand & { world: BrowserExecutionWorld })
+  | (BrowserPressKeyCommand & { modifiers: string[]; world: BrowserExecutionWorld })
+  | (BrowserScrollCommand & { amount: number; world: BrowserExecutionWorld })
+  | (BrowserExtractTextCommand & {
+      scope: BrowserObservationScope;
+      maxLength: number;
+      world: BrowserExecutionWorld;
+    })
+  | (BrowserVerifyTextCommand & {
+      scope: BrowserObservationScope;
+      caseSensitive: boolean;
+      maxLength: number;
+      world: BrowserExecutionWorld;
+    })
+  | (BrowserTakeScreenshotCommand & { format: chrome.extensionTypes.ImageFormat })
+  | (BrowserSnapshotInteractivesCommand & {
+      scope: BrowserObservationScope;
+      world: BrowserExecutionWorld;
+    })
+  | (BrowserGetAccessibilityTreeCommand & {
+      scope: BrowserObservationScope;
+      world: BrowserExecutionWorld;
+    })
+  | (BrowserInsertTextCommand & { world: BrowserExecutionWorld })
+  | (BrowserSetFieldValueCommand & { world: BrowserExecutionWorld })
+  | (BrowserExtractStructuredCommand & {
+      scope: BrowserObservationScope;
+      world: BrowserExecutionWorld;
+    })
+  | (BrowserScanCandidatesCommand & {
+      maxResults: number;
+      world: BrowserExecutionWorld;
+    })
   | (BrowserRunScriptCommand<T> & { world: BrowserExecutionWorld; args: unknown[] });
 
 export type BrowserCommandResult<T = unknown> =
@@ -114,11 +281,58 @@ export type BrowserCommandResult<T = unknown> =
   | { kind: "wait_for_element"; tabId: number; selector: string; found: true }
   | { kind: "click"; tabId: number; selector: string; clicked: boolean }
   | { kind: "type"; tabId: number; selector: string; typed: boolean }
+  | { kind: "press_key"; tabId: number; key: string; pressed: boolean }
+  | { kind: "scroll"; tabId: number; deltaY: number; position: number | null }
+  | {
+      kind: "extract_text";
+      tabId: number;
+      scope: BrowserObservationScope;
+      text: string;
+    }
+  | {
+      kind: "verify_text";
+      tabId: number;
+      expectedText: string;
+      matched: boolean;
+      text: string;
+    }
+  | { kind: "take_screenshot"; tabId: number; imageDataUrl: string }
+  | {
+      kind: "snapshot_interactives";
+      tabId: number;
+      scope: BrowserObservationScope;
+      elements: InteractiveElementSnapshot[];
+    }
+  | {
+      kind: "get_accessibility_tree";
+      tabId: number;
+      scope: BrowserObservationScope;
+      tree: AccessibilityNodeSnapshot | null;
+    }
+  | {
+      kind: "insert_text";
+      tabId: number;
+      selector: string;
+      inserted: boolean;
+    }
+  | { kind: "set_field_value"; tabId: number; selector: string; set: boolean }
+  | {
+      kind: "extract_structured";
+      tabId: number;
+      scope: BrowserObservationScope;
+      result: StructuredDataExtractionResult;
+    }
+  | {
+      kind: "scan_candidates";
+      tabId: number;
+      platform: "linkedin";
+      scan: CandidateScanResult;
+    }
   | { kind: "run_script"; tabId: number; result: T };
 
 type BrowserTabsApi = Pick<
   typeof chrome.tabs,
-  "create" | "get" | "remove" | "update"
+  "captureVisibleTab" | "create" | "get" | "remove" | "update"
 > & {
   onUpdated: Pick<typeof chrome.tabs.onUpdated, "addListener" | "removeListener">;
 };
@@ -133,6 +347,8 @@ type ChromeBrowserApi = {
 const DEFAULT_TAB_TIMEOUT_MS = 15_000;
 const DEFAULT_POLL_INTERVAL_MS = 200;
 const DEFAULT_ELEMENT_TIMEOUT_MS = 5_000;
+const DEFAULT_OBSERVATION_SCOPE: BrowserObservationScope = "main";
+const DEFAULT_SCROLL_AMOUNT_PX = 640;
 
 export type BrowserCommandResultFor<TCommand extends BrowserCommand<any>> =
   TCommand extends BrowserOpenTabCommand
@@ -153,9 +369,49 @@ export type BrowserCommandResultFor<TCommand extends BrowserCommand<any>> =
                   ? Extract<BrowserCommandResult, { kind: "click" }>
                   : TCommand extends BrowserTypeCommand
                     ? Extract<BrowserCommandResult, { kind: "type" }>
-                    : TCommand extends BrowserRunScriptCommand<infer TResult>
-                      ? { kind: "run_script"; tabId: number; result: TResult }
-                      : never;
+                    : TCommand extends BrowserPressKeyCommand
+                      ? Extract<BrowserCommandResult, { kind: "press_key" }>
+                      : TCommand extends BrowserScrollCommand
+                        ? Extract<BrowserCommandResult, { kind: "scroll" }>
+                        : TCommand extends BrowserExtractTextCommand
+                          ? Extract<BrowserCommandResult, { kind: "extract_text" }>
+                          : TCommand extends BrowserVerifyTextCommand
+                            ? Extract<BrowserCommandResult, { kind: "verify_text" }>
+                    : TCommand extends BrowserTakeScreenshotCommand
+                      ? Extract<BrowserCommandResult, { kind: "take_screenshot" }>
+                      : TCommand extends BrowserSnapshotInteractivesCommand
+                        ? Extract<
+                            BrowserCommandResult,
+                            { kind: "snapshot_interactives" }
+                          >
+                        : TCommand extends BrowserGetAccessibilityTreeCommand
+                          ? Extract<
+                              BrowserCommandResult,
+                              { kind: "get_accessibility_tree" }
+                            >
+                          : TCommand extends BrowserInsertTextCommand
+                            ? Extract<
+                                BrowserCommandResult,
+                                { kind: "insert_text" }
+                              >
+                          : TCommand extends BrowserSetFieldValueCommand
+                            ? Extract<
+                                BrowserCommandResult,
+                                { kind: "set_field_value" }
+                              >
+                            : TCommand extends BrowserExtractStructuredCommand
+                              ? Extract<
+                                  BrowserCommandResult,
+                                  { kind: "extract_structured" }
+                                >
+                              : TCommand extends BrowserScanCandidatesCommand
+                                ? Extract<
+                                    BrowserCommandResult,
+                                    { kind: "scan_candidates" }
+                                  >
+                                : TCommand extends BrowserRunScriptCommand<infer TResult>
+                                  ? { kind: "run_script"; tabId: number; result: TResult }
+                                  : never;
 
 export interface BrowserExecutor {
   execute<TCommand extends BrowserCommand<any>>(
@@ -205,6 +461,72 @@ export function normalizeBrowserCommand<T = unknown>(
     case "type":
       return {
         ...command,
+        world: command.world ?? "ISOLATED",
+      };
+    case "press_key":
+      return {
+        ...command,
+        modifiers: command.modifiers ?? [],
+        world: command.world ?? "ISOLATED",
+      };
+    case "scroll":
+      return {
+        ...command,
+        amount: command.amount ?? DEFAULT_SCROLL_AMOUNT_PX,
+        world: command.world ?? "ISOLATED",
+      };
+    case "extract_text":
+      return {
+        ...command,
+        scope: command.scope ?? DEFAULT_OBSERVATION_SCOPE,
+        maxLength: command.maxLength ?? 6000,
+        world: command.world ?? "ISOLATED",
+      };
+    case "verify_text":
+      return {
+        ...command,
+        scope: command.scope ?? DEFAULT_OBSERVATION_SCOPE,
+        caseSensitive: command.caseSensitive ?? false,
+        maxLength: command.maxLength ?? 6000,
+        world: command.world ?? "ISOLATED",
+      };
+    case "take_screenshot":
+      return {
+        ...command,
+        format: command.format ?? "png",
+      };
+    case "snapshot_interactives":
+      return {
+        ...command,
+        scope: command.scope ?? DEFAULT_OBSERVATION_SCOPE,
+        world: command.world ?? "ISOLATED",
+      };
+    case "get_accessibility_tree":
+      return {
+        ...command,
+        scope: command.scope ?? DEFAULT_OBSERVATION_SCOPE,
+        world: command.world ?? "ISOLATED",
+      };
+    case "insert_text":
+      return {
+        ...command,
+        world: command.world ?? "ISOLATED",
+      };
+    case "set_field_value":
+      return {
+        ...command,
+        world: command.world ?? "ISOLATED",
+      };
+    case "extract_structured":
+      return {
+        ...command,
+        scope: command.scope ?? DEFAULT_OBSERVATION_SCOPE,
+        world: command.world ?? "ISOLATED",
+      };
+    case "scan_candidates":
+      return {
+        ...command,
+        maxResults: command.maxResults ?? 20,
         world: command.world ?? "ISOLATED",
       };
     case "run_script":
@@ -326,6 +648,196 @@ export class ChromeBrowserExecutor implements BrowserExecutor {
           tabId: normalized.tabId,
           selector: normalized.selector,
           typed: !!result,
+        } as BrowserCommandResultFor<TCommand>;
+      }
+
+      case "press_key": {
+        const result = await this.runScript<boolean>({
+          kind: "run_script",
+          tabId: normalized.tabId,
+          world: normalized.world,
+          func: executePressKeyInPage,
+          args: [normalized.key, normalized.modifiers, normalized.selector],
+        });
+        return {
+          kind: "press_key",
+          tabId: normalized.tabId,
+          key: normalized.key,
+          pressed: !!result,
+        } as BrowserCommandResultFor<TCommand>;
+      }
+
+      case "scroll": {
+        const result = await this.runScript<{ deltaY: number; position: number | null }>({
+          kind: "run_script",
+          tabId: normalized.tabId,
+          world: normalized.world,
+          func: executeScrollInPage,
+          args: [normalized.direction, normalized.amount, normalized.selector],
+        });
+        return {
+          kind: "scroll",
+          tabId: normalized.tabId,
+          deltaY: result.deltaY,
+          position: result.position,
+        } as BrowserCommandResultFor<TCommand>;
+      }
+
+      case "extract_text": {
+        const text = await this.runScript<string>({
+          kind: "run_script",
+          tabId: normalized.tabId,
+          world: normalized.world,
+          func: executeExtractTextInPage,
+          args: [normalized.selector, normalized.scope, normalized.maxLength],
+        });
+        return {
+          kind: "extract_text",
+          tabId: normalized.tabId,
+          scope: normalized.scope,
+          text,
+        } as BrowserCommandResultFor<TCommand>;
+      }
+
+      case "verify_text": {
+        const result = await this.runScript<TextVerificationResult>({
+          kind: "run_script",
+          tabId: normalized.tabId,
+          world: normalized.world,
+          func: executeVerifyTextInPage,
+          args: [
+            normalized.expectedText,
+            normalized.selector,
+            normalized.scope,
+            normalized.caseSensitive,
+            normalized.maxLength,
+          ],
+        });
+        return {
+          kind: "verify_text",
+          tabId: normalized.tabId,
+          expectedText: normalized.expectedText,
+          matched: result.matched,
+          text: result.text,
+        } as BrowserCommandResultFor<TCommand>;
+      }
+
+      case "take_screenshot": {
+        const tab = await this.api.tabs.get(normalized.tabId);
+        if (!tab.active) {
+          throw new Error(
+            "take_screenshot requires the target tab to be active in its window"
+          );
+        }
+        const imageDataUrl = await this.api.tabs.captureVisibleTab(
+          tab.windowId,
+          { format: normalized.format }
+        );
+        return {
+          kind: "take_screenshot",
+          tabId: normalized.tabId,
+          imageDataUrl,
+        } as BrowserCommandResultFor<TCommand>;
+      }
+
+      case "snapshot_interactives": {
+        const elements = await this.runScript<InteractiveElementSnapshot[]>({
+          kind: "run_script",
+          tabId: normalized.tabId,
+          world: normalized.world,
+          func: executeSnapshotInteractivesInPage,
+          args: [normalized.scope],
+        });
+        return {
+          kind: "snapshot_interactives",
+          tabId: normalized.tabId,
+          scope: normalized.scope,
+          elements,
+        } as BrowserCommandResultFor<TCommand>;
+      }
+
+      case "get_accessibility_tree": {
+        const tree = await this.runScript<AccessibilityNodeSnapshot | null>({
+          kind: "run_script",
+          tabId: normalized.tabId,
+          world: normalized.world,
+          func: executeGetAccessibilityTreeInPage,
+          args: [normalized.scope],
+        });
+        return {
+          kind: "get_accessibility_tree",
+          tabId: normalized.tabId,
+          scope: normalized.scope,
+          tree,
+        } as BrowserCommandResultFor<TCommand>;
+      }
+
+      case "insert_text": {
+        const result = await this.runScript<boolean>({
+          kind: "run_script",
+          tabId: normalized.tabId,
+          world: normalized.world,
+          func: executeInsertTextBySelectorInPage,
+          args: [normalized.selector, normalized.text, normalized.platform],
+        });
+        return {
+          kind: "insert_text",
+          tabId: normalized.tabId,
+          selector: normalized.selector,
+          inserted: !!result,
+        } as BrowserCommandResultFor<TCommand>;
+      }
+
+      case "set_field_value": {
+        const result = await this.runScript<boolean>({
+          kind: "run_script",
+          tabId: normalized.tabId,
+          world: normalized.world,
+          func: executeSetFieldValueBySelectorInPage,
+          args: [normalized.selector, normalized.value],
+        });
+        return {
+          kind: "set_field_value",
+          tabId: normalized.tabId,
+          selector: normalized.selector,
+          set: !!result,
+        } as BrowserCommandResultFor<TCommand>;
+      }
+
+      case "extract_structured": {
+        const snapshot = await this.runScript<StructuredDataSnapshot>({
+          kind: "run_script",
+          tabId: normalized.tabId,
+          world: normalized.world,
+          func: executeExtractStructuredDataSnapshotInPage,
+          args: [normalized.scope],
+        });
+        const result = projectStructuredDataFromSnapshot(
+          snapshot,
+          normalized.schema,
+          normalized.promptHint
+        );
+        return {
+          kind: "extract_structured",
+          tabId: normalized.tabId,
+          scope: normalized.scope,
+          result,
+        } as BrowserCommandResultFor<TCommand>;
+      }
+
+      case "scan_candidates": {
+        const scan = await this.runScript<CandidateScanResult>({
+          kind: "run_script",
+          tabId: normalized.tabId,
+          world: normalized.world,
+          func: scanLinkedInCandidatesInPage,
+          args: [normalized.maxResults],
+        });
+        return {
+          kind: "scan_candidates",
+          tabId: normalized.tabId,
+          platform: normalized.platform,
+          scan,
         } as BrowserCommandResultFor<TCommand>;
       }
 

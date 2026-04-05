@@ -1,6 +1,12 @@
-import { mutation, query } from "./_generated/server";
+import {
+  internalMutation,
+  mutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server";
 import { v } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
+import type { Id } from "./_generated/dataModel";
 
 const TERMINAL_ITEM_STATUSES = new Set(["sent", "failed", "skipped"]);
 
@@ -26,6 +32,50 @@ async function requireOwnedItem(
   return item;
 }
 
+async function insertBatchForUser(
+  ctx: MutationCtx,
+  args: {
+    userId: Id<"users">;
+    batchType: string;
+    dailyLimit: number;
+    initialStatus: "pending" | "approved";
+    items: Array<{
+      targetUrl: string;
+      targetName?: string;
+      generatedText?: string;
+    }>;
+  }
+) {
+  const now = Date.now();
+  const batchId = await ctx.db.insert("taskBatches", {
+    userId: args.userId,
+    batchType: args.batchType,
+    status: args.initialStatus,
+    totalTasks: args.items.length,
+    completedTasks: 0,
+    dailyLimit: Math.max(1, Math.min(100, Math.round(args.dailyLimit))),
+    createdAt: now,
+    ...(args.initialStatus === "approved" ? { approvedAt: now } : {}),
+  });
+
+  const itemIds: Id<"taskItems">[] = [];
+  for (let i = 0; i < args.items.length; i += 1) {
+    const item = args.items[i];
+    const itemId = await ctx.db.insert("taskItems", {
+      batchId,
+      userId: args.userId,
+      targetUrl: item.targetUrl,
+      targetName: item.targetName,
+      generatedText: item.generatedText,
+      status: args.initialStatus === "approved" ? "approved" : "pending",
+      sortOrder: i,
+    });
+    itemIds.push(itemId);
+  }
+
+  return { batchId, itemIds };
+}
+
 export const createBatch = mutation({
   args: {
     batchType: v.string(),
@@ -42,32 +92,38 @@ export const createBatch = mutation({
     if (!userId) throw new Error("Unauthenticated");
     if (args.items.length === 0) throw new Error("No items to queue");
 
-    const now = Date.now();
-    const batchId = await ctx.db.insert("taskBatches", {
+    return insertBatchForUser(ctx, {
       userId,
       batchType: args.batchType,
-      status: "pending",
-      totalTasks: args.items.length,
-      completedTasks: 0,
-      dailyLimit: Math.max(1, Math.min(100, Math.round(args.dailyLimit))),
-      createdAt: now,
+      dailyLimit: args.dailyLimit,
+      initialStatus: "pending",
+      items: args.items,
     });
+  },
+});
 
-    const itemIds = [];
-    for (let i = 0; i < args.items.length; i += 1) {
-      const item = args.items[i];
-      const itemId = await ctx.db.insert("taskItems", {
-        batchId,
-        userId,
-        targetUrl: item.targetUrl,
-        targetName: item.targetName,
-        status: "pending",
-        sortOrder: i,
-      });
-      itemIds.push(itemId);
-    }
-
-    return { batchId, itemIds };
+export const createApprovedBatchForUser = internalMutation({
+  args: {
+    userId: v.id("users"),
+    batchType: v.string(),
+    dailyLimit: v.number(),
+    items: v.array(
+      v.object({
+        targetUrl: v.string(),
+        targetName: v.optional(v.string()),
+        generatedText: v.optional(v.string()),
+      })
+    ),
+  },
+  handler: async (ctx, args) => {
+    if (args.items.length === 0) throw new Error("No items to queue");
+    return insertBatchForUser(ctx, {
+      userId: args.userId,
+      batchType: args.batchType,
+      dailyLimit: args.dailyLimit,
+      initialStatus: "approved",
+      items: args.items,
+    });
   },
 });
 

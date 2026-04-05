@@ -2,11 +2,17 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "../convex/_generated/api";
 import type { SessionPayload } from "../src/lib/session-observer.ts";
 import { ChromeBrowserExecutor } from "../src/lib/browser-executor.ts";
+import type { SerializableBrowserCommand } from "../src/lib/browser-command-spec.ts";
 import {
   executeLinkedInConnectFromMoreMenuInPage,
   executeLinkedInConnectPrimaryActionInPage,
   executeLinkedInFillAndSendConnectDialogInPage,
 } from "../src/lib/browser-control.ts";
+import {
+  executeSerializableBrowserCommand,
+  formatAgentRelayExecutorId,
+  normalizeAgentCommandError,
+} from "../src/lib/agent-command-runtime.ts";
 import {
   DEFAULT_TASK_QUEUE_SCOPE,
   LEGACY_TASK_QUEUE_KEY,
@@ -16,6 +22,11 @@ import {
   getTaskQueueStorageKey,
   normalizeStoredTaskQueue,
 } from "../src/lib/task-queue-storage.ts";
+import {
+  syncQueuedTasksWithBatchDetails,
+  type ExecutableTaskBatch,
+  type TaskQueueTask,
+} from "../src/lib/task-batch-handoff.ts";
 import {
   normalizeVoiceRuntimeState,
   type VoiceRuntimeState,
@@ -141,6 +152,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "expireContexts") {
     void expireOldContexts();
   }
+  if (alarm.name === "syncApprovedBatches") {
+    void taskQueue.process();
+  }
   if (alarm.name === "resumeTaskQueue") {
     void taskQueue.process();
   }
@@ -148,6 +162,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 // Set up recurring alarm for TTL cleanup (runs every 5 minutes)
 chrome.alarms.create("expireContexts", { periodInMinutes: 5 });
+chrome.alarms.create("syncApprovedBatches", { periodInMinutes: 1 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local" || !("convexToken" in changes)) return;
@@ -200,6 +215,27 @@ async function handleMessage(
 
     case "ENQUEUE_TASK":
       return handleEnqueueTasks(msg.payload);
+
+    case "PROCESS_TASK_QUEUE":
+      return handleProcessTaskQueue();
+
+    case "GET_AGENT_PANEL_STATE":
+      return handleGetAgentPanelState(msg.payload);
+
+    case "START_AGENT_RUN":
+      return handleStartAgentRun(msg.payload, sender);
+
+    case "RESOLVE_AGENT_APPROVAL":
+      return handleResolveAgentApproval(msg.payload);
+
+    case "GET_COMMAND_RELAY_CONTEXT":
+      return {
+        tabId: sender.tab?.id ?? null,
+        url: sender.tab?.url ?? null,
+      };
+
+    case "EXECUTE_BROWSER_COMMAND":
+      return handleExecuteBrowserCommand(msg.payload, sender);
 
     case "START_VOICE":
       return startVoiceListening();
@@ -601,6 +637,214 @@ async function handleEnqueueTasks(payload: {
   return taskQueue.enqueue(enrichedTasks);
 }
 
+async function handleGetAgentPanelState(payload: { limit?: number } | undefined) {
+  const limit = Math.max(1, Math.min(10, Math.round(Number(payload?.limit ?? 5))));
+  const [approvals, runs] = await Promise.all([
+    convex.query(api.agentRuns.listPendingApprovals, { limit }),
+    convex.query(api.agentRuns.listRuns, { limit }),
+  ]);
+
+  return {
+    authenticated: currentTaskQueueScope !== DEFAULT_TASK_QUEUE_SCOPE,
+    approvals,
+    runs,
+  };
+}
+
+async function handleStartAgentRun(
+  payload:
+    | {
+        goal?: string;
+        platformHint?: string;
+        pageContext?: string;
+        fieldTarget?: {
+          selector?: string;
+          platform?: string;
+          fieldType?: string;
+          charLimit?: number;
+        };
+      }
+    | undefined,
+  sender: chrome.runtime.MessageSender
+) {
+  const goal = typeof payload?.goal === "string" ? payload.goal.trim() : "";
+  if (!goal) {
+    return { error: "Goal is required" };
+  }
+  if (typeof sender.tab?.id !== "number") {
+    return { error: "Missing sender tab id" };
+  }
+
+  return convex.mutation(api.agentOrchestration.startRun, {
+    goal,
+    platformHint:
+      typeof payload?.platformHint === "string"
+        ? payload.platformHint
+        : undefined,
+    targetTabId: sender.tab.id,
+    pageUrl: sender.tab.url,
+    pageContext:
+      typeof payload?.pageContext === "string" && payload.pageContext.trim()
+        ? payload.pageContext
+        : undefined,
+    fieldTarget:
+      payload?.fieldTarget &&
+      typeof payload.fieldTarget.selector === "string" &&
+      payload.fieldTarget.selector.trim()
+        ? {
+            selector: payload.fieldTarget.selector,
+            platform:
+              typeof payload.fieldTarget.platform === "string"
+                ? payload.fieldTarget.platform
+                : undefined,
+            fieldType:
+              typeof payload.fieldTarget.fieldType === "string"
+                ? payload.fieldTarget.fieldType
+                : undefined,
+            charLimit:
+              typeof payload.fieldTarget.charLimit === "number"
+                ? payload.fieldTarget.charLimit
+                : undefined,
+          }
+        : undefined,
+  });
+}
+
+async function handleResolveAgentApproval(
+  payload:
+    | {
+        approvalId?: string;
+        decision?: "approved" | "rejected";
+        decisionNote?: string;
+      }
+    | undefined
+) {
+  const approvalId =
+    typeof payload?.approvalId === "string" ? payload.approvalId : null;
+  const decision = payload?.decision;
+  if (!approvalId) {
+    return { error: "Approval id is required" };
+  }
+  if (decision !== "approved" && decision !== "rejected") {
+    return { error: "Approval decision must be approved or rejected" };
+  }
+
+  const result = await convex.mutation(api.agentRuns.resolveApproval, {
+    approvalId: approvalId as any,
+    decision,
+    decisionNote:
+      typeof payload?.decisionNote === "string"
+        ? payload.decisionNote
+        : undefined,
+  });
+
+  if (decision === "approved") {
+    void taskQueue.process();
+  }
+
+  return result;
+}
+
+async function handleProcessTaskQueue() {
+  void taskQueue.process();
+  return { ok: true };
+}
+
+async function syncRunTabForExecutedCommand(
+  runId: string,
+  command: SerializableBrowserCommand,
+  result: unknown
+) {
+  if (command.kind === "open_tab") {
+    const openResult = result as { kind: "open_tab"; tabId: number; url?: string };
+    if (typeof openResult.tabId === "number" && openResult.url) {
+      await convex.mutation(api.agentRuns.syncRunTabForRelay, {
+        runId: runId as any,
+        tabId: openResult.tabId,
+        status: "open",
+        url: openResult.url,
+      });
+    }
+    return;
+  }
+
+  if (command.kind === "navigate") {
+    await convex.mutation(api.agentRuns.syncRunTabForRelay, {
+      runId: runId as any,
+      tabId: command.tabId,
+      status: "open",
+      url: command.url,
+    });
+    return;
+  }
+
+  if (command.kind === "close_tab") {
+    await convex.mutation(api.agentRuns.syncRunTabForRelay, {
+      runId: runId as any,
+      tabId: command.tabId,
+      status: "closed",
+    });
+  }
+}
+
+async function handleExecuteBrowserCommand(
+  payload: { commandId?: string } | undefined,
+  sender: chrome.runtime.MessageSender
+) {
+  const commandId =
+    typeof payload?.commandId === "string" ? payload.commandId : null;
+  const tabId = sender.tab?.id;
+  if (!commandId) {
+    return { ok: false, error: "Missing command id" };
+  }
+  if (typeof tabId !== "number") {
+    return { ok: false, error: "Missing sender tab id" };
+  }
+  const claimedBy = formatAgentRelayExecutorId(tabId);
+
+  const claimed = await convex.mutation(api.agentRuns.claimBrowserCommandForRelay, {
+    commandId: commandId as any,
+    claimedBy,
+    tabId,
+    pageUrl: sender.tab?.url,
+  });
+
+  if (!claimed.ok) {
+    return claimed;
+  }
+
+  const command = claimed.command as SerializableBrowserCommand;
+
+  try {
+    const executionResult = await executeSerializableBrowserCommand(
+      browserExecutor,
+      command
+    );
+
+    await syncRunTabForExecutedCommand(claimed.runId, command, executionResult).catch(
+      () => {}
+    );
+
+    await convex.mutation(api.agentRuns.completeBrowserCommandForRelay, {
+      commandId: commandId as any,
+      claimedBy,
+      status: "completed",
+      result: executionResult as any,
+    });
+
+    return { ok: true, status: "completed", result: executionResult };
+  } catch (error) {
+    const errorMessage = normalizeAgentCommandError(error).slice(0, 500);
+    await convex.mutation(api.agentRuns.completeBrowserCommandForRelay, {
+      commandId: commandId as any,
+      claimedBy,
+      status: "failed",
+      errorMessage,
+    });
+    return { ok: false, error: errorMessage };
+  }
+}
+
 // ── Live recipient profile retrieval (Layer 3) ───────────────────────────────
 
 interface RecipientProfile {
@@ -727,15 +971,7 @@ function formatRecipientProfile(profile: RecipientProfile): string {
 
 // ── Persistent task queue (Tier 3 browser automation) ────────────────────────
 
-interface Task {
-  type: string;
-  targetUrl: string;
-  targetName?: string;
-  batchId?: string;
-  itemId?: string;
-  dailyLimit?: number;
-  payload?: Record<string, unknown>;
-}
+type Task = TaskQueueTask;
 
 /**
  * Box-Muller gaussian random delay — LinkedIn bot detection is sensitive to
@@ -802,9 +1038,62 @@ class PersistentTaskQueue {
     return { queued: tasks.length };
   }
 
+  private async loadSyncableBatchDetails(): Promise<ExecutableTaskBatch[]> {
+    const batches = await convex.query(api.tasks.getPendingBatches, {});
+    const details: ExecutableTaskBatch[] = [];
+
+    for (const batch of batches) {
+      const batchDetails = await convex.query(api.tasks.getBatch, {
+        batchId: batch._id as any,
+      });
+      if (!batchDetails) {
+        continue;
+      }
+      details.push({
+        batch: {
+          _id: String(batchDetails.batch._id),
+          batchType: batchDetails.batch.batchType,
+          status: batchDetails.batch.status,
+          dailyLimit: batchDetails.batch.dailyLimit,
+        },
+        items: batchDetails.items.map((item) => ({
+          _id: String(item._id),
+          targetUrl: item.targetUrl,
+          targetName: item.targetName,
+          status: item.status,
+          generatedText: item.generatedText,
+          userEditedText: item.userEditedText,
+        })),
+      });
+    }
+
+    return details;
+  }
+
+  private async syncApprovedBatches(scope: string): Promise<number> {
+    const existingQueue = await this.readQueue(scope);
+    const nextQueue = syncQueuedTasksWithBatchDetails(
+      existingQueue,
+      await this.loadSyncableBatchDetails()
+    );
+
+    const queueDelta = nextQueue.length - existingQueue.length;
+    if (queueDelta !== 0) {
+      await this.writeQueue(scope, nextQueue);
+    }
+    return Math.max(0, queueDelta);
+  }
+
   private async requeueFront(scope: string, task: Task): Promise<void> {
     const taskQueue = await this.readQueue(scope);
     await this.writeQueue(scope, [task, ...taskQueue]);
+  }
+
+  private async requeueBack(scope: string, task: Task): Promise<number> {
+    const taskQueue = await this.readQueue(scope);
+    const nextQueue = [...taskQueue, task];
+    await this.writeQueue(scope, nextQueue);
+    return nextQueue.length;
   }
 
   private async dequeue(scope: string): Promise<Task | null> {
@@ -813,6 +1102,40 @@ class PersistentTaskQueue {
     const [task, ...rest] = taskQueue;
     await this.writeQueue(scope, rest);
     return task as Task;
+  }
+
+  private async refreshExecutableTask(task: Task): Promise<Task | null> {
+    if (!task.batchId || !task.itemId) {
+      return task;
+    }
+
+    const batchDetails = await convex.query(api.tasks.getBatch, {
+      batchId: task.batchId as any,
+    });
+    if (!batchDetails) {
+      return null;
+    }
+
+    if (
+      batchDetails.batch.status !== "approved" &&
+      batchDetails.batch.status !== "running"
+    ) {
+      return null;
+    }
+
+    const item = batchDetails.items.find((candidate) => candidate._id === task.itemId);
+    if (!item || item.status !== "approved") {
+      return null;
+    }
+
+    return {
+      ...task,
+      targetUrl: item.targetUrl,
+      targetName: item.targetName,
+      dailyLimit: batchDetails.batch.dailyLimit,
+      generatedText: item.generatedText,
+      userEditedText: item.userEditedText,
+    };
   }
 
   async process(): Promise<void> {
@@ -827,12 +1150,34 @@ class PersistentTaskQueue {
       20_000
     );
     try {
-      let task: Task | null;
-      while ((task = await this.dequeue(scope))) {
+      await this.syncApprovedBatches(scope);
+      let consecutiveDeferred = 0;
+
+      while (true) {
+        let task = await this.dequeue(scope);
+        if (!task) {
+          const added = await this.syncApprovedBatches(scope);
+          if (added === 0) {
+            break;
+          }
+          task = await this.dequeue(scope);
+          if (!task) {
+            break;
+          }
+        }
+
         if (scope !== currentTaskQueueScope) {
           await this.requeueFront(scope, task);
           break;
         }
+
+        const refreshedTask = await this.refreshExecutableTask(task);
+        if (!refreshedTask) {
+          consecutiveDeferred = 0;
+          continue;
+        }
+        task = refreshedTask;
+
         if (
           task.dailyLimit &&
           (await getTaskProgress(task, scope)) >= task.dailyLimit
@@ -842,10 +1187,15 @@ class PersistentTaskQueue {
               .mutation(api.tasks.pauseBatch, { batchId: task.batchId as any })
               .catch(() => {});
           }
-          await this.requeueFront(scope, task);
+          const queueLength = await this.requeueBack(scope, task);
           await scheduleTaskQueueResume();
-          break;
+          consecutiveDeferred += 1;
+          if (consecutiveDeferred >= queueLength) {
+            break;
+          }
+          continue;
         }
+        consecutiveDeferred = 0;
 
         if (task.batchId) {
           await convex
@@ -925,24 +1275,26 @@ class PersistentTaskQueue {
         .filter(Boolean)
         .join("\n");
 
-      let noteText = "";
-      try {
-        const generated = await convex.action(api.generate.generate, {
-          instruction:
-            "Write a concise, natural LinkedIn connection note. Sound human, specific, and low-pressure.",
-          pageContext,
-          platform: "linkedin",
-          fieldMaxLength: 300,
-          ...(recipientProfile
-            ? { recipientContext: formatRecipientProfile(recipientProfile) }
-            : {}),
-        });
-        noteText = generated.text?.trim() ?? "";
-      } catch {
-        noteText = "";
+      let noteText = (task.userEditedText ?? task.generatedText ?? "").trim();
+      if (!noteText) {
+        try {
+          const generated = await convex.action(api.generate.generate, {
+            instruction:
+              "Write a concise, natural LinkedIn connection note. Sound human, specific, and low-pressure.",
+            pageContext,
+            platform: "linkedin",
+            fieldMaxLength: 300,
+            ...(recipientProfile
+              ? { recipientContext: formatRecipientProfile(recipientProfile) }
+              : {}),
+          });
+          noteText = generated.text?.trim() ?? "";
+        } catch {
+          noteText = "";
+        }
       }
 
-      if (task.itemId && noteText) {
+      if (task.itemId && noteText && !task.userEditedText && !task.generatedText) {
         await convex.mutation(api.tasks.attachGeneratedText, {
           itemId: task.itemId as any,
           generatedText: noteText,

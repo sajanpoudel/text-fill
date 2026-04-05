@@ -1,6 +1,18 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { authTables } from "@convex-dev/auth/server";
+import {
+  agentRunStatusValidator,
+  agentRunStepRoleValidator,
+  agentFieldTargetValidator,
+  approvalStatusValidator,
+  browserCommandDeliveryScopeValidator,
+  browserCommandStatusValidator,
+  browserCommandTerminalStatusValidator,
+  completionEventIdValidator,
+  runTabStatusValidator,
+  workflowIdValidator,
+} from "./agentRunValidators";
 
 export default defineSchema({
   // Convex Auth manages users / sessions / accounts tables automatically
@@ -250,4 +262,111 @@ export default defineSchema({
   })
     .index("by_batch", ["batchId", "sortOrder"])
     .index("by_batch_status", ["batchId", "status"]),
+
+  // ── Agentic task orchestration ─────────────────────────────────────────────
+
+  agentRuns: defineTable({
+    userId: v.id("users"),
+    goal: v.string(),
+    platformHint: v.optional(v.string()),
+    pageUrl: v.optional(v.string()),
+    initialPageContext: v.optional(v.string()),
+    fieldTarget: v.optional(agentFieldTargetValidator),
+    status: agentRunStatusValidator,
+    currentStepIndex: v.number(),
+    latestSummary: v.optional(v.string()),
+    lastSummarizedAtStep: v.number(),
+    activeWorkflowId: workflowIdValidator,
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    completedAt: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+  })
+    .index("by_user_and_status_and_created_at", ["userId", "status", "createdAt"])
+    .index("by_user_and_updated_at", ["userId", "updatedAt"])
+    .index("by_active_workflow_id", ["activeWorkflowId"]),
+
+  agentRunSteps: defineTable({
+    runId: v.id("agentRuns"),
+    stepIndex: v.number(),
+    role: agentRunStepRoleValidator,
+    content: v.string(),
+    toolCall: v.optional(v.any()),
+    commandId: v.optional(v.id("browserCommands")),
+    approvalId: v.optional(v.id("agentApprovals")),
+    summaryAfterStep: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_run_and_step_index", ["runId", "stepIndex"])
+    .index("by_run_and_created_at", ["runId", "createdAt"]),
+
+  browserCommands: defineTable({
+    userId: v.id("users"),
+    runId: v.id("agentRuns"),
+    stepId: v.id("agentRunSteps"),
+    status: browserCommandStatusValidator,
+    deliveryScope: browserCommandDeliveryScopeValidator,
+    targetTabId: v.optional(v.number()),
+    targetUrl: v.optional(v.string()),
+    command: v.any(),
+    completionEventId: completionEventIdValidator,
+    claimedBy: v.optional(v.string()),
+    claimedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    completedAt: v.optional(v.number()),
+    attemptCount: v.number(),
+    lastError: v.optional(v.string()),
+  })
+    .index("by_run_and_created_at", ["runId", "createdAt"])
+    .index("by_user_and_status_and_target_tab_id", ["userId", "status", "targetTabId"])
+    .index("by_user_and_status_and_delivery_scope", ["userId", "status", "deliveryScope"])
+    .index("by_completion_event_id", ["completionEventId"]),
+
+  browserCommandResults: defineTable({
+    userId: v.id("users"),
+    runId: v.id("agentRuns"),
+    commandId: v.id("browserCommands"),
+    status: browserCommandTerminalStatusValidator,
+    result: v.optional(v.any()),
+    errorMessage: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_command", ["commandId"])
+    .index("by_run_and_created_at", ["runId", "createdAt"])
+    .index("by_user_and_created_at", ["userId", "createdAt"]),
+
+  agentApprovals: defineTable({
+    userId: v.id("users"),
+    runId: v.id("agentRuns"),
+    stepId: v.id("agentRunSteps"),
+    approvalKind: v.string(),
+    title: v.string(),
+    reason: v.optional(v.string()),
+    payload: v.optional(v.any()),
+    status: approvalStatusValidator,
+    completionEventId: completionEventIdValidator,
+    expiresAt: v.optional(v.number()),
+    decidedAt: v.optional(v.number()),
+    decisionNote: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_run_and_created_at", ["runId", "createdAt"])
+    .index("by_user_and_status_and_created_at", ["userId", "status", "createdAt"])
+    .index("by_user_and_status_and_expires_at", ["userId", "status", "expiresAt"])
+    .index("by_completion_event_id", ["completionEventId"]),
+
+  agentRunTabs: defineTable({
+    userId: v.id("users"),
+    runId: v.id("agentRuns"),
+    tabId: v.number(),
+    url: v.string(),
+    status: runTabStatusValidator,
+    openedAt: v.number(),
+    updatedAt: v.number(),
+    closedAt: v.optional(v.number()),
+  })
+    .index("by_run_and_status_and_opened_at", ["runId", "status", "openedAt"])
+    .index("by_run_and_tab_id", ["runId", "tabId"])
+    .index("by_user_and_status_and_opened_at", ["userId", "status", "openedAt"])
+    .index("by_tab_id", ["tabId"]),
 });

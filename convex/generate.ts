@@ -3,6 +3,7 @@ import { action, type ActionCtx } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { internal } from "./_generated/api";
 import { resolveEmbeddingConfig } from "./embeddingConfig";
+import { callProvider, resolveApiKey } from "./llmProvider";
 import { getMemoryFingerprint } from "./memoryRules";
 import type { Id } from "./_generated/dataModel";
 
@@ -330,119 +331,6 @@ function shouldCaptureFullTraceArtifacts(): boolean {
   return true;
 }
 
-async function callProvider(opts: {
-  provider: string;
-  model: string;
-  apiKey: string;
-  system: string;
-  user: string;
-}): Promise<string> {
-  const { provider, model, apiKey, system, user } = opts;
-
-  if (provider === "anthropic") {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 1024,
-        system,
-        messages: [{ role: "user", content: user }],
-      }),
-    });
-    const data = (await res.json()) as any;
-    if (!res.ok) {
-      throw new Error(
-        `Anthropic error: ${data?.error?.message ?? JSON.stringify(data)}`
-      );
-    }
-    return (data.content?.[0]?.text ?? "").trim();
-  }
-
-  if (provider === "gemini") {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `${system}\n\n${user}` }] }],
-          generationConfig: {
-            maxOutputTokens: 2048,
-            temperature: 0.7,
-          },
-        }),
-      }
-    );
-    const data = (await res.json()) as any;
-    if (!res.ok) {
-      throw new Error(
-        `Gemini error: ${data?.error?.message ?? JSON.stringify(data)}`
-      );
-    }
-    return (data.candidates?.[0]?.content?.parts ?? [])
-      .map((p: any) => p.text ?? "")
-      .join("")
-      .trim();
-  }
-
-  const res = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({ model, instructions: system, input: user }),
-  });
-  const data = (await res.json()) as any;
-  if (!res.ok) {
-    throw new Error(
-      `OpenAI error: ${data?.error?.message ?? JSON.stringify(data)}`
-    );
-  }
-
-  if (typeof data?.output_text === "string" && data.output_text) {
-    return data.output_text.trim();
-  }
-
-  const parts: string[] = [];
-  for (const item of data?.output ?? []) {
-    if (item?.type === "message" && Array.isArray(item?.content)) {
-      for (const contentPart of item.content) {
-        if (
-          contentPart?.type === "output_text" &&
-          typeof contentPart?.text === "string"
-        ) {
-          parts.push(contentPart.text);
-        }
-      }
-    }
-  }
-
-  if (parts.length > 0) return parts.join("\n").trim();
-  throw new Error("Could not parse OpenAI response");
-}
-
-function resolveApiKey(profile: {
-  provider?: string;
-  openaiKey?: string;
-  anthropicKey?: string;
-  geminiKey?: string;
-} | null): { provider: string; apiKey: string | null } {
-  const provider = profile?.provider ?? "openai";
-  const apiKey =
-    provider === "anthropic"
-      ? (profile?.anthropicKey ?? null)
-      : provider === "gemini"
-        ? (profile?.geminiKey ?? null)
-        : (profile?.openaiKey ?? null);
-  return { provider, apiKey };
-}
-
 const capturedCtxSchema = v.object({
   id: v.optional(v.string()),
   title: v.optional(v.string()),
@@ -719,6 +607,8 @@ async function executeTextAction(
     apiKey,
     system,
     user,
+    maxOutputTokens: 2048,
+    temperature: 0.7,
   });
   const latencyMs = Date.now() - t0;
   let text = normalizeAnswer(raw);

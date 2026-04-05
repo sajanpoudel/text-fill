@@ -16,3 +16,19 @@ export function getConvexClient(): ConvexHttpClient {
 export function setConvexAuth(token: string): void {
   getConvexClient().setAuth(token);
 }
+
+export function clearConvexAuth(): void {
+  getConvexClient().clearAuth();
+}
+
+export async function syncConvexAuthFromStorage(): Promise<string | null> {
+  const stored = await chrome.storage.local.get("convexToken");
+  const token =
+    typeof stored.convexToken === "string" ? stored.convexToken : null;
+  if (token) {
+    setConvexAuth(token);
+  } else {
+    clearConvexAuth();
+  }
+  return token;
+}

@@ -1,6 +1,7 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "../../convex/_generated/api";
+import { internal } from "../../convex/_generated/api";
 import schema from "../../convex/schema";
 
 async function setup() {
@@ -66,6 +67,30 @@ describe("task batches", () => {
 
     const batch = await authed.query(api.tasks.getBatch, { batchId });
     expect(batch?.items[0].generatedText).toBe("Hello there");
+  });
+
+  test("createApprovedBatchForUser seeds approved items with generated text", async () => {
+    const { authed, userId } = await setup();
+    const { batchId } = await authed.mutation(
+      internal.tasks.createApprovedBatchForUser,
+      {
+        userId,
+        batchType: "linkedin_connect",
+        dailyLimit: 2,
+        items: [
+          {
+            targetUrl: "https://www.linkedin.com/in/a",
+            targetName: "A",
+            generatedText: "Approved note",
+          },
+        ],
+      }
+    );
+
+    const batch = await authed.query(api.tasks.getBatch, { batchId });
+    expect(batch?.batch.status).toBe("approved");
+    expect(batch?.items[0].status).toBe("approved");
+    expect(batch?.items[0].generatedText).toBe("Approved note");
   });
 
   test("a different authenticated user cannot read or mutate another user's batch", async () => {

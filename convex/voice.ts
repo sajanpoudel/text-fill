@@ -2,6 +2,7 @@ import { action } from "./_generated/server";
 import { v } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { internal } from "./_generated/api";
+import { callProvider, resolveApiKey } from "./llmProvider";
 
 // ── Voice intent types ────────────────────────────────────────────────────────
 
@@ -62,13 +63,7 @@ export const parseIntent = action({
       userId,
     });
 
-    const provider = profile?.provider ?? "openai";
-    const apiKey =
-      provider === "anthropic"
-        ? (profile?.anthropicKey ?? null)
-        : provider === "gemini"
-          ? (profile?.geminiKey ?? null)
-          : (profile?.openaiKey ?? null);
+    const { provider, apiKey } = resolveApiKey(profile);
 
     if (!apiKey) {
       // Fall back to heuristic parsing when no API key is configured
@@ -90,6 +85,8 @@ export const parseIntent = action({
         apiKey,
         system: INTENT_SYSTEM,
         user: `Command: "${args.text}"`,
+        maxOutputTokens: 256,
+        temperature: 0.2,
       });
       const parsed = JSON.parse(raw) as VoiceIntent;
       // Validate shape
@@ -135,86 +132,4 @@ function heuristicParse(text: string): VoiceIntent {
   }
 
   return { action: "unknown", params: {}, confidence: 0.3 };
-}
-
-// ── Provider call (shared with generate.ts pattern) ───────────────────────────
-
-async function callProvider(opts: {
-  provider: string;
-  model: string;
-  apiKey: string;
-  system: string;
-  user: string;
-}): Promise<string> {
-  const { provider, model, apiKey, system, user } = opts;
-
-  if (provider === "anthropic") {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 256,
-        system,
-        messages: [{ role: "user", content: user }],
-      }),
-    });
-    const data = (await res.json()) as any;
-    if (!res.ok)
-      throw new Error(
-        `Anthropic error: ${data?.error?.message ?? JSON.stringify(data)}`
-      );
-    return (data.content?.[0]?.text ?? "").trim();
-  }
-
-  if (provider === "gemini") {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `${system}\n\n${user}` }] }],
-          generationConfig: { maxOutputTokens: 256, temperature: 0.2 },
-        }),
-      }
-    );
-    const data = (await res.json()) as any;
-    if (!res.ok)
-      throw new Error(
-        `Gemini error: ${data?.error?.message ?? JSON.stringify(data)}`
-      );
-    return (data.candidates?.[0]?.content?.parts ?? [])
-      .map((p: any) => p.text ?? "")
-      .join("")
-      .trim();
-  }
-
-  // OpenAI Responses API
-  const res = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({ model, instructions: system, input: user }),
-  });
-  const data = (await res.json()) as any;
-  if (!res.ok)
-    throw new Error(
-      `OpenAI error: ${data?.error?.message ?? JSON.stringify(data)}`
-    );
-  const parts: string[] = [];
-  for (const item of data.output ?? []) {
-    for (const c of item.content ?? []) {
-      if (c?.type === "output_text" && typeof c?.text === "string")
-        parts.push(c.text);
-    }
-  }
-  if (parts.length > 0) return parts.join("\n").trim();
-  throw new Error("Could not parse OpenAI response");
 }
