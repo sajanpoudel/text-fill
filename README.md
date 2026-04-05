@@ -1,10 +1,12 @@
 # Text Fill
 
-**Your browser companion that learns who you are and helps you write -  everywhere.**
+**Your browser companion that learns who you are and helps you write, everywhere.**
 
-Text Fill lives in your browser and watches your back. It learns your voice, remembers what matters to you, and helps you write better responses across every site you use -  emails, job applications, LinkedIn messages, tweets, comments, forms, and more.
+Text Fill lives in your browser and watches your back. It learns your voice, remembers what matters to you, and helps you write better responses across every site you use: emails, job applications, LinkedIn messages, tweets, comments, documents, forms, and more.
 
 The longer you use it, the better it knows you.
+
+The current extension ships in Chrome as **CheatResume - Text Fill**, but the core idea is still the same: one writing layer that follows you across the web and gets sharper over time.
 
 ![Text Fill Demo](public/cheatresume-extension-text-fill.gif)
 
@@ -12,145 +14,230 @@ The longer you use it, the better it knows you.
 
 ## What It Does
 
-Most writing tools make you repeat yourself. You paste your resume every time, re-explain your background, switch between modes. Text Fill doesn't work that way.
+Most writing tools make you repeat yourself. You paste your resume every time, re-explain your background, switch tabs for context, and keep re-teaching the model who you are.
 
-It builds a living memory of you -  your job, your skills, your tone, how you write, what you care about. Every time you generate something, it pulls in the context that actually matters for that specific moment. On LinkedIn, it knows your work story. On Twitter, it matches your voice. On a job board, it reads the job description and connects it to your experience automatically.
+Text Fill does the opposite.
 
-**Single-click** the icon next to any text field to open the action menu.
-**Double-click** to generate instantly with no menu.
+It drops a floating action button next to supported text fields across the web. From there you can:
+
+- **Generate** a fresh response
+- **Rewrite** what is already in the field
+- **Shorten** it
+- **Expand** it
+- Adjust **tone** from casual to formal
+- Apply a **domain lens** like general, sales, legal, technical, or academic
+
+**Single-click** opens the action menu.  
+**Double-click** generates instantly.  
+**Alt+Shift+G** quick-generates on the active field.
+
+The system uses the page you are on, the field you are writing in, your saved personal context, and your memory bank to produce something that sounds like it came from you, not from a generic assistant.
 
 ---
 
-## Memory -  The Core
+## Memory - The Core
 
-Text Fill learns from you over time. As you generate, it quietly extracts facts worth remembering:
+Text Fill learns from your usage over time. After longer generations, it can extract durable facts worth remembering and store them as memory:
 
-- **Work** -  your job title, skills, projects, career goals, companies you're targeting
-- **Social** -  your interests, communities, how you spend your time
-- **Personal** -  your name, location, values, relationships
-- **Persona** -  your writing voice: the words you use, the rhythm of your sentences, what makes your writing distinctly yours
+- **Work**: roles, skills, projects, career direction, durable professional facts
+- **Social**: communities, recurring interests, relationship context that actually matters
+- **Personal**: stable background, preferences, values, long-term goals
+- **Persona**: your writing identity, but only when the signal is unusually strong
 
-Memory is selective. It only saves things it's genuinely confident about (85%+ threshold). Persona -  your writing identity -  is held to an even higher bar (95%) because it should only reflect patterns that are unmistakably you, drawn from your own words, not from what the AI generated.
+Memory is conservative by design. It tries to save durable truths, not temporary noise. One-off outreach attempts, old application events, and other fragile context are supposed to stay out of the long-term memory bank.
 
 ### Semantic Search
 
-When you have an OpenAI or Gemini API key, Text Fill uses vector embeddings to find the most relevant memories for each context -  not just keyword matching, but genuine semantic similarity. The right facts surface at the right moment.
+When embeddings are configured, Text Fill uses vector search in Convex to surface the memories most relevant to the exact writing situation in front of you. It is not just keyword matching. The memory system tries to find the facts that actually fit the context.
+
+OpenAI and Gemini can be used for embeddings. Anthropic works for writing, but it still needs OpenAI or Gemini alongside it if you want semantic memory retrieval.
 
 ### Forgetting Curve
 
-Memories don't last forever. Text Fill uses a spaced-repetition forgetting model inspired by Ebbinghaus: memories you haven't used or reinforced in a while gradually fade. High-value memories archive before they delete. Low-value ones are quietly cleaned up. The system self-maintains -  you never have to manage it manually.
+Memories are not meant to live forever unchanged. The current system tracks reinforcement, last access, importance, confidence, and forget risk. A weekly maintenance job handles archiving and cleanup so the memory bank stays useful instead of turning into a pile of stale facts.
 
 **Caps:** 500 active memories, 200 archived.
 
-### Managing Memory
+### Memory Bank
 
-Open **Settings -> Manage Memory** to see everything Text Fill has learned:
+The memory page is now a full React + Convex interface where you can:
 
-- Browse by category (Work, Social, Personal, Persona, Archived)
-- Search across all memories
-- Edit, delete, or restore individual entries
-- See forget pressure bars on each card (how close to archiving)
-- Cluster view groups related memories visually using k-means on their embeddings
-- Optimize & Deduplicate removes low-value entries automatically
+- Browse active and archived memories
+- Filter by category
+- Sort by recency, importance, confidence, mentions, last used, forget risk, or semantic match
+- Run semantic search across saved memories
+- Edit, archive, restore, or delete entries
 
 ---
 
 ## Context Library
 
-Sometimes the context you need is on a different page. The floating button at the bottom-right of every page opens the **Context Library** -  a cross-tab context manager.
+Sometimes the context you need is on another page entirely.
 
-Save any page as context (a job description, a company's about page, a person's LinkedIn profile) and it's automatically included in your next generation, no matter which tab you're writing from.
+The floating **Context Library** button lets you capture pages and keep them active while you write somewhere else. You can add multiple pages, toggle them on or off, and include them in the next generation run without copying anything manually.
 
-Active contexts show a blue dot on the field button. Toggle them on/off. Clear them when you're done.
+This is useful for things like:
+
+- job descriptions
+- company about pages
+- LinkedIn profiles
+- assignment prompts
+- reference material you want the model to actually use
 
 ---
 
 ## Platform Awareness
 
-Text Fill detects which site you're on and automatically applies the right writing style:
+Text Fill detects where you are writing and changes how it behaves.
 
-| Site | Tone |
-|------|------|
-| Gmail | Professional, clear, conversational |
-| LinkedIn | Authentic, direct, genuinely human |
-| Twitter/X | Punchy, concise, no filler (280 char) |
-| Slack | Clear, actionable, professional-casual |
-| Reddit | Real, direct, add actual value |
-| Job boards | Confident, specific, experience-grounded |
-| Everything else | Adapts to context |
+The current codebase includes first-class handling for:
 
-On job boards (Greenhouse, Lever, Ashby, Workday, Workable, iCIMS, etc.) it automatically extracts the job description from the page and uses it to write targeted responses.
+- Gmail and Outlook
+- LinkedIn
+- Messenger and Facebook
+- Twitter/X, Threads, Instagram, YouTube, and Reddit
+- Slack and Discord
+- Google Docs
+- Canvas
+- Greenhouse, Ashby, Workday, and Lever
+- generic text fields on the rest of the web
 
----
+It also includes platform-specific field detection and page-context extraction so the generated text is shaped by the environment you are actually in, not by a one-size-fits-all prompt.
 
-## Your Contexts (Manual)
-
-Alongside automatic memory, you can give Text Fill a foundation to work from in Settings:
-
-- **Career & Work** -  your resume, skills, job history. Used on LinkedIn, Gmail, job boards, Slack, Notion.
-- **Social & Personal** -  your interests, personality, how you like to come across online. Used on Twitter, Instagram, Reddit, Facebook, Discord.
-- **Always Active** -  facts that apply everywhere: your name, preferred tone, things to always or never say.
-
-You can paste text directly or upload a PDF or text file.
+On job boards and LinkedIn, the system is especially opinionated about using the visible foreground context correctly and not leaking irrelevant memory into high-stakes messages.
 
 ---
 
-## AI Providers
+## Accounts, Providers, and Settings
 
-Bring your own API key. Text Fill supports:
+The new version is backed by **Convex** and uses **Convex Auth** instead of a purely local extension state model.
 
-| Provider | Writing Models | Memory Model |
-|----------|---------------|--------------|
-| **OpenAI** | GPT-5 Nano, GPT-5 Mini | GPT-5 Nano |
-| **Anthropic** | Claude Sonnet 4.5, Claude Haiku 3.5 | Claude Haiku 3.5 |
-| **Google** | Gemini 3 Pro, Gemini 3 Flash | Gemini 2.5 Flash Lite |
+You can sign in with:
 
-Memory extraction uses a cheaper/faster model in the background so your main generations stay fast.
+- email + password
+- magic code over email
 
-**Note for Anthropic users:** Anthropic doesn't provide an embedding API. Add an OpenAI or Gemini key alongside your Anthropic key to enable semantic memory search. Your Anthropic key stays active for writing.
+Bring your own model keys in Settings. The current UI supports:
 
-Get API keys:
-- OpenAI: https://platform.openai.com/api-keys
-- Anthropic: https://console.anthropic.com/settings/keys
-- Google AI: https://aistudio.google.com/apikey
+| Provider | Writing models | Memory / extraction models | Embeddings |
+|----------|----------------|----------------------------|------------|
+| **OpenAI** | `gpt-5-nano`, `gpt-5-mini` | `gpt-5-nano` | `text-embedding-3-small`, `text-embedding-3-large` |
+| **Anthropic** | `claude-sonnet-4-5`, `claude-haiku-3-5` | `claude-haiku-3-5` | Use OpenAI or Gemini for embeddings |
+| **Google** | `gemini-3-pro-preview`, `gemini-3-flash-preview` | `gemini-2.5-flash-lite`, `gemini-3-flash-preview` | `gemini-embedding-001` |
+
+Your saved settings include:
+
+- provider and model selection
+- memory model selection
+- embedding provider/model selection
+- custom system prompt
+- **Career & Work**, **Social & Personal**, and **Always Active** context blocks
+
+You can paste context directly or upload a text/Markdown file. The current uploader is built for text-based files, not PDF parsing.
+
+API keys are stored in the user profile on the Convex backend, not in `chrome.storage`.
 
 ---
 
-## Installation
+## Stack
 
-1. Clone or download this repository
-2. Open `chrome://extensions` in Chrome
-3. Enable **Developer mode** (toggle top-right)
-4. Click **Load unpacked** and select the project folder
+This is no longer the old single-file Chrome extension layout.
+
+The current app is built with:
+
+- **WXT** for the Chrome MV3 extension build/runtime
+- **React 18** for popup, options, memory bank, and injected UI
+- **Convex** for auth, persistence, actions, vector search, and scheduled maintenance
+- **Tailwind CSS v4** for the larger app surfaces
+- **Radix UI** and **Lucide** for UI primitives/icons
+
+The background service worker is now a thin bridge between the extension runtime and Convex actions. Most of the real logic lives in the backend modules under `convex/`.
 
 ---
 
 ## File Structure
 
-```
-text-fill/
-├── manifest.json         # Chrome MV3 extension config
-├── background.js         # Service worker: API calls, memory storage, embedding infrastructure
-├── contentScript.js      # DOM injection: field detection, buttons, modal, memory extraction trigger
-├── contentStyles.css     # Injected UI styles
-├── options.html/js/css   # Settings page
-├── memory.html/js/css    # Memory management page
-├── pdf.min.js            # PDF.js library
-├── pdf.worker.min.js     # PDF.js web worker
-├── pdf-lib.js            # PDF extraction wrapper
-└── logo.png              # Extension icon
+```text
+text-fill-v2/
+├── entrypoints/
+│   ├── background.ts          # Service worker: generation bridge, auth refresh, alarms
+│   ├── content/               # Injected field button, modal, context library, DOM UI
+│   ├── popup/                 # Popup dashboard
+│   ├── options/               # Settings page
+│   └── memory/                # Memory Bank page
+├── src/
+│   ├── components/            # Auth screen, providers, shared UI wiring
+│   ├── hooks/                 # Convex-backed hooks for memories, user, generation
+│   ├── lib/                   # Platform detection, DOM walking, context extraction, insertion
+│   └── styles/                # Global styles
+├── convex/
+│   ├── schema.ts              # Tables for profiles, memories, embeddings, auth
+│   ├── auth.ts                # Password + magic-code auth
+│   ├── generate.ts            # Main generation / rewrite / shorten / expand actions
+│   ├── memoryExtract.ts       # Durable memory extraction pipeline
+│   ├── memories.ts            # Memory lifecycle, dedupe, search, maintenance
+│   ├── embeddings.ts          # Embedding generation and vector search
+│   └── context.ts             # Captured context persistence helpers
+├── public/
+│   ├── logo.png
+│   └── cheatresume-extension-text-fill.gif
+├── wxt.config.ts              # Extension manifest + build config
+└── package.json
 ```
 
 ---
 
-## Development
+## Local Development
 
-No build step. Edit files directly and reload from `chrome://extensions`.
+1. Install dependencies:
 
+   ```bash
+   npm install
+   ```
+
+2. Start or connect your Convex backend:
+
+   ```bash
+   npx convex dev
+   ```
+
+3. Create `.env.local` with your client URL:
+
+   ```bash
+   VITE_CONVEX_URL=your_convex_deployment_url
+   ```
+
+4. Configure any needed Convex environment variables for auth and email delivery.
+   `AUTH_RESEND_KEY` is required if you want magic-code sign-in.
+
+5. Start the extension dev build:
+
+   ```bash
+   npm run dev
+   ```
+
+6. Open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select:
+
+   ```text
+   .output/chrome-mv3-dev
+   ```
+
+When you want a production build:
+
+```bash
+npm run build
 ```
-1. Edit source files
-2. Click the refresh icon on the extension card in chrome://extensions
-3. Reload the target page
+
+That outputs the unpacked extension to:
+
+```text
+.output/chrome-mv3
+```
+
+To create a distributable zip:
+
+```bash
+npm run zip
 ```
 
 ---
