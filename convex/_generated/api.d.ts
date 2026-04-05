@@ -14,12 +14,19 @@ import type * as context from "../context.js";
 import type * as crons from "../crons.js";
 import type * as embeddingConfig from "../embeddingConfig.js";
 import type * as embeddings from "../embeddings.js";
+import type * as entities from "../entities.js";
 import type * as generate from "../generate.js";
 import type * as http from "../http.js";
+import type * as interactions from "../interactions.js";
 import type * as memories from "../memories.js";
 import type * as memoryExtract from "../memoryExtract.js";
 import type * as memoryRules from "../memoryRules.js";
+import type * as patterns from "../patterns.js";
+import type * as retrieval from "../retrieval.js";
+import type * as tasks from "../tasks.js";
+import type * as traces from "../traces.js";
 import type * as users from "../users.js";
+import type * as voice from "../voice.js";
 
 import type {
   ApiFromModules,
@@ -34,12 +41,19 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   embeddingConfig: typeof embeddingConfig;
   embeddings: typeof embeddings;
+  entities: typeof entities;
   generate: typeof generate;
   http: typeof http;
+  interactions: typeof interactions;
   memories: typeof memories;
   memoryExtract: typeof memoryExtract;
   memoryRules: typeof memoryRules;
+  patterns: typeof patterns;
+  retrieval: typeof retrieval;
+  tasks: typeof tasks;
+  traces: typeof traces;
   users: typeof users;
+  voice: typeof voice;
 }>;
 
 /**

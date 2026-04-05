@@ -41,10 +41,15 @@ export default defineSchema({
     sessionsSinceAccess: v.optional(v.number()),
     forgetScore: v.optional(v.number()),
     schemaVersion: v.number(),
+    // Bi-temporal validity — null invalidAt means currently valid
+    validAt: v.optional(v.number()),
+    invalidAt: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
     .index("by_user_status", ["userId", "status"])
-    .index("by_user_created", ["userId", "createdAt"]),
+    .index("by_user_created", ["userId", "createdAt"])
+    // invalidAt FIRST (after userId) for efficient active-only queries
+    .index("by_user_active", ["userId", "invalidAt"]),
 
   // Embeddings in a separate table — avoids loading large float arrays on every read
   memoryEmbeddings: defineTable({
@@ -92,6 +97,119 @@ export default defineSchema({
   })
     .index("by_session", ["sessionId"]),
 
+  // ── Procedural patterns ───────────────────────────────────────────────────────
+
+  // Behavioral rules derived from repeated edit patterns
+  proceduralPatterns: defineTable({
+    userId: v.id("users"),
+    platform: v.string(),
+    contextType: v.optional(v.string()),
+    ruleText: v.string(),                    // "For LinkedIn recruiter DMs: keep under 3 sentences"
+    confidence: v.number(),                  // 0-1, decays weekly
+    triggerCount: v.number(),                // total times observed
+    pendingCount: v.number(),                // sessions since last promotion
+    promotedAt: v.number(),
+    lastTriggeredAt: v.optional(v.number()),
+    deletedAt: v.optional(v.number()),       // MUST be first non-userId field in soft-delete index
+  })
+    // deletedAt FIRST for efficient active query
+    .index("by_user_active", ["userId", "deletedAt", "platform"])
+    .index("by_user_platform", ["userId", "platform", "confidence"]),
+
+  // Junction: which sessions support which patterns (no unbounded arrays)
+  patternSupports: defineTable({
+    patternId: v.id("proceduralPatterns"),
+    sessionId: v.id("interactionSessions"),
+    createdAt: v.number(),
+  })
+    .index("by_pattern", ["patternId"])
+    .index("by_session", ["sessionId"])
+    .index("by_pattern_and_session", ["patternId", "sessionId"]),
+
+  // ── Entity graph ──────────────────────────────────────────────────────────────
+
+  // Named entities: people, companies, platforms
+  entities: defineTable({
+    userId: v.id("users"),
+    name: v.string(),
+    type: v.string(),                        // "person" | "company" | "platform"
+    normalizedName: v.string(),              // lowercased, trimmed — for matching
+    createdAt: v.number(),
+    deletedAt: v.optional(v.number()),       // MUST be first in soft-delete index
+  })
+    // deletedAt FIRST — critical for efficient .eq("deletedAt", undefined) filter
+    .index("by_user_active", ["userId", "deletedAt", "createdAt"])
+    .index("by_user_name", ["userId", "normalizedName"]),
+
+  // Entity embeddings — separate table (mirrors memoryEmbeddings pattern)
+  entityEmbeddings: defineTable({
+    entityId: v.id("entities"),
+    userId: v.id("users"),
+    embedding: v.array(v.float64()),
+  })
+    .index("by_entity", ["entityId"])
+    .vectorIndex("by_embedding", {
+      vectorField: "embedding",
+      dimensions: 1536,
+      filterFields: ["userId"],
+    }),
+
+  // Temporal relationships between entities
+  entityEdges: defineTable({
+    userId: v.id("users"),
+    fromEntityId: v.id("entities"),
+    toEntityId: v.id("entities"),
+    relation: v.string(),                    // "works_at" | "knows" | "reports_to"
+    validAt: v.number(),                     // when true in reality
+    invalidAt: v.optional(v.number()),       // when stopped being true (null = still valid)
+    createdAt: v.number(),                   // when system learned it
+    expiredAt: v.optional(v.number()),       // when system recorded the change
+  })
+    .index("by_from_active", ["fromEntityId", "invalidAt"])
+    .index("by_user_active", ["userId", "invalidAt", "validAt"]),
+
+  // Junction: which sessions support which edges (no unbounded arrays)
+  edgeSupports: defineTable({
+    edgeId: v.id("entityEdges"),
+    sessionId: v.id("interactionSessions"),
+    createdAt: v.number(),
+  })
+    .index("by_edge", ["edgeId"])
+    .index("by_session", ["sessionId"])
+    .index("by_edge_and_session", ["edgeId", "sessionId"]),
+
+  // ── Evaluation & tracing ─────────────────────────────────────────────────────
+
+  // One trace per AI generation — written fire-and-forget from generate.ts.
+  // userAction and editDistance are filled in later when the session closes.
+  traces: defineTable({
+    userId: v.id("users"),
+    sessionId: v.optional(v.id("interactionSessions")), // linked on session close
+    platform: v.string(),
+    modelId: v.string(),
+    promptFingerprint: v.string(),          // first 64 chars of system prompt (for dedup/compare)
+    presentedOutput: v.string(),            // capped at 2000 chars
+    hadLiveContext: v.boolean(),            // true if recipientContext was present
+    retrievedPatternCount: v.number(),      // # procedural rules injected
+    episodeExampleCount: v.number(),        // # episodic examples injected
+    latencyMs: v.number(),
+    userAction: v.optional(v.string()),     // "accepted" | "lightly_edited" | "heavily_edited" | "rewritten" | "abandoned" | "sent"
+    editFraction: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_user_created", ["userId", "createdAt"])
+    .index("by_user_action", ["userId", "userAction", "createdAt"]),
+
+  // Full prompt text in separate table — only written when debugging/eval needed.
+  // Not written by default to keep traces table cheap. Opt-in via TRACE_FULL_PROMPT flag.
+  traceArtifacts: defineTable({
+    traceId: v.id("traces"),
+    systemPrompt: v.string(),
+    userPrompt: v.string(),
+    rawLlmOutput: v.string(),
+  })
+    .index("by_trace", ["traceId"]),
+
   // Cross-tab captured page context (30-min TTL, cleaned up by scheduled job)
   capturedContexts: defineTable({
     userId: v.id("users"),
@@ -102,4 +220,34 @@ export default defineSchema({
     expiresAt: v.number(),
     isActive: v.boolean(),
   }).index("by_user_active", ["userId", "isActive"]),
+
+  // ── Batch task queue ──────────────────────────────────────────────────────────
+
+  // Persisted task queue for multi-step browser operations
+  taskBatches: defineTable({
+    userId: v.id("users"),
+    batchType: v.string(),                    // "linkedin_connect" | "profile_extract" | etc.
+    status: v.string(),                       // "pending" | "approved" | "running" | "done" | "paused"
+    totalTasks: v.number(),
+    completedTasks: v.number(),
+    dailyLimit: v.number(),
+    createdAt: v.number(),
+    approvedAt: v.optional(v.number()),
+    completedAt: v.optional(v.number()),
+  }).index("by_user_status", ["userId", "status", "createdAt"]),
+
+  taskItems: defineTable({
+    batchId: v.id("taskBatches"),
+    userId: v.id("users"),
+    targetUrl: v.string(),
+    targetName: v.optional(v.string()),
+    generatedText: v.optional(v.string()),    // pre-generated message for approval
+    status: v.string(),                       // "pending" | "approved" | "sent" | "failed" | "skipped"
+    userEditedText: v.optional(v.string()),   // if user edited the generated message
+    executedAt: v.optional(v.number()),
+    errorMessage: v.optional(v.string()),
+    sortOrder: v.number(),
+  })
+    .index("by_batch", ["batchId", "sortOrder"])
+    .index("by_batch_status", ["batchId", "status"]),
 });

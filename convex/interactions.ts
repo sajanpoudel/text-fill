@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { mutation, internalQuery } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { internal } from "./_generated/api";
 
 // ── Record a completed interaction session ─────────────────────────────────────
 
@@ -10,6 +11,7 @@ export const recordSession = mutation({
     platform: v.string(),
     contextType: v.optional(v.string()),
     recipientName: v.optional(v.string()),
+    traceId: v.optional(v.string()),
     openedAt: v.number(),
     aiGeneratedAt: v.optional(v.number()),
     closedAt: v.number(),
@@ -50,6 +52,32 @@ export const recordSession = mutation({
         userFinalText: args.userFinalText?.slice(0, 4000),
       });
       await ctx.db.patch(sessionRowId, { artifactId });
+    }
+
+    // Fire-and-forget pattern promotion check — never blocks session recording
+    await ctx.scheduler.runAfter(0, internal.patterns.checkPromotion, {
+      userId,
+      platform: args.platform,
+      contextType: args.contextType,
+      sessionRowId,
+      outcome: args.outcome,
+    });
+
+    // Phase 8: link session outcome back to the generation trace
+    if (args.traceId) {
+      try {
+        const traceId = ctx.db.normalizeId("traces", args.traceId);
+        if (traceId) {
+          await ctx.scheduler.runAfter(0, internal.traces.updateOutcome, {
+            traceId,
+            sessionId: sessionRowId,
+            userAction: args.outcome,
+            editFraction: args.editFraction,
+          });
+        }
+      } catch {
+        // Non-fatal — tracing is best-effort
+      }
     }
 
     return sessionRowId;

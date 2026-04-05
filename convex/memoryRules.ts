@@ -211,6 +211,11 @@ export function canonicalizeMemoryText(memory: MemoryLike): string | null {
     if (pastEmployer) {
       return `User previously worked at ${pastEmployer}.`;
     }
+
+    const currentEmployer = extractCurrentEmployer(text, tags);
+    if (currentEmployer) {
+      return `User currently works at ${currentEmployer}.`;
+    }
   }
 
   return text;

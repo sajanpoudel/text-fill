@@ -3,7 +3,11 @@
 // The generic dom/walker.ts remains class-name-free.
 
 import type { FieldContext, PlatformExtractor } from "./base.ts";
-import { extractSectionText, normalizeText } from "../dom/walker.ts";
+import {
+  extractCleanText,
+  extractSectionText,
+  normalizeText,
+} from "../dom/walker.ts";
 
 // ── Compose boundary ──────────────────────────────────────────────────────────
 
@@ -205,29 +209,62 @@ function extractProfileSections(name: string, headline: string): string {
   return parts.join("\n\n");
 }
 
+function extractTopCardSnapshot(): string {
+  const main = document.querySelector<HTMLElement>("main");
+  if (!main) return "";
+
+  const firstSection =
+    main.querySelector<HTMLElement>("section") ??
+    main.firstElementChild;
+  if (!firstSection) return "";
+
+  return extractSectionText(firstSection, 650).trim();
+}
+
 /**
  * Extracts the profile shown on a LinkedIn /in/ profile page.
  * Name + headline from page headings; sections from named anchors.
  */
 function extractPageProfile(): { name: string; headline: string; profileContext: string } | null {
   const profileRoot = document.querySelector<HTMLElement>("main") ?? document.body;
+  const jsonLd = extractLinkedInJsonLd();
 
   const name =
     document.querySelector<HTMLElement>("h1.text-heading-xlarge")?.innerText?.trim() ??
     profileRoot.querySelector<HTMLElement>("h1")?.innerText?.trim() ??
+    jsonLd?.name?.trim() ??
     "";
 
   const headline =
     document.querySelector<HTMLElement>(".text-body-medium.break-words")?.innerText?.trim() ??
     document.querySelector<HTMLElement>("[class*='top-card-layout__headline']")?.innerText?.trim() ??
+    jsonLd?.headline?.trim() ??
     "";
 
-  if (!name && !headline) return null;
+  const sectionContext = extractProfileSections(name, headline);
+  const topCardSnapshot = extractTopCardSnapshot();
+  const profileExtras = [
+    jsonLd?.recentPosts?.length
+      ? `Recent posts: ${jsonLd.recentPosts.slice(0, 3).join(" | ")}`
+      : null,
+    topCardSnapshot &&
+    !sectionContext.includes(topCardSnapshot.slice(0, 80))
+      ? `Visible page snapshot:\n${topCardSnapshot}`
+      : null,
+  ]
+    .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+    .join("\n\n");
+
+  const profileContext = [sectionContext, profileExtras]
+    .filter((part) => part.trim().length > 0)
+    .join("\n\n");
+
+  if (!name && !headline && !profileContext) return null;
 
   return {
     name,
     headline,
-    profileContext: extractProfileSections(name, headline),
+    profileContext,
   };
 }
 
@@ -303,6 +340,51 @@ function extractDmCounterparty(
   return { name, headline };
 }
 
+function extractCommentThreadContext(
+  field: Element,
+  composeBoundary: Element,
+): string | null {
+  const commentThreadRoot =
+    field.closest(
+      ".comments-comment-item, [class*='comments-comment-item'], [class*='comments-comment-list__comment-item'], li"
+    ) ??
+    composeBoundary.closest(
+      ".comments-comment-item, [class*='comments-comment-item'], [class*='comments-comment-list__comment-item'], li"
+    ) ??
+    composeBoundary;
+
+  const feedRoot =
+    composeBoundary.closest(
+      ".feed-shared-update-v2, [class*='feed-shared-update-v2'], [class*='occludable-update'], article, section, main"
+    ) ??
+    document.querySelector<HTMLElement>("main, article, [role='main']");
+
+  const threadText = extractCleanText(commentThreadRoot, 900);
+  const postText =
+    feedRoot && feedRoot !== commentThreadRoot
+      ? extractCleanText(feedRoot, 1500)
+      : "";
+
+  const parts: string[] = [];
+  if (threadText) parts.push(`Active comment thread:\n${threadText}`);
+
+  const normalizedThread = normalizeText(threadText);
+  const normalizedPost = normalizeText(postText);
+  const threadProbe =
+    normalizedThread.length > 120
+      ? normalizedThread.slice(0, 120)
+      : normalizedThread;
+  if (
+    normalizedPost &&
+    normalizedPost !== normalizedThread &&
+    (!threadProbe || !normalizedPost.includes(threadProbe))
+  ) {
+    parts.push(`Attached post:\n${postText}`);
+  }
+
+  return parts.join("\n\n") || null;
+}
+
 function pickPersonName(candidates: string[]): string {
   for (const raw of candidates) {
     const text = normalizeText(raw);
@@ -322,11 +404,137 @@ function pickPersonName(candidates: string[]): string {
   return "";
 }
 
+// ── JSON-LD profile extraction (stable, SEO-published by LinkedIn) ────────────
+
+export interface LinkedInJsonLdProfile {
+  name: string;
+  headline: string | null;
+  url: string | null;
+  recentPosts: string[];
+}
+
+/**
+ * Parses Person + Article nodes from LinkedIn's JSON-LD SEO scripts.
+ * More stable than CSS class selectors, which change every quarter.
+ * Runs in the content script (ISOLATED world) when already on a profile page.
+ */
+export function extractLinkedInJsonLd(): LinkedInJsonLdProfile | null {
+  for (const script of document.querySelectorAll<HTMLScriptElement>(
+    'script[type="application/ld+json"]'
+  )) {
+    try {
+      const data = JSON.parse(script.textContent ?? "");
+      const graph: any[] = data["@graph"] ?? [data];
+      const person = graph.find((n: any) => n["@type"] === "Person");
+      if (!person) continue;
+      return {
+        name: (person.name as string) ?? "",
+        headline:
+          (person.description as string) ??
+          (person.headline as string) ??
+          null,
+        url: (person.url as string) ?? null,
+        recentPosts: graph
+          .filter((n: any) => n["@type"] === "Article")
+          .slice(0, 3)
+          .map((a: any) => a.headline as string)
+          .filter(Boolean),
+      };
+    } catch {
+      // malformed JSON-LD block — try next script tag
+    }
+  }
+  return null;
+}
+
+/**
+ * Extracts the LinkedIn profile URL of the recipient visible in the current
+ * page context. Works for:
+ *   - /in/ profile pages      → current URL (stripped of query params)
+ *   - DM / messaging threads  → link in the conversation header
+ *   - InMail dialogs          → link inside the dialog card
+ * Returns null when no profile URL can be determined.
+ */
+export function getLinkedInRecipientProfileUrl(): string | null {
+  const origin = window.location.origin; // https://www.linkedin.com
+
+  // Case 1: already on a profile page
+  if (window.location.pathname.match(/^\/in\/[^/]+\/?$/)) {
+    return origin + window.location.pathname.replace(/\/$/, "");
+  }
+
+  // Case 2: InMail / connect dialog contains a profile link
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+  if (dialog) {
+    const link = dialog.querySelector<HTMLAnchorElement>('a[href*="/in/"]');
+    if (link?.href) return cleanProfileUrl(link.href);
+  }
+
+  // Case 3: DM conversation header
+  for (const sel of [
+    ".msg-thread__header a[href*='/in/']",
+    "[class*='msg-overlay-conversation-bubble-header'] a[href*='/in/']",
+    "[class*='conversation-header'] a[href*='/in/']",
+    ".msg-thread__link-to-profile",
+  ]) {
+    const link = document.querySelector<HTMLAnchorElement>(sel);
+    if (link?.href) return cleanProfileUrl(link.href);
+  }
+
+  return null;
+}
+
+function cleanProfileUrl(href: string): string {
+  // Keep only the /in/slug portion — drop query params and hash
+  try {
+    const u = new URL(href);
+    const match = u.pathname.match(/^(\/in\/[^/]+)\/?/);
+    if (match) return `${u.origin}${match[1]}`;
+  } catch { /* invalid URL */ }
+  return href.split("?")[0];
+}
+
 // ── Exported utilities ────────────────────────────────────────────────────────
 
 /** Used by App.tsx to classify the active LinkedIn field for UI labeling. */
 export function detectLinkedInFieldType(field: Element): string | null {
   return detectFieldType(field);
+}
+
+/**
+ * LinkedIn search/typeahead inputs should not get the inline compose button.
+ * They are valid page controls, but they are not write targets for the current
+ * inline flow.
+ */
+export function isLinkedInSearchField(field: Element): boolean {
+  if (detectFieldType(field)) return false;
+
+  const el = field as HTMLElement;
+  const attrs = [
+    el.getAttribute?.("placeholder") ?? "",
+    el.getAttribute?.("data-placeholder") ?? "",
+    el.getAttribute?.("aria-label") ?? "",
+    el.getAttribute?.("name") ?? "",
+    el.getAttribute?.("id") ?? "",
+    el.getAttribute?.("role") ?? "",
+    el.getAttribute?.("autocomplete") ?? "",
+    el.getAttribute?.("data-testid") ?? "",
+    el.getAttribute?.("componentkey") ?? "",
+    el.getAttribute?.("aria-autocomplete") ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  if (attrs.includes("typeahead-input")) return true;
+  if (attrs.includes("searchresults_searchtyahinputref")) return true;
+  if (attrs.includes("looking for")) return true;
+
+  return (
+    (el.getAttribute?.("aria-autocomplete") ?? "").toLowerCase() === "list" &&
+    !!el.closest(
+      ".artdeco-typeahead, .search-global-typeahead, [class*='typeahead'], form[role='search']"
+    )
+  );
 }
 
 /**
@@ -344,6 +552,65 @@ export function getLinkedInAnchorCandidates(field: Element): Array<Element | nul
     field.closest(".feed-shared-update-v2__comments-container"),
     field.closest('[role="dialog"]'),
   ];
+}
+
+// ── Search result scanning (batch operations) ─────────────────────────────────
+
+export interface LinkedInSearchResult {
+  name: string;
+  headline: string;
+  profileUrl: string;
+}
+
+/**
+ * Scans the current LinkedIn search results page and returns person cards
+ * that have a visible "Connect" button. Used to seed batch connection queues.
+ */
+export function scanLinkedInSearchResults(): LinkedInSearchResult[] {
+  const results: LinkedInSearchResult[] = [];
+
+  // LinkedIn renders search results inside list items; the exact class changes
+  // quarterly so we use the stable data-chameleon-result-urn attribute first,
+  // then fall back to structural selectors.
+  const cards = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "[data-chameleon-result-urn], .reusable-search__result-container, li.reusable-search__result-container"
+    )
+  );
+
+  for (const card of cards) {
+    // Only include cards with a visible Connect button
+    const connectBtn = Array.from(
+      card.querySelectorAll<HTMLElement>("button, [role='button']")
+    ).find((btn) => {
+      const text = (btn.textContent ?? "").trim().toLowerCase();
+      return text === "connect" || text.startsWith("connect");
+    });
+    if (!connectBtn) continue;
+
+    const nameEl =
+      card.querySelector<HTMLElement>(
+        ".entity-result__title-text a span[aria-hidden='true'], .entity-result__title-line a span[aria-hidden='true']"
+      ) ??
+      card.querySelector<HTMLElement>(
+        "a[href*='/in/'] span[aria-hidden='true'], .app-aware-link span[aria-hidden='true']"
+      );
+    const name = (nameEl?.innerText ?? nameEl?.textContent ?? "").trim();
+    if (!name) continue;
+
+    const headlineEl = card.querySelector<HTMLElement>(
+      ".entity-result__primary-subtitle, .entity-result__summary"
+    );
+    const headline = (headlineEl?.innerText ?? headlineEl?.textContent ?? "").trim();
+
+    const profileLink = card.querySelector<HTMLAnchorElement>("a[href*='/in/']");
+    if (!profileLink?.href) continue;
+    const profileUrl = cleanProfileUrl(profileLink.href);
+
+    results.push({ name, headline, profileUrl });
+  }
+
+  return results;
 }
 
 // ── Extractor ─────────────────────────────────────────────────────────────────
@@ -376,11 +643,17 @@ export const linkedInExtractor: PlatformExtractor = {
     const recipientRole =
       dialogProfile?.headline ?? pageProfile?.headline ?? dmPerson?.headline ?? null;
 
+    const extraContext =
+      fieldType === "[COMMENT]"
+        ? extractCommentThreadContext(field, composeBoundary)
+        : null;
+
     return {
       fieldType,
       recipientName,
       recipientRole,
       profileContext: pageProfile?.profileContext ?? null,
+      extraContext,
       charLimit: isNote ? 300 : null,
     };
   },

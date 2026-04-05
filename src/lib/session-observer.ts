@@ -31,6 +31,7 @@ export interface SessionPayload {
   platform: string;
   contextType: string | undefined;
   recipientName: string | undefined;
+  traceId: string | undefined;
   openedAt: number;
   aiGeneratedAt: number | undefined;
   closedAt: number;
@@ -125,6 +126,17 @@ export function classifyOutcome(
   return "rewritten";
 }
 
+export function chooseFinalText(
+  aiText: string,
+  liveText: string,
+  settledText?: string
+): string {
+  if (settledText === undefined) return liveText;
+  if (liveText !== aiText) return liveText;
+  if (settledText !== liveText) return settledText;
+  return liveText;
+}
+
 // ── Minimal debounce ──────────────────────────────────────────────────────────
 
 function debounce<T extends (...args: unknown[]) => void>(
@@ -210,6 +222,7 @@ interface SessionState {
   platform: string;
   contextType: string | undefined;
   recipientName: string | undefined;
+  traceId: string | undefined;
   openedAt: number;
   preText: string | undefined;
   aiGeneratedAt: number | undefined;
@@ -266,6 +279,7 @@ class SessionObserver {
       platform,
       contextType: detectContextType(field, platform),
       recipientName: undefined,
+      traceId: undefined,
       openedAt: Date.now(),
       preText: undefined,
       aiGeneratedAt: undefined,
@@ -285,11 +299,12 @@ class SessionObserver {
 
   // Takes the ACTUAL post-insert field text, not the raw API response string.
   // Callers must snapshot getFieldText(field) after insertText has settled (~200ms).
-  onGenerationComplete(field: Element, postInsertFieldText: string): void {
+  onGenerationComplete(field: Element, postInsertFieldText: string, traceId?: string): void {
     const state = this.sessions.get(field);
     if (!state) return;
     state.aiGeneratedAt = Date.now();
     state.aiGeneratedText = postInsertFieldText;
+    if (traceId) state.traceId = traceId;
     // Seed settled text so we have a baseline even if the user never touches the field
     this._settledText.set(field, postInsertFieldText);
   }
@@ -307,7 +322,12 @@ class SessionObserver {
 
     // Prefer settled text (from debounced input / compositionend),
     // fall back to synchronous blur-time snapshot
-    const finalText = this._settledText.get(field) ?? getFieldText(field);
+    const liveText = getFieldText(field);
+    const finalText = chooseFinalText(
+      state.aiGeneratedText,
+      liveText,
+      this._settledText.get(field)
+    );
 
     const now = Date.now();
     const isSent = this._checkSentSignals(field, now);
@@ -326,6 +346,7 @@ class SessionObserver {
       platform: state.platform,
       contextType: state.contextType,
       recipientName: state.recipientName,
+      traceId: state.traceId,
       openedAt: state.openedAt,
       aiGeneratedAt: state.aiGeneratedAt,
       closedAt: now,
@@ -421,12 +442,24 @@ class SessionObserver {
   private _attachFieldListeners(field: Element): void {
     if (this._perFieldCleanup.has(field)) return;
 
+    const onBeforeInput = () => {
+      if (this.sessions.get(field)?.aiGeneratedText !== undefined) {
+        this._settledText.set(field, getFieldText(field));
+      }
+    };
+
     const onInput = debounce(() => {
       // Only update settled text after AI has generated — before that it's noise
       if (this.sessions.get(field)?.aiGeneratedText !== undefined) {
         this._settledText.set(field, getFieldText(field));
       }
     }, 300);
+
+    const onCompositionStart = () => {
+      if (this.sessions.get(field)?.aiGeneratedText !== undefined) {
+        this._settledText.set(field, getFieldText(field));
+      }
+    };
 
     const onCompositionEnd = () => {
       // IME finalisation — update immediately without debounce
@@ -435,11 +468,17 @@ class SessionObserver {
       }
     };
 
+    field.addEventListener("beforeinput", onBeforeInput, { passive: true });
     field.addEventListener("input", onInput, { passive: true });
+    field.addEventListener("compositionstart", onCompositionStart, {
+      passive: true,
+    });
     field.addEventListener("compositionend", onCompositionEnd, { passive: true });
 
     this._perFieldCleanup.set(field, () => {
+      field.removeEventListener("beforeinput", onBeforeInput);
       field.removeEventListener("input", onInput);
+      field.removeEventListener("compositionstart", onCompositionStart);
       field.removeEventListener("compositionend", onCompositionEnd);
       onInput.cancel();
     });

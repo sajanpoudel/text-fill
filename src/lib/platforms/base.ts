@@ -8,6 +8,8 @@ export interface FieldContext {
   recipientRole: string | null;
   /** Structured profile text about the recipient (multi-line) */
   profileContext: string | null;
+  /** Supplemental non-profile context gathered by the platform extractor */
+  extraContext?: string | null;
   /** Detected character limit for this field, if known */
   charLimit: number | null;
 }
@@ -17,6 +19,7 @@ export const EMPTY_CONTEXT: FieldContext = {
   recipientName: null,
   recipientRole: null,
   profileContext: null,
+  extraContext: null,
   charLimit: null,
 };
 

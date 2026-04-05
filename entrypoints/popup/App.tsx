@@ -221,7 +221,9 @@ function Dashboard() {
             Generate text in the extension to start building memory.
           </div>
         ) : (
-          memories.slice(0, 5).map((m) => (
+          memories
+            .slice(0, 5)
+            .map((m: { _id: string; text: string; platform?: string; createdAt: number }) => (
             <div key={m._id} style={S.memItem}>
               <div>{truncate(m.text, 100)}</div>
               <div style={S.memMeta}>
@@ -229,7 +231,7 @@ function Dashboard() {
                 {formatRelativeTime(m.createdAt)}
               </div>
             </div>
-          ))
+            ))
         )}
       </div>
 

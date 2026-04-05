@@ -16,10 +16,16 @@ import {
   isPersonalInfoField,
   querySelectorDeep,
 } from "../../src/lib/platform.ts";
-import { detectLinkedInFieldType } from "../../src/lib/platforms/linkedin.ts";
+import {
+  detectLinkedInFieldType,
+  type LinkedInSearchResult,
+} from "../../src/lib/platforms/linkedin.ts";
+import { ChangeThreshold, scanForOpportunities } from "../../src/lib/scanner.ts";
 import { sessionObserver } from "../../src/lib/session-observer.ts";
 import { FieldButton } from "./FieldButton.tsx";
-import { ContextFAB, loadContexts } from "./ContextFAB.tsx";
+import { ContextFAB, VoiceFAB, loadContexts } from "./ContextFAB.tsx";
+import { SuggestionChip } from "./SuggestionChip.tsx";
+import { QueuePreviewPanel } from "./QueuePreviewPanel.tsx";
 import type { CapturedContext } from "./ContextFAB.tsx";
 import type { PlatformKey } from "../../src/lib/platform.ts";
 
@@ -228,10 +234,10 @@ function Toast({ toast }: { toast: ToastState | null }) {
 
   const bg =
     toast.type === "success"
-      ? "rgba(16,185,129,0.95)"
+      ? "rgba(22, 101, 52, 0.95)"
       : toast.type === "error"
-      ? "rgba(220,38,38,0.95)"
-      : "rgba(59,130,246,0.95)";
+      ? "rgba(220, 38, 38, 0.95)"
+      : "rgba(28, 25, 23, 0.95)";
 
   return (
     <div
@@ -417,7 +423,7 @@ function FieldDebugOutlines({
                 padding: "2px 6px",
                 borderRadius: 999,
                 background: isPrimary
-                  ? "rgba(30,64,175,0.96)"
+                  ? "rgba(153,27,27,0.96)"
                   : "rgba(146,64,14,0.96)",
                 color: "#fff",
                 fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -512,6 +518,8 @@ export function ContentApp() {
   const [platform, setPlatform] = useState<PlatformKey>("general");
   const [contexts, setContexts] = useState<CapturedContext[]>([]);
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [searchResults, setSearchResults] = useState<LinkedInSearchResult[]>([]);
+  const [showQueuePanel, setShowQueuePanel] = useState(false);
 
   const showToast = useCallback((message: string, type: ToastType = "success") => {
     const id = Date.now();
@@ -612,9 +620,27 @@ export function ContentApp() {
   }, []);
 
   useEffect(() => {
-    const handler = (message: { type?: string; message?: string }) => {
+    const handler = (message: {
+      type?: string;
+      message?: string;
+      instruction?: string;
+    }) => {
       if (message?.type === "MEMORY_UPDATED" && typeof message.message === "string") {
         showToast(message.message, "info");
+        return;
+      }
+      if (message?.type === "VOICE_COMPOSE" && typeof message.instruction === "string") {
+        const field = activeFieldRef.current;
+        if (field) {
+          field.dispatchEvent(
+            new CustomEvent("tfa-open-voice-modal", {
+              bubbles: false,
+              detail: { instruction: message.instruction },
+            })
+          );
+        } else {
+          showToast("Focus a text field first, then retry the voice command", "info");
+        }
       }
     };
     try {
@@ -623,6 +649,20 @@ export function ContentApp() {
     } catch {
       return () => {};
     }
+  }, [showToast]);
+
+  // Forward tfa-voice-activate → primary field → FieldButton opens modal in voice mode
+  useEffect(() => {
+    const handler = () => {
+      const field = activeFieldRef.current;
+      if (field) {
+        field.dispatchEvent(new CustomEvent("tfa-open-voice-modal", { bubbles: false }));
+      } else {
+        showToast("Focus a text field first, then use voice", "info");
+      }
+    };
+    document.addEventListener("tfa-voice-activate", handler);
+    return () => document.removeEventListener("tfa-voice-activate", handler);
   }, [showToast]);
 
   useEffect(() => {
@@ -817,6 +857,66 @@ export function ContentApp() {
     };
   }, [focusedField, resolveEditableFromEvent, resolveEditableRoot]);
 
+  // Scan for opportunities using the ChangeThreshold scanner (Phase 7)
+  useEffect(() => {
+    if (platform !== "linkedin") {
+      setSearchResults([]);
+      return;
+    }
+
+    const runScan = () => {
+      const result = scanForOpportunities(platform);
+      if (result.platform === "linkedin") {
+        setSearchResults(result.results);
+      } else {
+        setSearchResults([]);
+      }
+    };
+
+    const scanner = new ChangeThreshold(runScan, {
+      minChanges: 5,
+      debounceMs: 2000,
+      cooldownMs: 30_000,
+    });
+
+    // Initial scan + delayed re-scan for lazy-loaded results
+    runScan();
+    const initTimer = setTimeout(runScan, 1200);
+
+    // Feed DOM mutations into the scanner so it can decide when to re-scan
+    const obs = new MutationObserver((mutations) => {
+      const added = mutations.reduce((n, m) => n + m.addedNodes.length, 0);
+      if (added > 0) scanner.record(added);
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+
+    return () => {
+      clearTimeout(initTimer);
+      obs.disconnect();
+    };
+  }, [platform]);
+
+  const handleEnqueue = useCallback(
+    async (selected: LinkedInSearchResult[], dailyLimit: number) => {
+      try {
+        const tasks = selected.map((r) => ({
+          type: "linkedin_connect",
+          targetUrl: r.profileUrl,
+          targetName: r.name,
+        }));
+        const response = await chrome.runtime.sendMessage({
+          type: "ENQUEUE_TASK",
+          payload: { tasks, dailyLimit },
+        });
+        if (response?.error) throw new Error(response.error);
+        showToast(`✓ Queued ${selected.length} connection${selected.length !== 1 ? "s" : ""}`);
+      } catch (err: any) {
+        showToast(err?.message ?? "Failed to queue tasks", "error");
+      }
+    },
+    [showToast]
+  );
+
   const activeContextCount = contexts.filter((c) => c.active).length;
   const currentActiveElement =
     document.activeElement instanceof Element
@@ -926,6 +1026,7 @@ export function ContentApp() {
         </FieldUiBoundary>
       ))}
       <FabBoundary>
+        <VoiceFAB visible={showFab} showToast={showToast} />
         <ContextFAB
           visible={showFab}
           contexts={contexts}
@@ -941,6 +1042,23 @@ export function ContentApp() {
         focusedField={focusedField}
         hoveredField={hoveredField}
       />
+      {platform === "linkedin" && !showQueuePanel && (
+        <SuggestionChip
+          results={searchResults}
+          onOpenQueue={(results) => {
+            setSearchResults(results);
+            setShowQueuePanel(true);
+          }}
+        />
+      )}
+      {showQueuePanel && (
+        <QueuePreviewPanel
+          results={searchResults}
+          onClose={() => setShowQueuePanel(false)}
+          onEnqueue={handleEnqueue}
+          showToast={showToast}
+        />
+      )}
       <Toast toast={toast} />
       <style>{`
         @keyframes tfa-fadein {

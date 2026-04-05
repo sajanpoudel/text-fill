@@ -265,6 +265,11 @@ async function upsertMemory(
   const tags = mergeTags([], input.tags ?? []);
   const importance = normalizeImportance(input.importance);
   const confidence = normalizeConfidence(input.confidence);
+  const incomingIdentity = inferMemoryIdentity({
+    text,
+    tags,
+    platform: input.platform,
+  });
   const memories = await loadUserMemoriesForLifecycle(ctx, input.userId);
   const duplicateCluster = memories.filter((memory) =>
     shouldMergeMemory(memory, {
@@ -327,6 +332,8 @@ async function upsertMemory(
       sessionsSinceAccess: 0,
       forgetScore: 0,
       schemaVersion: SCHEMA_VERSION,
+      validAt: primary.validAt ?? now,
+      invalidAt: undefined,
     };
     if (nextPlatform) patch.platform = nextPlatform;
     if (nextSourceUrl) patch.sourceUrl = nextSourceUrl;
@@ -338,6 +345,7 @@ async function upsertMemory(
         status: "deleted",
         updatedAt: now,
         schemaVersion: SCHEMA_VERSION,
+        invalidAt: duplicate.invalidAt ?? now,
       });
       await pruneEmbedding(ctx, duplicate._id);
     }
@@ -375,9 +383,40 @@ async function upsertMemory(
     sessionsSinceAccess: 0,
     forgetScore: 0,
     schemaVersion: SCHEMA_VERSION,
+    validAt: now,
   };
   if (input.platform) doc.platform = input.platform;
   if (input.sourceUrl) doc.sourceUrl = input.sourceUrl;
+
+  if (
+    incomingIdentity?.startsWith("work:current-employer:")
+  ) {
+    for (const memory of memories) {
+      if (
+        memory.userId === input.userId &&
+        memory.status === "active" &&
+        memory.invalidAt === undefined
+      ) {
+        const identity = inferMemoryIdentity({
+          text: memory.text,
+          tags: memory.tags,
+          platform: memory.platform,
+        });
+        if (
+          identity?.startsWith("work:current-employer:") &&
+          identity !== incomingIdentity
+        ) {
+          await ctx.db.patch(memory._id, {
+            status: "archived",
+            invalidAt: now,
+            updatedAt: now,
+            schemaVersion: SCHEMA_VERSION,
+          });
+        }
+      }
+    }
+  }
+
   const memoryId = await ctx.db.insert("memories", doc);
 
   await scheduleEmbedding(ctx, input.userId, memoryId, text);
@@ -530,13 +569,16 @@ export const listActive = query({
   handler: async (ctx, { limit = 50 }) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) return [];
-    return ctx.db
+    const active = await ctx.db
       .query("memories")
-      .withIndex("by_user_status", (q) =>
-        q.eq("userId", userId).eq("status", "active")
+      .withIndex("by_user_active", (q) =>
+        q.eq("userId", userId).eq("invalidAt", undefined)
       )
       .order("desc")
-      .take(limit);
+      .take(limit * 3);
+    return active
+      .filter((memory) => memory.status === "active")
+      .slice(0, limit);
   },
 });
 
@@ -564,8 +606,8 @@ export const getStats = query({
     if (!userId) return { active: 0, archived: 0 };
     const active = await ctx.db
       .query("memories")
-      .withIndex("by_user_status", (q) =>
-        q.eq("userId", userId).eq("status", "active")
+      .withIndex("by_user_active", (q) =>
+        q.eq("userId", userId).eq("invalidAt", undefined)
       )
       .collect();
     const archived = await ctx.db
@@ -574,7 +616,10 @@ export const getStats = query({
         q.eq("userId", userId).eq("status", "archived")
       )
       .collect();
-    return { active: active.length, archived: archived.length };
+    return {
+      active: active.filter((memory) => memory.status === "active").length,
+      archived: archived.length,
+    };
   },
 });
 
@@ -616,6 +661,7 @@ export const updateStatus = mutation({
     if (!memory || memory.userId !== userId) throw new Error("Not found");
     await ctx.db.patch(memoryId, {
       status,
+      invalidAt: status === "active" ? undefined : memory.invalidAt ?? Date.now(),
       forgetScore: status === "active" ? 0 : memory.forgetScore ?? 0,
       sessionsSinceAccess: status === "active" ? 0 : memory.sessionsSinceAccess ?? 0,
       updatedAt: Date.now(),
@@ -641,6 +687,7 @@ export const updateText = mutation({
       sessionsSinceAccess: 0,
       forgetScore: 0,
       schemaVersion: SCHEMA_VERSION,
+      ...(memory.invalidAt !== undefined ? { invalidAt: undefined } : {}),
     });
     await scheduleEmbedding(ctx, userId, memoryId, nextText);
   },
@@ -655,6 +702,7 @@ export const remove = mutation({
     if (!memory || memory.userId !== userId) throw new Error("Not found");
     await ctx.db.patch(memoryId, {
       status: "deleted",
+      invalidAt: memory.invalidAt ?? Date.now(),
       updatedAt: Date.now(),
       schemaVersion: SCHEMA_VERSION,
     });
@@ -697,12 +745,13 @@ export const fetchByEmbeddingIds = internalQuery({
       lastAccessedAt?: number;
       forgetScore?: number;
       sourceUrl?: string;
+      invalidAt?: number;
     }> = [];
     for (const embId of embeddingIds) {
       const emb = await ctx.db.get(embId);
       if (!emb) continue;
       const memory = await ctx.db.get(emb.memoryId);
-      if (!memory || memory.status === "deleted") continue;
+      if (!memory || memory.status === "deleted" || memory.invalidAt !== undefined) continue;
       results.push({
         _id: memory._id,
         text: memory.text,
@@ -718,6 +767,7 @@ export const fetchByEmbeddingIds = internalQuery({
         lastAccessedAt: memory.lastAccessedAt,
         forgetScore: memory.forgetScore,
         sourceUrl: memory.sourceUrl,
+        invalidAt: memory.invalidAt,
       });
     }
     return results;
@@ -761,7 +811,7 @@ export const recordAccess = internalMutation({
     const now = Date.now();
     for (const id of memoryIds) {
       const memory = await ctx.db.get(id);
-      if (memory && memory.status === "active") {
+      if (memory && memory.status === "active" && memory.invalidAt === undefined) {
         await ctx.db.patch(id, {
           accessCount: memory.accessCount + 1,
           lastAccessedAt: now,

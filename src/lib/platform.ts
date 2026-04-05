@@ -2,7 +2,10 @@
 // Matches the full feature set of the original contentScript.js
 
 import { isElementVisible } from "./dom/walker.ts";
-import { getLinkedInAnchorCandidates } from "./platforms/linkedin.ts";
+import {
+  getLinkedInAnchorCandidates,
+  isLinkedInSearchField,
+} from "./platforms/linkedin.ts";
 
 export type PlatformKey =
   | "gmail"
@@ -366,6 +369,13 @@ export function getVisibleFieldAnchor(field: Element): Element | null {
 
 /** Returns true if this field is a search/filter input (skip these) */
 export function isSearchField(field: Element): boolean {
+  if (
+    getLocationSnapshot().hostname.includes("linkedin.com") &&
+    isLinkedInSearchField(field)
+  ) {
+    return true;
+  }
+
   const el = field as HTMLElement;
   const attrs = [
     el.getAttribute("placeholder") ?? "",

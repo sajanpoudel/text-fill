@@ -3,18 +3,53 @@
 
 import { getPlatformExtractor } from "./platforms/index.ts";
 import { EMPTY_CONTEXT } from "./platforms/base.ts";
-import { findContextBoundary, extractDomContext } from "./dom/walker.ts";
+import {
+  findContextBoundary,
+  extractDomContext,
+  extractCleanText,
+  normalizeText,
+} from "./dom/walker.ts";
 import { detectPlatformKey, getLocationSnapshot } from "./platform.ts";
 import type { PlatformKey } from "./platform.ts";
 
 const MAX_CONTEXT_CHARS = 6000;
 const MAX_DOM_CHARS = 3000;
+const MAX_BACKGROUND_CHARS = 1800;
 
 function buildContextString(parts: Array<string | null | undefined>): string {
   return parts
     .filter((p): p is string => typeof p === "string" && p.trim().length > 0)
     .join("\n\n")
     .slice(0, MAX_CONTEXT_CHARS);
+}
+
+function dedupeContext(
+  reference: string | null | undefined,
+  candidate: string | null | undefined
+): string | null {
+  if (!candidate?.trim()) return null;
+  if (!reference?.trim()) return candidate;
+
+  const normalizedReference = normalizeText(reference);
+  const normalizedCandidate = normalizeText(candidate);
+  if (!normalizedReference || !normalizedCandidate) return candidate;
+  if (normalizedCandidate === normalizedReference) return null;
+
+  const probe =
+    normalizedReference.length > 120
+      ? normalizedReference.slice(0, 120)
+      : normalizedReference;
+
+  return probe && normalizedCandidate.includes(probe) ? null : candidate;
+}
+
+export function extractAudienceNameFromContext(
+  context: string | undefined
+): string | undefined {
+  if (!context) return undefined;
+  const match = context.match(/^Audience:\s*(.+)$/m);
+  if (!match?.[1]) return undefined;
+  return match[1].split(/\s+—\s+/)[0].trim() || undefined;
 }
 
 /**
@@ -70,10 +105,18 @@ export function extractPageContext(field: Element): string {
     recipientName,
     recipientRole,
     profileContext,
+    extraContext,
   } = extractor?.extractFieldContext(field, dialogRoot, composeBoundary) ?? EMPTY_CONTEXT;
 
-  // 2. Generic DOM context — semantic graph walk from the compose boundary
+  // 2. Generic DOM context — semantic graph walk from the tight compose boundary
   const domContext = extractDomContext(composeBoundary, MAX_DOM_CHARS);
+  const mainRoot =
+    document.querySelector<HTMLElement>("main, article, [role='main']") ??
+    composeBoundary;
+  const backgroundContext =
+    mainRoot !== composeBoundary
+      ? extractCleanText(mainRoot, MAX_BACKGROUND_CHARS)
+      : null;
 
   // 3. Generic recipient fallback (for platforms with no extractor)
   const recipient =
@@ -91,7 +134,19 @@ export function extractPageContext(field: Element): string {
     url ? `URL: ${url}` : null,
     audienceLine,
     profileContext ? `Profile context:\n${profileContext}` : null,
-    domContext ? `Page context:\n${domContext}` : null,
+    domContext ? `Foreground context:\n${domContext}` : null,
+    dedupeContext(domContext, extraContext)
+      ? `Thread context:\n${dedupeContext(domContext, extraContext)}`
+      : null,
+    dedupeContext(
+      [domContext, extraContext].filter(Boolean).join("\n\n"),
+      backgroundContext
+    )
+      ? `Background context:\n${dedupeContext(
+          [domContext, extraContext].filter(Boolean).join("\n\n"),
+          backgroundContext
+        )}`
+      : null,
   ]);
 
   // Debug: log what the LLM will receive as context

@@ -1,60 +1,61 @@
 import { v } from "convex/values";
-import { action } from "./_generated/server";
+import { action, type ActionCtx } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { internal } from "./_generated/api";
 import { resolveEmbeddingConfig } from "./embeddingConfig";
 import { getMemoryFingerprint } from "./memoryRules";
-
-// ── Platform → context routing ────────────────────────────────────────────────
-// Which context types (work / social / always) are relevant per platform.
-// Canvas gets nothing — academic mode ignores personal/career context.
+import type { Id } from "./_generated/dataModel";
 
 const PLATFORM_CONTEXTS: Record<string, string[]> = {
-  gmail:     ["work", "always"],
-  linkedin:  ["work", "social", "always"],
+  gmail: ["work", "always"],
+  linkedin: ["work", "social", "always"],
   messenger: ["social", "always"],
-  twitter:   ["social", "always"],
-  facebook:  ["social", "always"],
-  threads:   ["social", "always"],
-  reddit:    ["social", "always"],
-  youtube:   ["social", "always"],
+  twitter: ["social", "always"],
+  facebook: ["social", "always"],
+  threads: ["social", "always"],
+  reddit: ["social", "always"],
+  youtube: ["social", "always"],
   instagram: ["social", "always"],
-  slack:     ["work", "always"],
-  discord:   ["social", "always"],
-  canvas:     [],
+  slack: ["work", "always"],
+  discord: ["social", "always"],
+  canvas: [],
   googledocs: ["work", "always"],
-  general:    ["work", "social", "always"],
+  general: ["work", "social", "always"],
 };
 
-// Build structured context block from the user's stored work/social/always text
 function buildContextBlock(
   platformKey: string,
   parsed: { work?: string; social?: string; always?: string } | null
 ): string | null {
   const keys = PLATFORM_CONTEXTS[platformKey] ?? PLATFORM_CONTEXTS.general;
   const parts: string[] = [];
-  if (keys.includes("work") && parsed?.work?.trim())
+  if (keys.includes("work") && parsed?.work?.trim()) {
     parts.push(`=== Career & Work ===\n${parsed.work.trim()}`);
-  if (keys.includes("social") && parsed?.social?.trim())
+  }
+  if (keys.includes("social") && parsed?.social?.trim()) {
     parts.push(`=== Social & Personal ===\n${parsed.social.trim()}`);
-  if (keys.includes("always") && parsed?.always?.trim())
+  }
+  if (keys.includes("always") && parsed?.always?.trim()) {
     parts.push(`=== General (always active) ===\n${parsed.always.trim()}`);
+  }
   return parts.length ? parts.join("\n\n") : null;
 }
 
-function parseContextText(contextText: string | undefined): { work?: string; social?: string; always?: string } | null {
+function parseContextText(
+  contextText: string | undefined
+): { work?: string; social?: string; always?: string } | null {
   if (!contextText) return null;
   try {
     return JSON.parse(contextText);
   } catch {
-    return { always: contextText }; // legacy plain text
+    return { always: contextText };
   }
 }
 
-// ── Platform writing profiles ─────────────────────────────────────────────────
-// Domain-aware writing instructions — automatically applied based on the site
-
-const PLATFORM_PROFILES: Record<string, { name: string; instructions: string; maxLength?: number }> = {
+const PLATFORM_PROFILES: Record<
+  string,
+  { name: string; instructions: string; maxLength?: number }
+> = {
   gmail: {
     name: "Gmail",
     instructions:
@@ -128,8 +129,6 @@ const PLATFORM_PROFILES: Record<string, { name: string; instructions: string; ma
   },
 };
 
-// ── Action instructions ───────────────────────────────────────────────────────
-
 const ACTION_INSTRUCTIONS: Record<string, string> = {
   generate:
     "Write the best possible response for this context. Match the length and tone to what the situation calls for.",
@@ -140,9 +139,6 @@ const ACTION_INSTRUCTIONS: Record<string, string> = {
   expand:
     "Expand the existing content with more detail, context, examples, and depth. Keep it coherent and on-point.",
 };
-
-// ── Normalize output text ─────────────────────────────────────────────────────
-// Matches the original normalizeAnswer() from background.js
 
 function normalizeAnswer(text: string): string {
   return text
@@ -157,22 +153,25 @@ function normalizeAnswer(text: string): string {
     .trim();
 }
 
-// ── Prompt builder ────────────────────────────────────────────────────────────
-// Ported from background.js buildPrompt() — same structure and priority rules
-
 interface CapturedCtx {
+  id?: string;
   title?: string;
   url?: string;
   hostname?: string;
   text: string;
+  time?: number;
+  active?: boolean;
 }
 
-function buildPrompt(opts: {
+export function buildPrompt(opts: {
   instruction: string;
   action: string;
   pageContext: string;
   capturedContexts?: CapturedCtx[];
   memoryContext: string;
+  proceduralContext?: string;
+  episodicContext?: string;
+  recipientContext?: string;
   platform: string;
   userContextText?: string;
   existingText?: string;
@@ -184,6 +183,9 @@ function buildPrompt(opts: {
     pageContext,
     capturedContexts,
     memoryContext,
+    proceduralContext,
+    episodicContext,
+    recipientContext,
     platform,
     userContextText,
     existingText,
@@ -194,9 +196,9 @@ function buildPrompt(opts: {
   const profile = PLATFORM_PROFILES[platform] ?? PLATFORM_PROFILES.general;
   const academicMode = platform === "canvas";
   const hasCapturedContext = activeCaptured.length > 0;
-  const taskInstruction = ACTION_INSTRUCTIONS[action] ?? ACTION_INSTRUCTIONS.generate;
+  const taskInstruction =
+    ACTION_INSTRUCTIONS[action] ?? ACTION_INSTRUCTIONS.generate;
 
-  // ── System prompt ──────────────────────────────────────────────────────────
   const baseSystem = systemPromptOverride?.trim()
     ? systemPromptOverride.trim()
     : [
@@ -222,20 +224,23 @@ function buildPrompt(opts: {
         .filter(Boolean)
         .join(" ");
 
-  // ── User prompt ────────────────────────────────────────────────────────────
   const userParts: string[] = [];
 
   if (pageContext?.trim()) {
-    userParts.push(`=== Foreground Context (Highest Priority) ===\n${pageContext.trim().slice(0, 2000)}`);
+    userParts.push(
+      `=== Foreground Context (Highest Priority) ===\n${pageContext.trim().slice(0, 2000)}`
+    );
   }
 
   if (instruction?.trim()) {
-    userParts.push(`=== Additional Instruction (High Priority) ===\n${instruction.trim()}`);
+    userParts.push(
+      `=== Additional Instruction (High Priority) ===\n${instruction.trim()}`
+    );
   }
 
   if (hasCapturedContext) {
     userParts.push(
-      `=== Required Use of User-selected Context ===\nUse concrete facts from the User-selected Context blocks below. Do not ignore them.`
+      "=== Required Use of User-selected Context ===\nUse concrete facts from the User-selected Context blocks below. Do not ignore them."
     );
     activeCaptured.forEach((ctx) => {
       const label = ctx.title || ctx.hostname || ctx.url || "captured page";
@@ -257,8 +262,24 @@ function buildPrompt(opts: {
     userParts.push(`=== Writer's Known Facts ===\n${memoryContext.trim()}`);
   }
 
+  if (!academicMode && proceduralContext?.trim()) {
+    userParts.push(`=== Your Style Rules ===\n${proceduralContext.trim()}`);
+  }
+
+  if (!academicMode && episodicContext?.trim()) {
+    userParts.push(`=== Recent Patterns ===\n${episodicContext.trim()}`);
+  }
+
+  if (!academicMode && recipientContext?.trim()) {
+    userParts.push(
+      `=== Recipient Context (transient) ===\n${recipientContext.trim()}`
+    );
+  }
+
   if (profile.maxLength) {
-    userParts.push(`=== Field Guidance ===\nMax length: ${profile.maxLength} characters`);
+    userParts.push(
+      `=== Field Guidance ===\nMax length: ${profile.maxLength} characters`
+    );
   }
 
   userParts.push(`=== Task ===\n${taskInstruction}`);
@@ -266,7 +287,48 @@ function buildPrompt(opts: {
   return { system: baseSystem, user: userParts.join("\n\n") };
 }
 
-// ── Multi-provider LLM call ───────────────────────────────────────────────────
+export function deriveContextType(
+  rawPageCtx: string,
+  fieldMaxLength?: number,
+  platform?: string
+): string | undefined {
+  if (rawPageCtx.startsWith("[CONNECT_NOTE_300]")) return "connection_req";
+  if (
+    rawPageCtx.includes("[INMAIL_MESSAGE]") ||
+    rawPageCtx.includes("[INMAIL_SUBJECT]")
+  ) {
+    return "inmail";
+  }
+  if (rawPageCtx.includes("[DM_MESSAGE]")) return "dm";
+  if (rawPageCtx.includes("[COMMENT]")) return "comment";
+  if (rawPageCtx.includes("[POST_COMPOSE]")) return "post";
+  if (platform === "linkedin" && fieldMaxLength === 300) {
+    return "connection_req";
+  }
+  return undefined;
+}
+
+function buildPromptFingerprint(system: string, user: string): string {
+  const text = `${system}\n---\n${user}`;
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a:${(hash >>> 0).toString(16)}`;
+}
+
+function shouldCaptureFullTraceArtifacts(): boolean {
+  const env =
+    typeof process !== "undefined" && process?.env ? process.env : undefined;
+  if (
+    env?.TRACE_FULL_PROMPT === "0" ||
+    env?.TEXT_FILL_TRACE_FULL_PROMPT === "0"
+  ) {
+    return false;
+  }
+  return true;
+}
 
 async function callProvider(opts: {
   provider: string;
@@ -292,8 +354,12 @@ async function callProvider(opts: {
         messages: [{ role: "user", content: user }],
       }),
     });
-    const data = await res.json() as any;
-    if (!res.ok) throw new Error(`Anthropic error: ${data?.error?.message ?? JSON.stringify(data)}`);
+    const data = (await res.json()) as any;
+    if (!res.ok) {
+      throw new Error(
+        `Anthropic error: ${data?.error?.message ?? JSON.stringify(data)}`
+      );
+    }
     return (data.content?.[0]?.text ?? "").trim();
   }
 
@@ -312,15 +378,18 @@ async function callProvider(opts: {
         }),
       }
     );
-    const data = await res.json() as any;
-    if (!res.ok) throw new Error(`Gemini error: ${data?.error?.message ?? JSON.stringify(data)}`);
+    const data = (await res.json()) as any;
+    if (!res.ok) {
+      throw new Error(
+        `Gemini error: ${data?.error?.message ?? JSON.stringify(data)}`
+      );
+    }
     return (data.candidates?.[0]?.content?.parts ?? [])
       .map((p: any) => p.text ?? "")
       .join("")
       .trim();
   }
 
-  // Default: OpenAI Responses API
   const res = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -329,25 +398,34 @@ async function callProvider(opts: {
     },
     body: JSON.stringify({ model, instructions: system, input: user }),
   });
-  const data = await res.json() as any;
-  if (!res.ok) throw new Error(`OpenAI error: ${data?.error?.message ?? JSON.stringify(data)}`);
+  const data = (await res.json()) as any;
+  if (!res.ok) {
+    throw new Error(
+      `OpenAI error: ${data?.error?.message ?? JSON.stringify(data)}`
+    );
+  }
 
   if (typeof data?.output_text === "string" && data.output_text) {
     return data.output_text.trim();
   }
+
   const parts: string[] = [];
-  for (const item of (data?.output ?? [])) {
+  for (const item of data?.output ?? []) {
     if (item?.type === "message" && Array.isArray(item?.content)) {
-      for (const c of item.content) {
-        if (c?.type === "output_text" && typeof c?.text === "string") parts.push(c.text);
+      for (const contentPart of item.content) {
+        if (
+          contentPart?.type === "output_text" &&
+          typeof contentPart?.text === "string"
+        ) {
+          parts.push(contentPart.text);
+        }
       }
     }
   }
+
   if (parts.length > 0) return parts.join("\n").trim();
   throw new Error("Could not parse OpenAI response");
 }
-
-// ── Get API key for active provider ──────────────────────────────────────────
 
 function resolveApiKey(profile: {
   provider?: string;
@@ -357,13 +435,13 @@ function resolveApiKey(profile: {
 } | null): { provider: string; apiKey: string | null } {
   const provider = profile?.provider ?? "openai";
   const apiKey =
-    provider === "anthropic" ? (profile?.anthropicKey ?? null)
-    : provider === "gemini"  ? (profile?.geminiKey   ?? null)
-    : (profile?.openaiKey ?? null);
+    provider === "anthropic"
+      ? (profile?.anthropicKey ?? null)
+      : provider === "gemini"
+        ? (profile?.geminiKey ?? null)
+        : (profile?.openaiKey ?? null);
   return { provider, apiKey };
 }
-
-// ── Main generation action ────────────────────────────────────────────────────
 
 const capturedCtxSchema = v.object({
   id: v.optional(v.string()),
@@ -375,7 +453,6 @@ const capturedCtxSchema = v.object({
   active: v.optional(v.boolean()),
 });
 
-// Tone (1=Casual … 5=Formal) and domain modifiers for the generate action
 const TONE_MODIFIERS: Record<number, string> = {
   1: "extremely casual and conversational — like texting a close friend",
   2: "casual and relaxed, friendly and approachable",
@@ -384,11 +461,311 @@ const TONE_MODIFIERS: Record<number, string> = {
 };
 
 const DOMAIN_MODIFIERS: Record<string, string> = {
-  sales: "Persuasive sales framing: lead with value and benefits, end with a clear low-friction call to action. Be compelling but authentic, never pushy.",
-  legal: "Legal/compliance precision: be unambiguous and definitive. Use clear language without colloquialisms. Avoid hedging unless factually necessary.",
-  technical: "Technical domain: use accurate terminology. Be specific and concrete. Explain complex concepts clearly without dumbing down.",
-  academic: "Academic writing: evidence-based reasoning, formal structure, avoid personal anecdotes unless instructed. Cite or acknowledge uncertainty where appropriate.",
+  sales:
+    "Persuasive sales framing: lead with value and benefits, end with a clear low-friction call to action. Be compelling but authentic, never pushy.",
+  legal:
+    "Legal/compliance precision: be unambiguous and definitive. Use clear language without colloquialisms. Avoid hedging unless factually necessary.",
+  technical:
+    "Technical domain: use accurate terminology. Be specific and concrete. Explain complex concepts clearly without dumbing down.",
+  academic:
+    "Academic writing: evidence-based reasoning, formal structure, avoid personal anecdotes unless instructed. Cite or acknowledge uncertainty where appropriate.",
 };
+
+type RetrievedMemory = {
+  _id: string;
+  text: string;
+  platform?: string;
+  status: string;
+  createdAt: number;
+  score: number;
+  invalidAt?: number;
+};
+
+const EPHEMERAL_PATTERNS =
+  /\b(applied to|submitted.*application|sent.*application|applying to|interviewing at|interview at|application.*to|outreach to|reached out to)\b/i;
+
+async function loadRetrievalContext(
+  ctx: ActionCtx,
+  {
+    userId,
+    profile,
+    platform,
+    instruction,
+    pageContext,
+    existingText,
+    contextType,
+  }: {
+    userId: Id<"users">;
+    profile: any;
+    platform: string;
+    instruction: string;
+    pageContext?: string;
+    existingText?: string;
+    contextType?: string;
+  }
+) {
+  const searchQuery = [
+    instruction,
+    (pageContext ?? "").slice(0, 200),
+    (existingText ?? "").slice(0, 200),
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const embeddingConfig = resolveEmbeddingConfig(profile);
+  const memories: RetrievedMemory[] =
+    embeddingConfig.ok && searchQuery.trim()
+      ? await ctx.runAction(internal.embeddings.vectorSearch, {
+          userId,
+          queryText: searchQuery,
+          provider: embeddingConfig.provider,
+          model: embeddingConfig.model,
+          apiKey: embeddingConfig.apiKey,
+          limit: 8,
+        })
+      : [];
+
+  const relevantMemories = memories
+    .filter(
+      (memory) =>
+        memory.status === "active" &&
+        memory.invalidAt === undefined &&
+        memory.score > 0.65
+    )
+    .filter((memory) => !EPHEMERAL_PATTERNS.test(memory.text))
+    .filter((memory, index, all) => {
+      const fingerprint = getMemoryFingerprint({
+        text: memory.text,
+        tags: [],
+        platform: memory.platform,
+      });
+      return (
+        all.findIndex((candidate) =>
+          getMemoryFingerprint({
+            text: candidate.text,
+            tags: [],
+            platform: candidate.platform,
+          }) === fingerprint
+        ) === index
+      );
+    });
+
+  const memoryContext = relevantMemories
+    .map((memory) => `- ${memory.text.slice(0, 120)}`)
+    .join("\n")
+    .slice(0, 600);
+
+  const [proceduralRules, recentEpisodes] = await Promise.all([
+    ctx.runQuery(internal.retrieval.getProceduralPatterns, {
+      userId,
+      platform,
+      contextType,
+    }),
+    ctx.runQuery(internal.retrieval.getRecentEpisodes, {
+      userId,
+      platform,
+      contextType,
+      limit: 3,
+    }),
+  ]);
+
+  const parsed = parseContextText(profile?.contextText);
+  const userContextText = buildContextBlock(platform, parsed) ?? undefined;
+
+  return {
+    relevantMemories,
+    memoryContext,
+    proceduralRules,
+    recentEpisodes,
+    userContextText,
+  };
+}
+
+async function executeTextAction(
+  ctx: ActionCtx,
+  args: {
+    actionName: "generate" | "rewrite" | "shorten" | "expand";
+    instruction: string;
+    pageContext?: string;
+    capturedContexts?: CapturedCtx[];
+    platform?: string;
+    threadId?: string;
+    fieldMaxLength?: number;
+    tone?: number;
+    domain?: string;
+    recipientContext?: string;
+    existingText?: string;
+  }
+): Promise<{ text: string; threadId: string; traceId?: string }> {
+  const userId = await getAuthUserId(ctx);
+  if (!userId) throw new Error("Not authenticated");
+
+  const profile = await ctx.runQuery(internal.users._getProfileByUserId, {
+    userId,
+  });
+  const { provider, apiKey } = resolveApiKey(profile);
+  if (!apiKey) {
+    throw new Error(`Missing API key for ${provider}. Add it in Settings.`);
+  }
+
+  const platform = args.platform ?? "general";
+  const rawPageCtx = args.pageContext ?? "";
+  const contextType = deriveContextType(
+    rawPageCtx,
+    args.fieldMaxLength,
+    platform
+  );
+
+  const {
+    relevantMemories,
+    memoryContext,
+    proceduralRules,
+    recentEpisodes,
+    userContextText,
+  } = await loadRetrievalContext(ctx, {
+    userId,
+    profile,
+    platform,
+    instruction: args.instruction,
+    pageContext: rawPageCtx,
+    existingText: args.existingText,
+    contextType,
+  });
+
+  const proceduralContext = proceduralRules.join("\n");
+  const episodicContext = recentEpisodes.length
+    ? recentEpisodes.join("\n")
+    : "";
+
+  const isConnectNote =
+    rawPageCtx.trimStart().startsWith("[CONNECT_NOTE_300]") ||
+    (args.fieldMaxLength === 300 && platform === "linkedin");
+  const isInmail =
+    rawPageCtx.includes("[INMAIL_MESSAGE]") ||
+    rawPageCtx.includes("[INMAIL_SUBJECT]");
+  const isDm = rawPageCtx.includes("[DM_MESSAGE]");
+  const isComment = rawPageCtx.includes("[COMMENT]");
+  const isPost = rawPageCtx.includes("[POST_COMPOSE]");
+  const charLimit = args.fieldMaxLength ?? (isConnectNote ? 300 : null);
+
+  let { system, user } = buildPrompt({
+    instruction: args.instruction,
+    action: args.actionName,
+    pageContext: rawPageCtx,
+    capturedContexts: args.capturedContexts,
+    memoryContext,
+    proceduralContext,
+    episodicContext,
+    recipientContext: args.recipientContext,
+    platform,
+    userContextText,
+    existingText: args.existingText,
+    systemPromptOverride: profile?.systemPrompt,
+  });
+
+  if (isConnectNote) {
+    system +=
+      "\n\nCRITICAL: This is a LinkedIn connection note with a HARD 300-character limit. Your entire response MUST be 300 characters or fewer. Count every character carefully. Base the note ONLY on the recipient's profile shown in Foreground Context. Do NOT reference specific past job applications, companies the writer has applied to, or past interactions from memory — those are from completely different contexts and would be false and embarrassing here.";
+    user +=
+      "\n\n=== HARD CHARACTER LIMIT ===\nMaximum 300 characters total. Write a brief, genuine connection note that stays strictly under 300 characters.";
+  } else if (isInmail) {
+    system +=
+      "\n\nThis is a LinkedIn InMail message. Write 2-4 short paragraphs: open with a specific observation about the recipient from Foreground Context, then your relevant value or reason for reaching out, then a clear low-friction ask. Each paragraph should be 1-3 sentences. Use a blank line between paragraphs. Do NOT reference specific past job applications or companies from memory — focus on what you can see about this specific recipient.";
+  } else if (isDm) {
+    system +=
+      "\n\nThis is a LinkedIn direct message in an ongoing conversation. Keep it conversational and concise — 1-3 short paragraphs at most.";
+  } else if (isComment) {
+    system +=
+      "\n\nThis is a LinkedIn comment. Keep it to 1-3 sentences — thoughtful, specific, and additive. No paragraph breaks needed.";
+  } else if (isPost) {
+    system +=
+      "\n\nThis is a LinkedIn post. Write in clear paragraphs with a blank line between each. Open strong, share a genuine insight or story, end with a thought or question. Avoid bullet points.";
+  } else if (charLimit && charLimit > 0 && charLimit <= 600) {
+    system += `\n\nThis field has a ${charLimit}-character limit. Keep your response under ${charLimit} characters.`;
+    user += `\n\nField character limit: ${charLimit}. Stay under ${charLimit} characters.`;
+  }
+
+  if (args.actionName === "generate") {
+    const toneKey = args.tone !== undefined ? Math.round(args.tone) : 3;
+    const toneMod = TONE_MODIFIERS[toneKey];
+    if (toneMod) {
+      system += `\n\nTone instruction: Write in a ${toneMod} tone.`;
+    }
+
+    const domainMod =
+      args.domain && args.domain !== "general"
+        ? DOMAIN_MODIFIERS[args.domain]
+        : null;
+    if (domainMod) {
+      system += `\n\nDomain instruction: ${domainMod}`;
+    }
+  }
+
+  if (shouldCaptureFullTraceArtifacts()) {
+    console.debug("[TFA Prompt]", {
+      action: args.actionName,
+      platform,
+      contextType,
+      systemPrompt: system,
+      userPrompt: user,
+    });
+  }
+
+  const modelId = profile?.model ?? "gpt-5-nano";
+  const t0 = Date.now();
+  const raw = await callProvider({
+    provider,
+    model: modelId,
+    apiKey,
+    system,
+    user,
+  });
+  const latencyMs = Date.now() - t0;
+  let text = normalizeAnswer(raw);
+
+  if (charLimit && charLimit > 0 && text.length > charLimit) {
+    text = text.slice(0, charLimit).replace(/\s+\S*$/, "").trim();
+  }
+
+  const accessedIds = relevantMemories.map((memory) => memory._id) as Id<"memories">[];
+  if (accessedIds.length > 0) {
+    await ctx.runMutation(internal.memories.recordAccess, {
+      memoryIds: accessedIds,
+    });
+  }
+
+  let traceId: Id<"traces"> | undefined;
+  try {
+    traceId = await ctx.runMutation(internal.traces.recordTrace, {
+      userId,
+      platform,
+      modelId,
+      promptFingerprint: buildPromptFingerprint(system, user),
+      presentedOutput: text,
+      hadLiveContext: !!args.recipientContext,
+      retrievedPatternCount: proceduralRules.length,
+      episodeExampleCount: recentEpisodes.length,
+      latencyMs,
+    });
+
+    if (traceId && shouldCaptureFullTraceArtifacts()) {
+      await ctx.runMutation(internal.traces.recordTraceArtifact, {
+        traceId,
+        systemPrompt: system,
+        userPrompt: user,
+        rawLlmOutput: raw,
+      });
+    }
+  } catch {
+    // Non-fatal
+  }
+
+  return {
+    text,
+    threadId: args.threadId ?? `${userId}-${Date.now()}`,
+    traceId,
+  };
+}
 
 export const generate = action({
   args: {
@@ -400,156 +777,25 @@ export const generate = action({
     fieldMaxLength: v.optional(v.number()),
     tone: v.optional(v.number()),
     domain: v.optional(v.string()),
+    recipientContext: v.optional(v.string()),
   },
-  handler: async (ctx, args): Promise<{ text: string; threadId: string }> => {
-    const userId = await getAuthUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
-
-    const profile = await ctx.runQuery(internal.users._getProfileByUserId, { userId });
-    const { provider, apiKey } = resolveApiKey(profile);
-    if (!apiKey) throw new Error(`Missing API key for ${provider}. Add it in Settings.`);
-
-    const platform = args.platform ?? "general";
-
-    // Vector search for relevant memories
-    const searchQuery = `${args.instruction} ${(args.pageContext ?? "").slice(0, 200)}`;
-    const embeddingConfig = resolveEmbeddingConfig(profile);
-    const memories: Array<{
-      _id: string;
-      text: string;
-      platform?: string;
-      status: string;
-      createdAt: number;
-      score: number;
-    }> =
-      embeddingConfig.ok
-        ? await ctx.runAction(internal.embeddings.vectorSearch, {
-            userId,
-            queryText: searchQuery,
-            provider: embeddingConfig.provider,
-            model: embeddingConfig.model,
-            apiKey: embeddingConfig.apiKey,
-            limit: 8,
-          })
-        : [];
-
-    // Patterns that indicate ephemeral application/outreach events — these
-    // should never surface as "facts" when writing to a different person.
-    const EPHEMERAL_PATTERNS =
-      /\b(applied to|submitted.*application|sent.*application|applying to|interviewing at|interview at|application.*to|outreach to|reached out to)\b/i;
-
-    const relevantMemories = memories
-      .filter((m) => m.status === "active" && m.score > 0.65)
-      // Drop ephemeral application-event memories that have no place in
-      // connection notes, DMs, or any message to a specific recipient.
-      .filter((m) => !EPHEMERAL_PATTERNS.test(m.text))
-      .filter((memory, index, all) => {
-        const fingerprint = getMemoryFingerprint({
-          text: memory.text,
-          tags: [],
-          platform: memory.platform,
-        });
-        return (
-          all.findIndex((candidate) =>
-            getMemoryFingerprint({
-              text: candidate.text,
-              tags: [],
-              platform: candidate.platform,
-            }) === fingerprint
-          ) === index
-        );
-      });
-    // Cap each memory entry and the total block to avoid flooding the context
-    const memoryContext = relevantMemories
-      .map((m) => `- ${m.text.slice(0, 120)}`)
-      .join("\n")
-      .slice(0, 600);
-
-    // Build platform-filtered context from user's work/social/always sections
-    const parsed = parseContextText(profile?.contextText);
-    const userContextText = buildContextBlock(platform, parsed) ?? undefined;
-
-    const rawPageCtx = args.pageContext ?? "";
-    const isConnectNote =
-      rawPageCtx.trimStart().startsWith("[CONNECT_NOTE_300]") ||
-      // Fallback: fieldMaxLength=300 sent directly from the content script
-      (args.fieldMaxLength === 300 && platform === "linkedin");
-
-    const isInmail = rawPageCtx.includes("[INMAIL_MESSAGE]") || rawPageCtx.includes("[INMAIL_SUBJECT]");
-    const isDm = rawPageCtx.includes("[DM_MESSAGE]");
-    const isComment = rawPageCtx.includes("[COMMENT]");
-    const isPost = rawPageCtx.includes("[POST_COMPOSE]");
-
-    // Effective char limit: prefer explicit fieldMaxLength over hardcoded 300
-    const charLimit = args.fieldMaxLength ?? (isConnectNote ? 300 : null);
-
-    let { system, user } = buildPrompt({
+  handler: async (
+    ctx,
+    args
+  ): Promise<{ text: string; threadId: string; traceId?: string }> =>
+    executeTextAction(ctx, {
+      actionName: "generate",
       instruction: args.instruction,
-      action: "generate",
-      pageContext: rawPageCtx,
+      pageContext: args.pageContext,
       capturedContexts: args.capturedContexts,
-      memoryContext,
-      platform,
-      userContextText,
-      systemPromptOverride: profile?.systemPrompt,
-    });
-
-    if (isConnectNote) {
-      system += "\n\nCRITICAL: This is a LinkedIn connection note with a HARD 300-character limit. Your entire response MUST be 300 characters or fewer. Count every character carefully. Base the note ONLY on the recipient's profile shown in Foreground Context. Do NOT reference specific past job applications, companies the writer has applied to, or past interactions from memory — those are from completely different contexts and would be false and embarrassing here.";
-      user += "\n\n=== HARD CHARACTER LIMIT ===\nMaximum 300 characters total. Write a brief, genuine connection note that stays strictly under 300 characters.";
-    } else if (isInmail) {
-      system += "\n\nThis is a LinkedIn InMail message. Write 2-4 short paragraphs: open with a specific observation about the recipient from Foreground Context, then your relevant value or reason for reaching out, then a clear low-friction ask. Each paragraph should be 1-3 sentences. Use a blank line between paragraphs. Do NOT reference specific past job applications or companies from memory — focus on what you can see about this specific recipient.";
-    } else if (isDm) {
-      system += "\n\nThis is a LinkedIn direct message in an ongoing conversation. Keep it conversational and concise — 1-3 short paragraphs at most.";
-    } else if (isComment) {
-      system += "\n\nThis is a LinkedIn comment. Keep it to 1-3 sentences — thoughtful, specific, and additive. No paragraph breaks needed.";
-    } else if (isPost) {
-      system += "\n\nThis is a LinkedIn post. Write in clear paragraphs with a blank line between each. Open strong, share a genuine insight or story, end with a thought or question. Avoid bullet points.";
-    } else if (charLimit && charLimit > 0 && charLimit <= 600) {
-      // Other short-limit fields (Twitter, etc.) — soft guidance
-      system += `\n\nThis field has a ${charLimit}-character limit. Keep your response under ${charLimit} characters.`;
-      user += `\n\nField character limit: ${charLimit}. Stay under ${charLimit} characters.`;
-    }
-
-    // Tone modifier (1=Casual … 5=Formal; 3=Balanced is the default, no modifier needed)
-    const toneKey = args.tone !== undefined ? Math.round(args.tone) : 3;
-    const toneMod = TONE_MODIFIERS[toneKey];
-    if (toneMod) {
-      system += `\n\nTone instruction: Write in a ${toneMod} tone.`;
-    }
-
-    // Domain modifier
-    const domainMod = args.domain && args.domain !== "general" ? DOMAIN_MODIFIERS[args.domain] : null;
-    if (domainMod) {
-      system += `\n\nDomain instruction: ${domainMod}`;
-    }
-
-    const raw = await callProvider({
-      provider,
-      model: profile?.model ?? "gpt-5-nano",
-      apiKey,
-      system,
-      user,
-    });
-    let text = normalizeAnswer(raw);
-
-    // Hard-truncate to the field's character limit when one is known
-    if (charLimit && charLimit > 0 && text.length > charLimit) {
-      text = text.slice(0, charLimit).replace(/\s+\S*$/, "").trim();
-    }
-
-    // Track memory access
-    const accessedIds = relevantMemories.map((m) => m._id).filter(Boolean) as any[];
-    if (accessedIds.length > 0) {
-      await ctx.runMutation(internal.memories.recordAccess, { memoryIds: accessedIds });
-    }
-
-    const threadId = args.threadId ?? `${userId}-${Date.now()}`;
-    return { text, threadId };
-  },
+      platform: args.platform,
+      threadId: args.threadId,
+      fieldMaxLength: args.fieldMaxLength,
+      tone: args.tone,
+      domain: args.domain,
+      recipientContext: args.recipientContext,
+    }),
 });
-
-// ── Rewrite ───────────────────────────────────────────────────────────────────
 
 export const rewrite = action({
   args: {
@@ -560,36 +806,24 @@ export const rewrite = action({
     platform: v.optional(v.string()),
     threadId: v.optional(v.string()),
     fieldMaxLength: v.optional(v.number()),
+    recipientContext: v.optional(v.string()),
   },
-  handler: async (ctx, { existingText, instruction, pageContext, capturedContexts, platform, threadId }): Promise<{ text: string; threadId: string }> => {
-    const userId = await getAuthUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
-    const profile = await ctx.runQuery(internal.users._getProfileByUserId, { userId });
-    const { provider, apiKey } = resolveApiKey(profile);
-    if (!apiKey) throw new Error(`Missing API key for ${provider}.`);
-
-    const plat = platform ?? "general";
-    const parsed = parseContextText(profile?.contextText);
-    const userContextText = buildContextBlock(plat, parsed) ?? undefined;
-
-    const { system, user } = buildPrompt({
-      instruction: instruction ?? "Rewrite and improve this",
-      action: "rewrite",
-      pageContext: pageContext ?? "",
-      capturedContexts,
-      memoryContext: "",
-      platform: plat,
-      userContextText,
-      existingText,
-      systemPromptOverride: profile?.systemPrompt,
-    });
-
-    const raw = await callProvider({ provider, model: profile?.model ?? "gpt-5-nano", apiKey, system, user });
-    return { text: normalizeAnswer(raw), threadId: threadId ?? "" };
-  },
+  handler: async (
+    ctx,
+    args
+  ): Promise<{ text: string; threadId: string; traceId?: string }> =>
+    executeTextAction(ctx, {
+      actionName: "rewrite",
+      instruction: args.instruction ?? "Rewrite and improve this",
+      pageContext: args.pageContext,
+      capturedContexts: args.capturedContexts,
+      platform: args.platform,
+      threadId: args.threadId,
+      fieldMaxLength: args.fieldMaxLength,
+      recipientContext: args.recipientContext,
+      existingText: args.existingText,
+    }),
 });
-
-// ── Shorten ───────────────────────────────────────────────────────────────────
 
 export const shorten = action({
   args: {
@@ -600,31 +834,24 @@ export const shorten = action({
     platform: v.optional(v.string()),
     threadId: v.optional(v.string()),
     fieldMaxLength: v.optional(v.number()),
+    recipientContext: v.optional(v.string()),
   },
-  handler: async (ctx, { existingText, platform, threadId }): Promise<{ text: string; threadId: string }> => {
-    const userId = await getAuthUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
-    const profile = await ctx.runQuery(internal.users._getProfileByUserId, { userId });
-    const { provider, apiKey } = resolveApiKey(profile);
-    if (!apiKey) throw new Error(`Missing API key for ${provider}.`);
-
-    const plat = platform ?? "general";
-    const { system, user } = buildPrompt({
-      instruction: "Shorten this",
-      action: "shorten",
-      pageContext: "",
-      memoryContext: "",
-      platform: plat,
-      existingText,
-      systemPromptOverride: profile?.systemPrompt,
-    });
-
-    const raw = await callProvider({ provider, model: profile?.model ?? "gpt-5-nano", apiKey, system, user });
-    return { text: normalizeAnswer(raw), threadId: threadId ?? "" };
-  },
+  handler: async (
+    ctx,
+    args
+  ): Promise<{ text: string; threadId: string; traceId?: string }> =>
+    executeTextAction(ctx, {
+      actionName: "shorten",
+      instruction: args.instruction ?? "Shorten this",
+      pageContext: args.pageContext,
+      capturedContexts: args.capturedContexts,
+      platform: args.platform,
+      threadId: args.threadId,
+      fieldMaxLength: args.fieldMaxLength,
+      recipientContext: args.recipientContext,
+      existingText: args.existingText,
+    }),
 });
-
-// ── Expand ────────────────────────────────────────────────────────────────────
 
 export const expand = action({
   args: {
@@ -635,26 +862,22 @@ export const expand = action({
     platform: v.optional(v.string()),
     threadId: v.optional(v.string()),
     fieldMaxLength: v.optional(v.number()),
+    recipientContext: v.optional(v.string()),
   },
-  handler: async (ctx, { existingText, platform, threadId }): Promise<{ text: string; threadId: string }> => {
-    const userId = await getAuthUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
-    const profile = await ctx.runQuery(internal.users._getProfileByUserId, { userId });
-    const { provider, apiKey } = resolveApiKey(profile);
-    if (!apiKey) throw new Error(`Missing API key for ${provider}.`);
-
-    const plat = platform ?? "general";
-    const { system, user } = buildPrompt({
-      instruction: "Expand this with more detail and depth",
-      action: "expand",
-      pageContext: "",
-      memoryContext: "",
-      platform: plat,
-      existingText,
-      systemPromptOverride: profile?.systemPrompt,
-    });
-
-    const raw = await callProvider({ provider, model: profile?.model ?? "gpt-5-nano", apiKey, system, user });
-    return { text: normalizeAnswer(raw), threadId: threadId ?? "" };
-  },
+  handler: async (
+    ctx,
+    args
+  ): Promise<{ text: string; threadId: string; traceId?: string }> =>
+    executeTextAction(ctx, {
+      actionName: "expand",
+      instruction:
+        args.instruction ?? "Expand this with more detail and depth",
+      pageContext: args.pageContext,
+      capturedContexts: args.capturedContexts,
+      platform: args.platform,
+      threadId: args.threadId,
+      fieldMaxLength: args.fieldMaxLength,
+      recipientContext: args.recipientContext,
+      existingText: args.existingText,
+    }),
 });

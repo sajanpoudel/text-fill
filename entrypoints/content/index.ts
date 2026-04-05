@@ -16,50 +16,6 @@ class RootBoundary extends Component<{ children: ReactNode }, { dead: boolean }>
   render(): ReactNode { return this.state.dead ? null : this.props.children; }
 }
 
-// ── MAIN-world XHR/fetch interceptor ─────────────────────────────────────────
-// Injected as an inline <script> so it runs in the page's JS context (MAIN world)
-// where chrome.* is unavailable. It posts a __TF_SEND__ window message back to
-// the ISOLATED content script whenever a send-like network request fires.
-// Signal C in session-observer.ts requires this confirmation before classifying
-// a mousedown on a send button as an actual send event.
-function injectSendInterceptor() {
-  if ((window as any).__TF_XHR_PATCHED__) return;
-
-  const script = document.createElement("script");
-  script.textContent = `(function(){
-    if(window.__TF_XHR_PATCHED__)return;
-    window.__TF_XHR_PATCHED__=true;
-    function isSendLike(method,url){
-      var m=(method||'').toUpperCase();
-      if(m!=='POST'&&m!=='PUT')return false;
-      try{
-        var path=new URL(url,location.href).pathname.toLowerCase();
-        return /send|message|reply|invite|connect|submit|compose/.test(path);
-      }catch(e){return false;}
-    }
-    var origFetch=window.fetch;
-    window.fetch=function(input,init){
-      var url=typeof input==='string'?input:(input instanceof Request?input.url:String(input));
-      var method=(init&&init.method)||(input instanceof Request?input.method:'GET');
-      if(isSendLike(method,url))window.postMessage({type:'__TF_SEND__',ts:Date.now()},'*');
-      return origFetch.apply(this,arguments);
-    };
-    var origOpen=XMLHttpRequest.prototype.open;
-    var origSend=XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.open=function(method,url){
-      this.__tfMethod=method;this.__tfUrl=url;
-      return origOpen.apply(this,arguments);
-    };
-    XMLHttpRequest.prototype.send=function(){
-      if(isSendLike(this.__tfMethod,this.__tfUrl))
-        window.postMessage({type:'__TF_SEND__',ts:Date.now()},'*');
-      return origSend.apply(this,arguments);
-    };
-  })();`;
-  (document.head || document.documentElement).appendChild(script);
-  script.remove();
-}
-
 export default defineContentScript({
   matches: ["<all_urls>"],
   runAt: "document_idle",
@@ -68,8 +24,6 @@ export default defineContentScript({
 
   async main(ctx) {
     if (!globalThis.chrome?.runtime?.id) return;
-
-    injectSendInterceptor();
 
     const ensureBody = async () => {
       if (document.body) return document.body;

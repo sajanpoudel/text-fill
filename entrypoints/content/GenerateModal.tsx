@@ -2,14 +2,21 @@ import {
   useState,
   useRef,
   useEffect,
+  useCallback,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import { insertText } from "../../src/lib/insert-text.ts";
 import { sessionObserver, getFieldText } from "../../src/lib/session-observer.ts";
-import { extractPageContext } from "../../src/lib/context.ts";
+import {
+  extractAudienceNameFromContext,
+  extractPageContext,
+} from "../../src/lib/context.ts";
 import { loadContexts, saveContexts } from "./ContextFAB.tsx";
 import { isPageDark } from "../../src/lib/dom/theme.ts";
 import type { PlatformKey } from "../../src/lib/platform.ts";
+import { getLinkedInRecipientProfileUrl } from "../../src/lib/platforms/linkedin.ts";
 
 interface Props {
   field: Element;
@@ -21,6 +28,22 @@ interface Props {
   onClose: () => void;
   onGenerate: (opts: { instruction: string; pageContext?: string; fieldMaxLength?: number; tone?: number; domain?: string }) => void;
   showToast: (message: string, type?: "success" | "error" | "info") => void;
+  /** If true, starts voice recognition immediately when the modal mounts */
+  voiceMode?: boolean;
+}
+
+// ── Speech recognition helpers ────────────────────────────────────────────────
+
+const SR: SpeechRecognitionConstructor | undefined =
+  window.SpeechRecognition ?? window.webkitSpeechRecognition;
+
+function createRecognition(): SpeechRecognition | null {
+  if (!SR) return null;
+  const r = new SR();
+  r.continuous = false;      // stop after one utterance — user re-taps to speak again
+  r.interimResults = true;
+  r.lang = "en-US";
+  return r;
 }
 
 const MODAL_W = 280;
@@ -188,15 +211,97 @@ const TONE_LABELS: Record<number, string> = {
 const DOMAINS = ["general", "sales", "legal", "technical", "academic"] as const;
 type Domain = typeof DOMAINS[number];
 
-export function GenerateModal({ field, platform, anchorRect, activeContextCount, instruction, onInstructionChange, onClose, onGenerate, showToast }: Props) {
+export function GenerateModal({ field, platform, anchorRect, activeContextCount, instruction, onInstructionChange, onClose, onGenerate, showToast, voiceMode }: Props) {
   const [tone, setTone] = useState(3);
   const [domain, setDomain] = useState<Domain>("general");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const isDark = isPageDark();
   const hasContent = getFieldValue(field).trim().length > 10;
+
+  // ── Voice recognition ─────────────────────────────────────────────────────
+
+  const stopListening = useCallback(() => {
+    setIsListening(false);
+    try { recognitionRef.current?.stop(); } catch { /* ignore */ }
+    recognitionRef.current = null;
+  }, []);
+
+  const startListening = useCallback(() => {
+    if (!SR) {
+      showToast("Speech recognition not supported in this browser", "error");
+      return;
+    }
+    if (isListening) { stopListening(); return; }
+
+    const rec = createRecognition();
+    if (!rec) return;
+    recognitionRef.current = rec;
+
+    // Accumulate the committed (non-interim) transcript across chunks
+    let committed = instruction;
+
+    rec.onresult = (e: SpeechRecognitionEvent) => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const chunk = e.results[i][0].transcript;
+        if (e.results[i].isFinal) {
+          committed += (committed ? " " : "") + chunk;
+        } else {
+          interim = chunk;
+        }
+      }
+      onInstructionChange(committed + (interim ? " " + interim : ""));
+    };
+
+    rec.onend = () => {
+      // Finalise: strip any trailing interim text, keep only committed
+      onInstructionChange(committed.trim());
+      setIsListening(false);
+      recognitionRef.current = null;
+      // Restore focus to instruction field so user can edit/submit
+      setTimeout(() => inputRef.current?.focus(), 50);
+    };
+
+    rec.onerror = (e: SpeechRecognitionErrorEvent) => {
+      stopListening();
+      if (e.error !== "no-speech") {
+        showToast(
+          e.error === "not-allowed"
+            ? "Microphone access denied"
+            : `Voice error: ${e.error}`,
+          "error"
+        );
+      }
+    };
+
+    try {
+      rec.start();
+      setIsListening(true);
+    } catch {
+      showToast("Could not start microphone", "error");
+      recognitionRef.current = null;
+    }
+  }, [instruction, isListening, onInstructionChange, showToast, stopListening]);
+
+  // Auto-start when voiceMode prop is true on mount
+  useEffect(() => {
+    if (voiceMode) {
+      // Small delay so the modal is fully mounted before starting
+      const t = setTimeout(() => startListening(), 120);
+      return () => clearTimeout(t);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally run once on mount
+
+  // Stop recognition when modal unmounts
+  useEffect(() => {
+    return () => { stopListening(); };
+  }, [stopListening]);
 
   // ── Colours ──────────────────────────────────────────────────────────────────
   const bg       = isDark ? "#0A0A0A" : "#ffffff";
@@ -289,14 +394,21 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
     try {
       const existingText = getFieldValue(field).slice(0, 2000);
       const pageContext = extractPageContext(field);
+      const recipientName = extractAudienceNameFromContext(pageContext);
       const fieldMaxLength = detectFieldMaxLength(field);
+      const recipientProfileUrl =
+        platform === "linkedin" ? getLinkedInRecipientProfileUrl() : null;
 
-      const payload =
-        action === "generate"
-          ? { instruction, pageContext, platform, fieldMaxLength }
-          : { existingText, instruction: instruction || undefined, platform, fieldMaxLength };
+      const payload = {
+        existingText,
+        instruction: instruction || undefined,
+        pageContext,
+        platform,
+        fieldMaxLength,
+        ...(recipientProfileUrl ? { recipientProfileUrl } : {}),
+      };
 
-      sessionObserver.onGenerationStart(field);
+      sessionObserver.onGenerationStart(field, recipientName);
       const response = await chrome.runtime.sendMessage({
         type: "GENERATE",
         action,
@@ -311,10 +423,11 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
         }
         onClose();
         showToast("✓ Text inserted");
+        const traceId: string | undefined = typeof response.traceId === "string" ? response.traceId : undefined;
         setTimeout(() => {
           insertText(field, safeText, platform);
           setTimeout(() => {
-            sessionObserver.onGenerationComplete(field, getFieldText(field));
+            sessionObserver.onGenerationComplete(field, getFieldText(field), traceId);
           }, 120);
         }, 80);
       }
@@ -355,7 +468,10 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
     onClose();
   }
 
-  const stopDown = (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); };
+  const stopDown = (e: ReactMouseEvent | ReactPointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
 
   const mountNode =
     (field instanceof Element ? field.closest("dialog") : null) ??
@@ -387,7 +503,7 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
         WebkitUserSelect: "text",
       }}
     >
-      {/* ── Instruction textarea with integrated Send button ── */}
+      {/* ── Instruction textarea with mic + send buttons ── */}
       <div style={{ position: "relative", borderBottom: `1px solid ${divider}` }}>
         <textarea
           ref={inputRef}
@@ -398,24 +514,74 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runAction("generate"); }
             if (e.key === "Escape") onClose();
           }}
-          placeholder="Instruction… (Enter to generate)"
+          placeholder={isListening ? "Listening…" : "Instruction… (Enter to generate)"}
           style={{
             display: "block",
             width: "100%",
             boxSizing: "border-box",
-            padding: "14px 44px 14px 14px",
+            padding: "14px 44px 14px 40px",
             fontSize: 14,
             fontWeight: 500,
             lineHeight: 1.5,
             border: "none",
-            background: "transparent",
+            background: isListening ? (isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.02)") : "transparent",
             color: text,
             resize: "none",
             outline: "none",
             fontFamily: "inherit",
             letterSpacing: "-0.2px",
+            transition: "background 0.2s",
           }}
         />
+        {/* Mic button — bottom-left */}
+        {SR && (
+          <button
+            type="button"
+            title={isListening ? "Stop listening" : "Speak your instruction"}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); startListening(); }}
+            onMouseDown={stopDown}
+            style={{
+              position: "absolute",
+              left: 8,
+              bottom: 8,
+              width: 26,
+              height: 26,
+              borderRadius: 4,
+              border: `1px solid ${isListening ? (isDark ? "#fcfcfb" : "#1c1917") : border}`,
+              background: isListening ? (isDark ? "#fcfcfb" : "#1c1917") : "transparent",
+              color: isListening ? (isDark ? "#1c1917" : "#fcfcfb") : textSub,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              transition: "all 0.15s",
+              flexShrink: 0,
+            }}
+            onMouseEnter={(e) => {
+              if (!isListening) e.currentTarget.style.background = hoverBg;
+            }}
+            onMouseLeave={(e) => {
+              if (!isListening) e.currentTarget.style.background = "transparent";
+            }}
+          >
+            {isListening ? (
+              // Animated pulse dot when recording
+              <span style={{
+                width: 8, height: 8, borderRadius: "50%",
+                background: isDark ? "#000000" : "#ffffff",
+                animation: "tfa-pulse 1s ease-in-out infinite",
+                display: "block",
+              }} />
+            ) : (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="2" width="6" height="11" rx="3" />
+                <path d="M5 10a7 7 0 0 0 14 0" />
+                <line x1="12" y1="17" x2="12" y2="22" />
+                <line x1="8" y1="22" x2="16" y2="22" />
+              </svg>
+            )}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => runAction("generate")}
@@ -586,11 +752,14 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
 
       {/* ── Error ── */}
       {error && (
-        <div style={{ fontSize: 12, fontWeight: 600, color: "#000", background: "#f0f0f0", borderTop: `1px solid ${border}`, padding: "8px 14px" }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: text, background: divider, borderTop: `1px solid ${border}`, padding: "8px 14px" }}>
           {error}
         </div>
       )}
-      <style>{`@keyframes tfa-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+      <style>{`
+        @keyframes tfa-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes tfa-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.75); } }
+      `}</style>
     </div>,
     mountNode
   );

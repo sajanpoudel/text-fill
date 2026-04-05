@@ -40,6 +40,20 @@ The core constraint: the extension must be **production-safe** — no `chrome.de
 
 ## 2. Current State Audit
 
+### Verified status snapshot (2026-04-05)
+
+| Phase | Verified status | Notes |
+|---|---|---|
+| Phase 0 — Permissions | ✅ Complete | `scripting`, `tabs`, `webNavigation`, and `offscreen` are in [wxt.config.ts](wxt.config.ts) |
+| Phase 1 — Session Observation | ✅ Implemented in code | Session capture, send heuristics, `recipientName`, `traceId`, and all action paths are wired |
+| Phase 2 — Multi-Tier Retrieval | ✅ Implemented in code | Semantic + procedural + episodic retrieval is unified across `generate`, `rewrite`, `shorten`, and `expand` |
+| Phase 3 — Procedural Pattern Promotion | ✅ Implemented in code | Pattern supports, promotion checks, and weekly decay cron exist |
+| Phase 4 — Entity Graph | ✅ Implemented in code | Temporal entities/edges, lexical dedup, and embedding-backed fuzzy resolution are wired |
+| Phase 5 — Browser Control | ⚠️ Core flow implemented | LinkedIn task queue, auth-scoped queue storage, and shared MAIN-world helpers exist; broader multi-platform automation is still pending |
+| Phase 6 — Voice | ✅ Implemented in code | Offscreen recognition + intent parsing + explicit runtime state sync are wired end to end |
+| Phase 7 — Proactive Scanning | ✅ Implemented in code | `ChangeThreshold`, LinkedIn scanning, suggestion chip, and queue preview are wired |
+| Phase 8 — Evaluation & Tracing | ⚠️ Core tracing implemented | Trace tables, queries, and review UI exist; dev-only CDP/DevTools tooling is still not built |
+
 ### What already exists and is good
 
 | Component | Location | Quality |
@@ -55,14 +69,14 @@ The core constraint: the extension must be **production-safe** — no `chrome.de
 | Memory extraction post-generation | [convex/memoryExtract.ts:194](convex/memoryExtract.ts#L194) | Semantic facts only, no episodic or procedural |
 | Background service worker | [entrypoints/background.ts](entrypoints/background.ts) | Handles GENERATE, CAPTURE_CONTEXT, auth refresh |
 
-### What is now built (Layer 1 complete — 2026-04-04)
+### What is now built (verified snapshot — 2026-04-05)
 
 | Component | Location | Notes |
 |---|---|---|
 | `SessionObserver` class | [src/lib/session-observer.ts](src/lib/session-observer.ts) | Full session lifecycle, multi-signal send detection |
 | Multi-signal send detection | [src/lib/session-observer.ts:345](src/lib/session-observer.ts#L345) | Signal A = form submit, B = Enter/Ctrl+Enter, C = mousedown + XHR confirm |
 | Per-field composite snapshot | [src/lib/session-observer.ts:421](src/lib/session-observer.ts#L421) | Debounced `input` (300ms) + `compositionend` → `_settledText` map |
-| MAIN-world XHR/fetch interceptor | [entrypoints/content/index.ts:20](entrypoints/content/index.ts#L20) | Injected as inline `<script>` element, posts `__TF_SEND__` on send-like POSTs |
+| MAIN-world XHR/fetch interceptor | [entrypoints/send-interceptor.content.ts](entrypoints/send-interceptor.content.ts) | Dedicated MAIN-world content script, posts `__TF_SEND__` on send-like POSTs |
 | Bounded Levenshtein + trigram diff | [src/lib/session-observer.ts:61](src/lib/session-observer.ts#L61) | O(n) space, bails at 5000 ops; trigram fallback for texts > 1500 chars |
 | `interactionSessions` + `sessionArtifacts` tables | [convex/schema.ts:68](convex/schema.ts#L68) | With `recipientName`, soft-deleted artifact, 3 indexes each |
 | `recordSession` mutation | [convex/interactions.ts:7](convex/interactions.ts#L7) | Inserts session row + optional artifact in one transaction |
@@ -74,14 +88,8 @@ The core constraint: the extension must be **production-safe** — no `chrome.de
 
 | Gap | Impact |
 |---|---|
-| No episodic memory retrieval in generation | Sessions accumulate but don't feed back into prompts yet |
-| No procedural memory (what rules does user follow) | Cannot adapt generation prompts to user style |
-| No entity graph (people, companies, relations) | Cannot track "user works at X" with temporal validity |
-| No live retrieval (recipient profile at generation time) | Volatile data leaks into long-term memory |
-| No browser control (click, navigate, fill fields) | Cannot act on user's behalf |
-| No proactive scanning (find opportunities, suggest) | Always reactive — waits for user to ask |
-| No voice input | Cannot listen to commands |
-| No offscreen document | No long-running audio or persistent JS |
+| Browser automation is implemented mainly for the LinkedIn connect flow | Other controlled actions still need shared helpers and live-site validation |
+| Dev-only tracing extras (`chrome.debugger`, DevTools panel, network replay tooling) are still absent | Deep local debugging remains limited to current trace tables and manual DevTools use |
 
 ---
 
@@ -135,7 +143,7 @@ The core constraint: the extension must be **production-safe** — no `chrome.de
 
 ## 4. Layer 1 — Observation
 
-> **Status: COMPLETE** (2026-04-04). All code is live and building clean.
+> **Status: IMPLEMENTED IN CODE** (verified 2026-04-05). The capture path is wired end to end. Remaining risk is real-site validation on CSP-heavy pages and send-button DOM variants.
 
 ### What was built
 
@@ -148,7 +156,7 @@ The core constraint: the extension must be **production-safe** — no `chrome.de
 | [entrypoints/content/FieldButton.tsx:173](entrypoints/content/FieldButton.tsx#L173) | `onGenerationStart` + `onGenerationComplete` for generate path |
 | [entrypoints/content/GenerateModal.tsx:289](entrypoints/content/GenerateModal.tsx#L289) | `onGenerationStart` + `onGenerationComplete` for rewrite/shorten/expand paths |
 | [entrypoints/background.ts:103](entrypoints/background.ts#L103) | `OBSERVE_SESSION` case → `handleObserveSession` → Convex mutation |
-| [entrypoints/content/index.ts:20](entrypoints/content/index.ts#L20) | MAIN-world XHR/fetch interceptor injected as inline `<script>` element |
+| [entrypoints/send-interceptor.content.ts](entrypoints/send-interceptor.content.ts) | MAIN-world send interceptor runs as a dedicated content script in the MAIN world |
 
 ### Session lifecycle (as implemented)
 
@@ -204,7 +212,7 @@ document.addEventListener('submit', (e) => {
 **Signal C — mousedown on enabled send button, confirmed by XHR** (requires both):
 - `mousedown` on element matching `[aria-label*="Send"]`, `[data-testid*="send"]`, etc., AND `disabled` check on element + ancestors
 - XHR/fetch POST to send-like URL must arrive within 3 seconds via `window.postMessage`
-- The MAIN-world interceptor is injected at content script init in [entrypoints/content/index.ts:20](entrypoints/content/index.ts#L20) as an inline `<script>` element (not via `chrome.scripting.executeScript` — that would require a tab ID; the inline approach works directly from the ISOLATED world)
+- The MAIN-world interceptor now lives in [entrypoints/send-interceptor.content.ts](entrypoints/send-interceptor.content.ts) as a dedicated MAIN-world content script, which avoids CSP issues from inline injection
 
 ```typescript
 private _checkSentSignals(field: Element, now: number): boolean {
@@ -484,16 +492,18 @@ class PersistentTaskQueue {
   private running = false;
 
   async enqueue(tasks: Task[]) {
-    const { queue = [] } = await chrome.storage.local.get('taskQueue');
-    await chrome.storage.local.set({ taskQueue: [...queue, ...tasks] });
+    const queueKey = getTaskQueueStorageKey(currentUserScope);
+    const { [queueKey]: queue = [] } = await chrome.storage.local.get(queueKey);
+    await chrome.storage.local.set({ [queueKey]: [...queue, ...tasks] });
     void this.process();
   }
 
   private async dequeue(): Promise<Task | null> {
-    const { queue = [] } = await chrome.storage.local.get('taskQueue');
+    const queueKey = getTaskQueueStorageKey(currentUserScope);
+    const { [queueKey]: queue = [] } = await chrome.storage.local.get(queueKey);
     if (!queue.length) return null;
     const [task, ...rest] = queue;
-    await chrome.storage.local.set({ taskQueue: rest });
+    await chrome.storage.local.set({ [queueKey]: rest });
     return task;
   }
 
@@ -576,10 +586,10 @@ User speaks
 
 ### Setup
 
-`entrypoints/offscreen.html` + `entrypoints/offscreen.ts` (new files):
+`entrypoints/offscreen.html` + `entrypoints/offscreen/main.ts`:
 
 ```typescript
-// entrypoints/offscreen.ts
+// entrypoints/offscreen/main.ts
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.target !== 'offscreen') return;
   if (msg.type === 'START_VOICE') startRecognition();
@@ -603,7 +613,7 @@ async function ensureOffscreen() {
 ### Web Speech API (continuous recognition)
 
 ```typescript
-// offscreen.ts
+// offscreen/main.ts
 const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
 const recognition = new SR() as SpeechRecognition;
 recognition.continuous = true;
@@ -633,7 +643,7 @@ recognition.onend = () => {
 For commands needing higher accuracy or non-English support, stream audio to OpenAI's Realtime API or Whisper:
 
 ```typescript
-// offscreen.ts — OpenAI Realtime API option
+// offscreen/main.ts — OpenAI Realtime API option
 const ws = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview', [
   'realtime',
   `openai-insecure-api-key.${OPENAI_KEY}`, // use session token in production
@@ -666,7 +676,7 @@ case 'VOICE_COMMAND': {
 Porcupine Web SDK (`@picovoice/porcupine-web`) runs WASM in the offscreen document. No audio leaves the device until wake word is detected. Built-in keywords available (e.g., "Jarvis", "Hey Siri"-style); custom keywords require Picovoice account.
 
 ```typescript
-// offscreen.ts
+// offscreen/main.ts
 import { Porcupine, BuiltInKeyword } from '@picovoice/porcupine-web';
 const porcupine = await Porcupine.create(PICOVOICE_KEY, [BuiltInKeyword.Jarvis], () => {
   chrome.runtime.sendMessage({ target: 'background', type: 'WAKE_WORD' });
@@ -890,7 +900,7 @@ permissions: [
 
 ```
 entrypoints/offscreen.html   — voice runtime
-entrypoints/offscreen.ts     — SpeechRecognition, MediaRecorder, Porcupine
+entrypoints/offscreen/main.ts — SpeechRecognition, MediaRecorder, Porcupine
 entrypoints/devtools.html    — DevTools panel (dev builds only)
 entrypoints/devtools.ts      — chrome.devtools.network + trace viewer
 ```
@@ -1088,7 +1098,7 @@ taskItems: defineTable({
 
 ## 13. Phased Implementation Order
 
-### Phase 0 — Permissions ✅ DONE
+### Phase 0 — Permissions ✅ VERIFIED COMPLETE
 **Files**: [wxt.config.ts](wxt.config.ts)
 
 - ✅ Added `scripting`, `tabs`, `webNavigation` to production permissions
@@ -1097,7 +1107,7 @@ taskItems: defineTable({
 
 ---
 
-### Phase 1 — Session Observation ✅ DONE (2026-04-04)
+### Phase 1 — Session Observation ✅ IMPLEMENTED (verified 2026-04-05)
 **Files**: [entrypoints/content/App.tsx](entrypoints/content/App.tsx), [entrypoints/content/FieldButton.tsx](entrypoints/content/FieldButton.tsx), [entrypoints/content/GenerateModal.tsx](entrypoints/content/GenerateModal.tsx), [entrypoints/content/index.ts](entrypoints/content/index.ts), [entrypoints/background.ts](entrypoints/background.ts), [convex/schema.ts](convex/schema.ts), [convex/interactions.ts](convex/interactions.ts), [src/lib/session-observer.ts](src/lib/session-observer.ts)
 
 - ✅ `interactionSessions` + `sessionArtifacts` tables in schema (with `recipientName`, 3 indexes each)
@@ -1107,15 +1117,16 @@ taskItems: defineTable({
 - ✅ `onGenerationStart` + `onGenerationComplete(getFieldText(field))` in FieldButton + GenerateModal (all action paths: generate, rewrite, shorten, expand)
 - ✅ Post-insert text contract: callers snapshot field text at 80ms+120ms after `insertText` (not raw API response)
 - ✅ Three-signal send detection: Signal A (form submit), Signal B (Enter/Ctrl+Enter), Signal C (mousedown+XHR confirm)
-- ✅ MAIN-world XHR/fetch interceptor injected as inline `<script>` from content script init
+- ✅ MAIN-world XHR/fetch interceptor runs as a dedicated MAIN-world content script
 - ✅ `OBSERVE_SESSION` routing in service worker → Convex `recordSession` mutation
 - ✅ Build: zero errors, zero warnings (`npx wxt build` clean)
 
 **Outcome**: Raw behavioral data accumulates on every AI-assisted compose session across all action types.
+**Remaining risk**: live validation is still needed on unusual send-button DOM variants, but the CSP-specific inline-script risk is removed.
 
 ---
 
-### Phase 2 — Multi-Tier Retrieval in generate.ts (zero extra LLM calls)
+### Phase 2 — Multi-Tier Retrieval in generate.ts ✅ IMPLEMENTED
 **Files**: [convex/generate.ts](convex/generate.ts), new `convex/retrieval.ts`
 
 1. Add `proceduralPatterns` table (empty to start)
@@ -1125,11 +1136,12 @@ taskItems: defineTable({
    - `RECENT EXAMPLES`: query last 3 sessions with same `platform + contextType` where `outcome != 'abandoned'`, inject as anonymized edit summaries (not raw messages)
 3. Pass `recipientContext` as a new parameter — injected as `RECIPIENT CONTEXT` block, never stored
 
-**Outcome**: Generation now uses all three memory tiers, even though procedural patterns are empty at first.
+**Outcome**: Generation now uses semantic memory, procedural rules, episodic summaries, and transient recipient context across all text actions.
+**Remaining work**: prompt-quality tuning and live-provider evaluation, not missing wiring.
 
 ---
 
-### Phase 3 — Procedural Pattern Promotion
+### Phase 3 — Procedural Pattern Promotion ✅ IMPLEMENTED
 **Files**: new `convex/patterns.ts`, [convex/crons.ts](convex/crons.ts), [convex/schema.ts](convex/schema.ts)
 
 1. Add `patternSupports` junction table
@@ -1140,23 +1152,25 @@ taskItems: defineTable({
 4. Weekly cron: `confidence *= 0.9` for patterns not triggered in 7 days; soft-delete at `confidence < 0.1`
 
 **Outcome**: The system learns behavioral rules automatically from observed edit patterns.
+**Remaining work**: tune promotion thresholds/confidence decay from real user data.
 
 ---
 
-### Phase 4 — Entity Graph
+### Phase 4 — Entity Graph ✅ IMPLEMENTED IN CODE
 **Files**: [convex/schema.ts](convex/schema.ts), new `convex/entities.ts`, [convex/memoryExtract.ts](convex/memoryExtract.ts)
 
 1. Add `entities`, `entityEmbeddings`, `entityEdges`, `edgeSupports` tables
 2. In `memoryExtract.ts`, extract entity mentions alongside fact extraction
-3. Entity resolution: embedding cosine similarity ≥ 0.85 for dedup; async LLM confirmation for 0.75–0.85 range
+3. Entity resolution: canonical-name dedup first, then embedding-backed fuzzy matching with conservative ambiguity handling
 4. Contradiction handling: when new `works_at` edge conflicts with existing, set `invalidAt = now` on old edge, insert new edge
 5. Upgrade `memories` table: add `validAt`, `invalidAt` fields, update soft-delete index
 
-**Outcome**: Temporal entity relationships tracked. "User currently works at X" never gets confused with "User previously worked at Y."
+**Outcome**: Temporal entity relationships are now extracted and tracked, including contradiction invalidation for exclusive relations like `works_at`.
+**Remaining work**: richer human-review / LLM-confirmation workflows for ambiguous entity merges are optional future work, but the core fuzzy-resolution path is now wired.
 
 ---
 
-### Phase 5 — Browser Control + Batch Operations
+### Phase 5 — Browser Control + Batch Operations ⚠️ CORE FLOW IMPLEMENTED
 **Files**: [entrypoints/background.ts](entrypoints/background.ts), [entrypoints/content/App.tsx](entrypoints/content/App.tsx), new `src/lib/browser-control.ts`, new `convex/tasks.ts`
 
 1. Add `taskBatches` + `taskItems` tables
@@ -1170,12 +1184,13 @@ taskItems: defineTable({
    - Service worker batch executor with `humanDelay`
    - Daily limit enforcement (`chrome.storage.local`)
 
-**Outcome**: Extension can find and message 20+ recruiters with one user click.
+**Outcome**: Extension can scan LinkedIn search results, queue connection tasks, generate notes, and execute a controlled LinkedIn connect flow.
+**Remaining work**: expand the shared browser-control layer to more platforms and finish broader live-site E2E validation.
 
 ---
 
-### Phase 6 — Voice
-**Files**: new `entrypoints/offscreen.html`, new `entrypoints/offscreen.ts`, [entrypoints/background.ts](entrypoints/background.ts), new `convex/voice.ts`
+### Phase 6 — Voice ✅ IMPLEMENTED IN CODE
+**Files**: new `entrypoints/offscreen.html`, [entrypoints/offscreen/main.ts](entrypoints/offscreen/main.ts), [entrypoints/background.ts](entrypoints/background.ts), new `convex/voice.ts`
 
 1. Create offscreen document entrypoint
 2. Add `ensureOffscreen()` to service worker startup
@@ -1186,11 +1201,12 @@ taskItems: defineTable({
 7. Optional: add Porcupine wake word detection (behind feature flag, adds ~1MB WASM bundle)
 8. Optional: upgrade to OpenAI Realtime API for lower latency (behind user-selectable setting)
 
-**Outcome**: User can say "write a connection note to this recruiter" and the extension generates and fills it.
+**Outcome**: User can trigger offscreen speech recognition, parse intent, and route compose/search/connect actions back into the extension with explicit runtime-state acknowledgements reflected in the FAB.
+**Remaining work**: wake word support and optional Realtime/Porcupine upgrades remain future work.
 
 ---
 
-### Phase 7 — Proactive AI-First Scanning
+### Phase 7 — Proactive AI-First Scanning ✅ IMPLEMENTED
 **Files**: [entrypoints/content/App.tsx](entrypoints/content/App.tsx), [src/lib/platforms/linkedin.ts](src/lib/platforms/linkedin.ts), new `src/lib/scanner.ts`
 
 1. Add `ChangeThreshold` scanner class alongside existing `MutationObserver`
@@ -1200,11 +1216,12 @@ taskItems: defineTable({
 5. Build queue preview panel with per-item edit capability
 6. Connect to batch execution in Phase 5
 
-**Outcome**: Extension proactively surfaces batch action opportunities without user having to ask.
+**Outcome**: Extension proactively surfaces LinkedIn batch opportunities without the user having to ask.
+**Remaining work**: expand the dispatcher beyond LinkedIn and tune thresholds from live usage.
 
 ---
 
-### Phase 8 — Evaluation & Tracing
+### Phase 8 — Evaluation & Tracing ⚠️ CORE TRACING IMPLEMENTED
 **Files**: new `convex/traces.ts`, [convex/schema.ts](convex/schema.ts), [entrypoints/background.ts](entrypoints/background.ts)
 
 1. Add `traces` + `traceArtifacts` tables
@@ -1212,6 +1229,9 @@ taskItems: defineTable({
 3. Update trace on session close with `userAction` + `editDistance`
 4. Build simple query page in options app: "show last 50 rejected/heavily-edited generations"
 5. Local debug mode (dev build only): attach `chrome.debugger` + CDP Network, add DevTools panel
+
+**Outcome**: Every generation can be traced, linked back to observed user outcomes, and reviewed from the memory app.
+**Remaining work**: the dev-only `chrome.debugger` / DevTools-panel tooling is still not implemented.
 
 ---
 
@@ -1243,4 +1263,4 @@ A single power-user session with many identical sends must not immediately creat
 
 ---
 
-*Last updated: 2026-04-04. Research basis: three passes covering Chrome MV3 APIs, LangMem/Mem0/Graphiti memory systems, OCEL process mining, rrweb vs hand-rolled observation, Convex schema design, browser-use/Playwright/Puppeteer, Web Speech API in MV3, Porcupine WASM wake detection, LinkedIn automation safety, and ActivityWatch heartbeat architecture. Phase 0 + Phase 1 implemented and verified.*
+*Last updated: 2026-04-05. Research basis: multiple passes covering Chrome MV3 APIs, LangMem/Mem0/Graphiti memory systems, OCEL process mining, rrweb vs hand-rolled observation, Convex schema design, browser-use/Playwright/Puppeteer, Web Speech API in MV3, LinkedIn automation safety, and ActivityWatch heartbeat architecture. This document now reflects code that was verified against the current repository, not the earlier implementation target state.*

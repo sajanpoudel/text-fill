@@ -50,6 +50,7 @@ export default defineConfig({
       "scripting",
       "tabs",
       "webNavigation",
+      "offscreen",
     ],
     host_permissions: [
       "https://*.convex.cloud/*",
