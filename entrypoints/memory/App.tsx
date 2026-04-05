@@ -15,19 +15,19 @@ import type { Id } from "../../convex/_generated/dataModel";
 import {
   Archive,
   BarChart3,
-  Brain,
+  Database,
+  User,
   Check,
   ChevronDown,
-  Clock3,
   Edit2,
   Link as LinkIcon,
   RotateCcw,
   Search,
   Shield,
   SlidersHorizontal,
-  Sparkles,
   Trash2,
   X,
+  ArrowLeft,
 } from "lucide-react";
 
 type StatusFilter = "active" | "archived";
@@ -128,31 +128,6 @@ function sortMemories(memories: MemoryItem[], sortBy: SortOption) {
   return sorted;
 }
 
-function SummaryCard({
-  label,
-  value,
-  hint,
-  icon,
-}: {
-  label: string;
-  value: number;
-  hint: string;
-  icon: ReactNode;
-}) {
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-xs font-medium uppercase tracking-[0.14em] text-gray-500">{label}</div>
-          <div className="mt-2 text-2xl font-semibold text-gray-950">{value}</div>
-          <div className="mt-1 text-xs text-gray-500">{hint}</div>
-        </div>
-        <div className="rounded-lg bg-gray-100 p-2 text-gray-500">{icon}</div>
-      </div>
-    </div>
-  );
-}
-
 function MemoryList() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
@@ -207,21 +182,8 @@ function MemoryList() {
 
   const library = (allMemories ?? []) as MemoryItem[];
 
-  const metrics = useMemo(() => {
-    const active = library.filter((m) => m.status === "active");
-    const archived = library.filter((m) => m.status === "archived");
-    const persona = library.filter((m) => getMemoryCategory(m) === "persona");
-    const highPriority = library.filter((m) => normalizeMetric(m.importance) >= 0.8);
-    const atRisk = library.filter((m) => normalizeMetric(m.forgetScore) >= 0.6);
-
-    return {
-      active: active.length,
-      archived: archived.length,
-      persona: persona.length,
-      highPriority: highPriority.length,
-      atRisk: atRisk.length,
-    };
-  }, [library]);
+  const activeCount = useMemo(() => library.filter((m) => m.status === "active").length, [library]);
+  const archivedCount = useMemo(() => library.filter((m) => m.status === "archived").length, [library]);
 
   const sourceMemories = searchResults ?? library;
   const filteredMemories = useMemo(() => {
@@ -236,39 +198,38 @@ function MemoryList() {
   const loading = allMemories === undefined && !searchResults;
 
   return (
-    <div className="min-h-screen bg-white">
-      <div className="mx-auto max-w-6xl px-4 py-8">
-        <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+    <div className="min-h-screen bg-bg font-sans text-text">
+      <div className="mx-auto max-w-6xl px-6 py-10">
+        <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
-            <h1 className="flex items-center gap-2 text-2xl font-semibold text-gray-950 tracking-tight">
-              <Brain className="h-7 w-7 text-gray-800" />
+            <h1 className="flex items-center gap-3 text-3xl font-extrabold tracking-tighter text-text">
+              <button
+                onClick={() => window.location.href = chrome.runtime.getURL("options.html")}
+                className="p-1 hover:bg-neutral-200 rounded-full transition-colors"
+                title="Back to Settings"
+              >
+                <ArrowLeft className="h-6 w-6 text-text" />
+              </button>
+              <Database className="h-7 w-7 text-primary" />
               Memory Bank
             </h1>
-            <p className="mt-1 text-sm text-gray-500 max-w-2xl">
-              Review what the extension has learned, surface high-value persona memories,
-              and keep low-signal memories from cluttering retrieval.
+            <p className="mt-2 text-sm font-medium text-text-muted max-w-2xl pl-[44px]">
+              Review saved contexts, surface high-value persona details,
+              and curate information for precision retrieval.
             </p>
           </div>
-          <div className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-xs text-gray-500">
-            <SlidersHorizontal className="h-4 w-4 text-gray-400" />
+          <div className="flex items-center gap-2 rounded-md border border-border bg-surface px-4 py-2.5 text-xs font-semibold text-text-muted shadow-sm">
+            <SlidersHorizontal className="h-4 w-4 text-text-muted" />
             {searchResults
-              ? `${filteredMemories.length} filtered semantic results`
-              : `${filteredMemories.length} memories in this view`}
+              ? `${filteredMemories.length} semantic results`
+              : `${filteredMemories.length} memories in view`}
           </div>
         </div>
 
-        <div className="mb-6 grid gap-3 md:grid-cols-5">
-          <SummaryCard label="Active" value={metrics.active} hint="Currently retrievable" icon={<Brain className="h-4 w-4" />} />
-          <SummaryCard label="Archived" value={metrics.archived} hint="Kept, but out of prompt" icon={<Archive className="h-4 w-4" />} />
-          <SummaryCard label="Persona" value={metrics.persona} hint="Always-on identity/style" icon={<Sparkles className="h-4 w-4" />} />
-          <SummaryCard label="High Priority" value={metrics.highPriority} hint="Importance 80%+" icon={<Shield className="h-4 w-4" />} />
-          <SummaryCard label="At Risk" value={metrics.atRisk} hint="Forget score 60%+" icon={<Clock3 className="h-4 w-4" />} />
-        </div>
-
-        <div className="mb-5 rounded-2xl border border-gray-200 bg-white p-4">
-          <form onSubmit={handleSearch} className="mb-4 flex flex-col gap-3 md:flex-row">
+        <div className="mb-6 rounded-md border border-border bg-surface p-5 shadow-sm">
+          <form onSubmit={handleSearch} className="mb-5 flex flex-col gap-3 md:flex-row">
             <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
               <input
                 type="text"
                 value={searchQuery}
@@ -276,14 +237,14 @@ function MemoryList() {
                   setSearchQuery(e.target.value);
                   if (!e.target.value) setSearchResults(null);
                 }}
-                placeholder="Semantic search across memories, experiences, preferences, and persona..."
-                className="input w-full pl-10"
+                placeholder="Semantic search across memories, experiences, and persona..."
+                className="input w-full pl-10 h-11"
               />
             </div>
             <button
               type="submit"
               disabled={searching}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-5 h-11 text-sm font-semibold text-white hover:bg-primary-hover disabled:opacity-50 transition-colors shadow-sm"
             >
               <Search className="h-4 w-4" />
               {searching ? "Searching…" : "Search"}
@@ -296,7 +257,7 @@ function MemoryList() {
                   setSearchQuery("");
                   setSortBy("recent");
                 }}
-                className="rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-50"
+                className="rounded-md border border-border px-5 h-11 text-sm font-semibold text-text hover:bg-bg transition-colors shadow-sm"
               >
                 Clear
               </button>
@@ -304,22 +265,22 @@ function MemoryList() {
           </form>
 
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex gap-1 rounded-xl border border-gray-200 bg-gray-50 p-1">
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex gap-1 rounded-md border border-border bg-bg p-1 shadow-inner">
                 {(["active", "archived"] as const).map((status) => (
                   <button
                     key={status}
                     onClick={() => setStatusFilter(status)}
                     className={cn(
-                      "rounded-lg px-4 py-2 text-sm font-medium capitalize transition-colors",
+                      "rounded px-4 py-1.5 text-xs font-bold uppercase tracking-wider transition-all",
                       statusFilter === status
-                        ? "bg-gray-900 text-white"
-                        : "text-gray-600 hover:bg-white"
+                        ? "bg-surface text-text shadow-sm"
+                        : "text-text-muted hover:text-text"
                     )}
                   >
                     {status}{" "}
-                    <span className="text-xs opacity-75">
-                      ({status === "active" ? metrics.active : metrics.archived})
+                    <span className="opacity-60 ml-1">
+                      ({status === "active" ? activeCount : archivedCount})
                     </span>
                   </button>
                 ))}
@@ -331,10 +292,10 @@ function MemoryList() {
                     key={category}
                     onClick={() => setCategoryFilter(category)}
                     className={cn(
-                      "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                      "rounded-md border px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider transition-colors",
                       categoryFilter === category
-                        ? "border-gray-900 bg-gray-900 text-white"
-                        : "border-gray-200 bg-white text-gray-600 hover:border-gray-300"
+                        ? "border-primary bg-primary text-white"
+                        : "border-border bg-surface text-text-muted hover:border-primary hover:text-text"
                     )}
                   >
                     {CATEGORY_LABELS[category]}
@@ -344,11 +305,11 @@ function MemoryList() {
             </div>
 
             <div className="flex items-center gap-2 self-start lg:self-auto">
-              <BarChart3 className="h-4 w-4 text-gray-400" />
+              <BarChart3 className="h-4 w-4 text-text-muted" />
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as SortOption)}
-                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700"
+                className="rounded-md border border-border bg-surface px-3 py-2 text-xs font-semibold text-text shadow-sm outline-none focus:ring-1 focus:ring-primary"
               >
                 {(
                   searchResults
@@ -364,22 +325,21 @@ function MemoryList() {
           </div>
 
           {searchResults && (
-            <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
-              {searchResults.length} semantic matches for{" "}
-              <span className="font-semibold">"{searchQuery}"</span>. Filters and sort still apply.
+            <div className="mt-5 rounded-md border border-primary bg-primary px-4 py-3 text-sm font-medium text-white shadow-sm">
+              {searchResults.length} semantic matches for "{searchQuery}". Filters and sort apply.
             </div>
           )}
         </div>
 
-        <div className="space-y-3">
+        <div className="space-y-4">
           {loading ? (
-            <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center text-gray-400">
+            <div className="rounded-md border border-border bg-surface p-10 text-center font-semibold text-text-muted uppercase tracking-widest text-xs">
               Loading memories…
             </div>
           ) : filteredMemories.length === 0 ? (
-            <div className="rounded-3xl border border-dashed border-gray-300 bg-white/70 py-20 text-center text-gray-400">
-              <Brain className="mx-auto mb-3 h-8 w-8 text-gray-200" />
-              <p className="text-sm">No memories match this view</p>
+            <div className="rounded-md border border-dashed border-border bg-transparent py-24 text-center text-text-muted">
+              <Database className="mx-auto mb-4 h-8 w-8 text-neutral-300" />
+              <p className="text-xs font-bold uppercase tracking-widest">No memories match this view</p>
             </div>
           ) : (
             filteredMemories.map((memory) => {
@@ -393,31 +353,31 @@ function MemoryList() {
                 <div
                   key={memoryId}
                   className={cn(
-                    "rounded-3xl border bg-white p-5 shadow-sm transition-colors",
+                    "rounded-md border bg-surface p-6 shadow-sm transition-all duration-200",
                     isPersona
-                      ? "border-gray-300 bg-gray-50"
-                      : "border-gray-200 hover:border-gray-300"
+                      ? "border-primary"
+                      : "border-border hover:border-primary hover:shadow-md"
                   )}
                 >
                   {isEditing ? (
-                    <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-4">
                       <textarea
                         value={editText}
                         onChange={(e) => setEditText(e.target.value)}
                         rows={4}
-                        className="input resize-none text-sm"
+                        className="input resize-none text-sm font-medium leading-relaxed"
                         autoFocus
                       />
                       <div className="flex flex-wrap gap-2">
                         <button
                           onClick={() => saveEdit(memory._id as Id<"memories">)}
-                          className="inline-flex items-center gap-1 rounded-xl bg-gray-900 px-3 py-2 text-xs font-medium text-white"
+                          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-xs font-bold uppercase tracking-wide text-white transition-colors hover:bg-primary-hover"
                         >
                           <Check className="h-3.5 w-3.5" /> Save
                         </button>
                         <button
                           onClick={() => setEditingId(null)}
-                          className="inline-flex items-center gap-1 rounded-xl border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600"
+                          className="inline-flex items-center gap-1.5 rounded-md border border-border px-4 py-2 text-xs font-bold uppercase tracking-wide text-text transition-colors hover:bg-bg"
                         >
                           <X className="h-3.5 w-3.5" /> Cancel
                         </button>
@@ -425,81 +385,63 @@ function MemoryList() {
                     </div>
                   ) : (
                     <>
-                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
                         <div className="min-w-0 flex-1">
-                          <div className="mb-3 flex flex-wrap items-center gap-2">
+                          <div className="mb-4 flex flex-wrap items-center gap-2">
                             <span
                               className={cn(
-                                "rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em]",
+                                "rounded px-2 py-1 text-[10px] font-extrabold uppercase tracking-widest",
                                 isPersona
-                                  ? "bg-gray-900 text-white"
-                                  : category === "work"
-                                    ? "bg-gray-100 text-gray-700"
-                                    : category === "social"
-                                      ? "bg-gray-100 text-gray-700"
-                                      : category === "personal"
-                                        ? "bg-gray-100 text-gray-700"
-                                        : "bg-gray-100 text-gray-600"
+                                  ? "bg-primary text-white"
+                                  : "bg-neutral-100 text-neutral-600"
                               )}
                             >
                               {category ?? (memory.platform || "uncategorized")}
                             </span>
-                            <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-medium text-gray-600">
+                            <span className="rounded border border-border bg-surface px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-text-muted">
                               {memory.status}
                             </span>
                             {typeof memory.score === "number" && (
-                              <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-medium text-gray-700">
+                              <span className="rounded bg-bg px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-text">
                                 {Math.round(memory.score * 100)}% match
                               </span>
                             )}
                           </div>
 
-                          <p className="text-[15px] leading-7 text-gray-900">{memory.text}</p>
+                          <p className="text-[15px] font-medium leading-relaxed text-text">{memory.text}</p>
 
-                          <div className="mt-4 flex flex-wrap items-center gap-2">
+                          <div className="mt-5 flex flex-wrap items-center gap-2">
                             {typeof memory.importance === "number" && (
-                              <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-700">
-                                importance {formatPercent(memory.importance)}
+                              <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wide mr-2">
+                                IMP {formatPercent(memory.importance)}
                               </span>
                             )}
                             {typeof memory.confidence === "number" && (
-                              <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-700">
-                                confidence {formatPercent(memory.confidence)}
+                              <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wide mr-2">
+                                CONF {formatPercent(memory.confidence)}
                               </span>
                             )}
                             {typeof memory.mentions === "number" && (
-                              <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-700">
-                                reinforced {memory.mentions}x
+                              <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wide mr-2">
+                                REINF {memory.mentions}x
                               </span>
                             )}
                             {typeof memory.forgetScore === "number" && (
-                              <span
-                                className={cn(
-                                  "rounded-full px-2.5 py-1 text-xs",
-                                  memory.forgetScore >= 0.6
-                                    ? "bg-gray-200 text-gray-800"
-                                    : "bg-gray-100 text-gray-700"
-                                )}
-                              >
-                                forget risk {formatPercent(memory.forgetScore)}
+                              <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wide mr-2">
+                                RISK {formatPercent(memory.forgetScore)}
                               </span>
                             )}
-                            <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-700">
-                              created {formatRelativeTime(memory.createdAt)}
+                            <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wide mr-2">
+                              {formatRelativeTime(memory.createdAt)}
                             </span>
-                            {memory.lastAccessedAt && (
-                              <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-700">
-                                used {formatRelativeTime(memory.lastAccessedAt)}
-                              </span>
-                            )}
                           </div>
 
                           {memory.tags && memory.tags.length > 0 && (
-                            <div className="mt-3 flex flex-wrap gap-2">
+                            <div className="mt-4 flex flex-wrap gap-2">
                               {memory.tags.map((tag) => (
                                 <span
                                   key={tag}
-                                  className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs text-gray-500"
+                                  className="rounded border border-border bg-bg px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-text-muted"
                                 >
                                   {tag}
                                 </span>
@@ -511,7 +453,7 @@ function MemoryList() {
                         <div className="flex shrink-0 flex-wrap items-center gap-2 lg:justify-end">
                           <button
                             onClick={() => toggleExpanded(memoryId)}
-                            className="inline-flex items-center gap-1 rounded-xl border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-text transition-colors hover:bg-bg shadow-sm"
                           >
                             Details
                             <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-180")} />
@@ -521,75 +463,74 @@ function MemoryList() {
                               setEditingId(memoryId);
                               setEditText(memory.text);
                             }}
-                            className="inline-flex items-center gap-1 rounded-xl border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-text transition-colors hover:bg-bg shadow-sm"
                           >
-                            <Edit2 className="h-3.5 w-3.5" />
+                            <Edit2 className="h-3 w-3" />
                             Edit
                           </button>
                           {memory.status === "active" ? (
                             <button
                               onClick={() => archive(memory._id as Id<"memories">)}
-                              className="inline-flex items-center gap-1 rounded-xl border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-text transition-colors hover:bg-bg shadow-sm"
                             >
-                              <Archive className="h-3.5 w-3.5" />
+                              <Archive className="h-3 w-3" />
                               Archive
                             </button>
                           ) : (
                             <button
                               onClick={() => restore(memory._id as Id<"memories">)}
-                              className="inline-flex items-center gap-1 rounded-xl border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-text transition-colors hover:bg-bg shadow-sm"
                             >
-                              <RotateCcw className="h-3.5 w-3.5" />
+                              <RotateCcw className="h-3 w-3" />
                               Restore
                             </button>
                           )}
                           <button
                             onClick={() => remove({ memoryId: memory._id as Id<"memories"> })}
-                            className="inline-flex items-center gap-1 rounded-xl border border-red-200 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50"
+                            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-text-muted transition-colors hover:border-primary hover:text-primary shadow-sm"
                           >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            Delete
+                            <Trash2 className="h-3 w-3" />
                           </button>
                         </div>
                       </div>
 
                       {isExpanded && (
-                        <div className="mt-4 grid gap-3 rounded-2xl border border-gray-200 bg-gray-50/70 p-4 text-sm text-gray-700 md:grid-cols-2 xl:grid-cols-4">
+                        <div className="mt-5 grid gap-4 border-t border-border pt-5 text-sm text-text md:grid-cols-2 xl:grid-cols-4">
                           <div>
-                            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-500">
+                            <div className="text-[10px] font-extrabold uppercase tracking-widest text-text-muted">
                               Access
                             </div>
-                            <div className="mt-1 text-sm text-gray-900">
+                            <div className="mt-1 font-semibold">
                               {memory.accessCount ?? 0} uses
                             </div>
                           </div>
                           <div>
-                            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-500">
+                            <div className="text-[10px] font-extrabold uppercase tracking-widest text-text-muted">
                               Updated
                             </div>
-                            <div className="mt-1 text-sm text-gray-900">
+                            <div className="mt-1 font-semibold">
                               {formatRelativeTime(memory.updatedAt ?? memory.createdAt)}
                             </div>
                           </div>
                           <div>
-                            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-500">
+                            <div className="text-[10px] font-extrabold uppercase tracking-widest text-text-muted">
                               Retrieval class
                             </div>
-                            <div className="mt-1 text-sm text-gray-900">
+                            <div className="mt-1 font-semibold">
                               {isPersona ? "Always-on persona" : category ? `${category} memory` : "Unclassified"}
                             </div>
                           </div>
                           <div>
-                            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-500">
+                            <div className="text-[10px] font-extrabold uppercase tracking-widest text-text-muted">
                               Source
                             </div>
-                            <div className="mt-1 text-sm text-gray-900">
+                            <div className="mt-1 font-semibold">
                               {memory.sourceUrl ? (
                                 <a
                                   href={memory.sourceUrl}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="inline-flex items-center gap-1 text-gray-800 hover:underline"
+                                  className="inline-flex items-center gap-1.5 hover:underline"
                                 >
                                   <LinkIcon className="h-3.5 w-3.5" />
                                   Open source
@@ -617,11 +558,11 @@ export function App() {
   return (
     <AppProviders>
       <AuthLoading>
-        <div className="flex min-h-screen items-center justify-center text-gray-400">Loading…</div>
+        <div className="flex min-h-screen items-center justify-center text-text font-semibold text-sm uppercase tracking-widest">Loading…</div>
       </AuthLoading>
       <Unauthenticated>
-        <div className="flex min-h-screen items-center justify-center">
-          <div className="w-full max-w-sm">
+        <div className="flex min-h-screen items-center justify-center bg-bg">
+          <div className="w-full max-w-md">
             <AuthScreen />
           </div>
         </div>

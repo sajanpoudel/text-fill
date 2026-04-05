@@ -24,9 +24,6 @@ const DOUBLE_CLICK_MS = 280;
 const BUTTON_SIZE = 28;
 
 function getPreferredPlacement(_field: Element): Placement {
-  // Always anchor to the top-right corner of the field (inside).
-  // Negative mainAxis offset in the middleware pushes the button down into the field,
-  // matching the reference extension's: top = rect.top + 6, left = rect.right - 32.
   return "top-end";
 }
 
@@ -106,9 +103,6 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
           strategy: "fixed",
           placement,
           middleware: [
-            // Negative mainAxis pushes the button DOWN from above the field's top edge
-            // into the field's top-right corner — mirrors the reference extension's
-            // positioning: top = field.top + 6, left = field.right - 32.
             offset({ mainAxis: -(BUTTON_SIZE + 6), crossAxis: -4 }),
             flip({
               padding: 8,
@@ -127,9 +121,6 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
           return;
         }
 
-        // floating-ui's referenceHidden strategy triggers incorrectly on sites
-        // like LinkedIn where fields are inside overflow containers (modals/dialogs)
-        // even when the field is clearly visible. Use a direct viewport check instead.
         const rect = reference.getBoundingClientRect();
         const inViewport =
           rect.bottom > 0 &&
@@ -168,8 +159,6 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
     };
   }, [field, showModal]);
 
-  // Shared generate handler — used by click, double-click, keyboard shortcut, and modal.
-  // Always inserts directly into the field without a preview step.
   const handleGenerate = useCallback(async (opts: {
     instruction: string;
     pageContext?: string;
@@ -207,7 +196,6 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
     }
   }, [field, platform, showToast]);
 
-  // Listen for Alt+Shift+G quick-generate custom event dispatched by App.tsx
   useEffect(() => {
     const handler = () => {
       if (!loading) void handleGenerate({ instruction: "" });
@@ -226,10 +214,8 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
       clickCount.current = 0;
 
       if (count >= 2) {
-        // Double-click: generate and insert directly (no modal)
         void handleGenerate({ instruction: "" });
       } else {
-        // Single click: open modal for optional instruction + tone/domain settings
         setShowModal(true);
       }
     }, DOUBLE_CLICK_MS);
@@ -246,18 +232,18 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
     width: BUTTON_SIZE,
     height: BUTTON_SIZE,
     padding: 0,
-    border: `1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.1)"}`,
+    border: `1px solid ${isDark ? "#333333" : "#e5e5e5"}`,
     borderRadius: "50%",
-    background: isDark ? "rgba(12,12,12,0.97)" : "rgba(255,255,255,0.97)",
+    background: isDark ? "#000000" : "#ffffff",
     cursor: loading ? "wait" : "pointer",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     boxShadow: isDark
-      ? "0 1px 4px rgba(0,0,0,0.5), 0 0 0 0.5px rgba(255,255,255,0.05)"
-      : "0 1px 4px rgba(0,0,0,0.10), 0 0 0 0.5px rgba(0,0,0,0.06)",
+      ? "0 2px 8px rgba(0,0,0,0.6)"
+      : "0 2px 8px rgba(0,0,0,0.15)",
     overflow: "hidden",
-    transition: "transform 0.12s ease, opacity 0.12s ease",
+    transition: "transform 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease",
     pointerEvents: isVisible ? "auto" : "none",
     opacity: isVisible ? 1 : 0,
   };
@@ -276,15 +262,21 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
           title="Click: generate · Double-click: instant insert · Alt+Shift+G: quick generate"
           onMouseEnter={(e) => {
             e.currentTarget.style.transform = "scale(1.1)";
+            e.currentTarget.style.boxShadow = isDark
+              ? "0 4px 12px rgba(0,0,0,0.8)"
+              : "0 4px 12px rgba(0,0,0,0.2)";
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.transform = "scale(1)";
+            e.currentTarget.style.boxShadow = isDark
+              ? "0 2px 8px rgba(0,0,0,0.6)"
+              : "0 2px 8px rgba(0,0,0,0.15)";
           }}
         >
           {!logoBroken ? (
             <img
               src={logoUrl}
-              alt="Text Fill"
+              alt="CheatResume"
               onError={() => setLogoBroken(true)}
               style={{
                 width: BUTTON_SIZE,
@@ -305,12 +297,12 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
                 borderRadius: "50%",
                 fontSize: 11,
                 lineHeight: 1,
-                fontWeight: 700,
-                color: isDark ? "#f0f0f0" : "#0a0a0a",
+                fontWeight: 800,
+                color: isDark ? "#ffffff" : "#000000",
                 fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
               }}
             >
-              TF
+              CR
             </span>
           )}
 
@@ -320,14 +312,14 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
               top: 0, left: 0,
               width: BUTTON_SIZE, height: BUTTON_SIZE,
               borderRadius: "50%",
-              background: isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.55)",
+              background: isDark ? "rgba(0,0,0,0.7)" : "rgba(255,255,255,0.7)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
             }}>
               <svg
-                style={{ width: 16, height: 16, color: "white" }}
-                viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                style={{ width: 14, height: 14, color: isDark ? "#fff" : "#000" }}
+                viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
               >
                 <path
                   d="M21 12a9 9 0 1 1-6.219-8.56"
@@ -343,12 +335,12 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
               top: 0, left: 0,
               width: BUTTON_SIZE, height: BUTTON_SIZE,
               borderRadius: "50%",
-              background: "rgba(22,163,74,0.9)",
+              background: isDark ? "#ffffff" : "#000000",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
             }}>
-              <svg style={{ width: 16, height: 16, color: "white" }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <svg style={{ width: 14, height: 14, color: isDark ? "#000" : "#fff" }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
                 <polyline points="20 6 9 17 4 12" />
               </svg>
             </div>
@@ -358,19 +350,19 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
             <div style={{
               position: "absolute",
               bottom: -2, right: -2,
-              minWidth: 9, height: 9,
-              background: isDark ? "#f0f0f0" : "#0a0a0a",
-              border: "2px solid #fff",
-              borderRadius: 5,
+              minWidth: 10, height: 10,
+              background: isDark ? "#ffffff" : "#000000",
+              border: `2px solid ${isDark ? "#000" : "#fff"}`,
+              borderRadius: 6,
               pointerEvents: "none",
               zIndex: 1,
               fontSize: 7,
-              fontWeight: 700,
-              color: isDark ? "#0a0a0a" : "#fff",
+              fontWeight: 800,
+              color: isDark ? "#1c1917" : "#ffffff",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              padding: "0 1px",
+              padding: "0 2px",
               boxSizing: "border-box",
             }}>
               {activeContextCount > 1 ? String(activeContextCount) : ""}
@@ -393,7 +385,6 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
         />
       )}
 
-      {/* Keyframe for spin animation */}
       <style>{`@keyframes tfa-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </>
   );

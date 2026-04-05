@@ -48,7 +48,7 @@ export async function saveContexts(list: CapturedContext[]): Promise<void> {
   });
 }
 
-// ── Page text extraction (mirrors original extractCapturedPageText) ───────────
+// ── Page text extraction ──────────────────────────────────────────────────────
 
 function extractPageText(): string {
   const main =
@@ -123,18 +123,19 @@ function ContextPanel({ contexts, dark, onClose, onAdd, onToggle, onDelete, onDe
     };
   }, [onClose, fabRef]);
 
-  const bg = dark ? "#1c1c1e" : "#ffffff";
-  const borderColor = dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)";
-  const titleColor = dark ? "#f0f0f0" : "#111";
-  const addBtnBg = dark ? "rgba(96,165,250,0.15)" : "#eff6ff";
-  const addBtnColor = dark ? "#60a5fa" : "#1d4ed8";
-  const rowHoverBg = dark ? "rgba(255,255,255,0.05)" : "#f9f9f9";
-  const itemTitleColor = dark ? "#e0e0e0" : "#111";
-  const metaColor = dark ? "#666" : "#aaa";
-  const avatarBg = dark ? "#3a3a3c" : "#e4e4e7";
-  const avatarColor = dark ? "#aaa" : "#555";
-  const footerBorder = dark ? "rgba(255,255,255,0.07)" : "#f0f0f0";
-  const emptyColor = dark ? "#555" : "#aaa";
+  const bg = dark ? "#111111" : "#ffffff";
+  const borderColor = dark ? "#333333" : "#e5e5e5";
+  const titleColor = dark ? "#ffffff" : "#000000";
+  const addBtnBg = dark ? "#ffffff" : "#000000";
+  const addBtnColor = dark ? "#000000" : "#ffffff";
+  const addBtnHover = dark ? "#cccccc" : "#333333";
+  const rowHoverBg = dark ? "rgba(255,255,255,0.08)" : "#f9f9f9";
+  const itemTitleColor = dark ? "#ffffff" : "#000000";
+  const metaColor = dark ? "#888888" : "#666666";
+  const avatarBg = dark ? "#222222" : "#f0f0f0";
+  const avatarColor = dark ? "#ffffff" : "#000000";
+  const footerBorder = dark ? "#333333" : "#e5e5e5";
+  const emptyColor = dark ? "#888888" : "#666666";
 
   return (
     <div
@@ -148,8 +149,8 @@ function ContextPanel({ contexts, dark, onClose, onAdd, onToggle, onDelete, onDe
         maxHeight: 360,
         background: bg,
         border: `1px solid ${borderColor}`,
-        borderRadius: 14,
-        boxShadow: "0 4px 6px rgba(0,0,0,0.05), 0 12px 32px rgba(0,0,0,0.18)",
+        borderRadius: 8,
+        boxShadow: dark ? "0 8px 30px rgba(0,0,0,0.6), 0 0 0 1px #333" : "0 8px 30px rgba(0,0,0,0.15), 0 0 0 1px #e5e5e5",
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
@@ -163,11 +164,11 @@ function ContextPanel({ contexts, dark, onClose, onAdd, onToggle, onDelete, onDe
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        padding: "11px 12px 10px",
-        borderBottom: `1px solid ${dark ? "rgba(255,255,255,0.07)" : "#f0f0f0"}`,
+        padding: "12px 14px",
+        borderBottom: `1px solid ${borderColor}`,
         flexShrink: 0,
       }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: titleColor, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+        <span style={{ fontSize: 12, fontWeight: 800, color: titleColor, textTransform: "uppercase", letterSpacing: "0.5px" }}>
           Context Library
         </span>
         <button
@@ -176,26 +177,27 @@ function ContextPanel({ contexts, dark, onClose, onAdd, onToggle, onDelete, onDe
           onPointerDown={swallowPointer}
           onMouseDown={swallowPointer}
           style={{
-            fontSize: 12,
-            fontWeight: 600,
+            fontSize: 11,
+            fontWeight: 700,
             color: addBtnColor,
             background: addBtnBg,
             border: "none",
-            borderRadius: 6,
-            padding: "4px 9px",
+            borderRadius: 4,
+            padding: "5px 10px",
             cursor: "pointer",
+            transition: "background 0.15s",
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = dark ? "rgba(96,165,250,0.25)" : "#dbeafe")}
+          onMouseEnter={(e) => (e.currentTarget.style.background = addBtnHover)}
           onMouseLeave={(e) => (e.currentTarget.style.background = addBtnBg)}
         >
-          + Add this page
+          + Add page
         </button>
       </div>
 
       {/* Context list */}
       <div style={{ flex: 1, overflowY: "auto", padding: "4px 0" }}>
         {contexts.length === 0 ? (
-          <div style={{ padding: "20px 14px", fontSize: 12.5, color: emptyColor, textAlign: "center", lineHeight: 1.5 }}>
+          <div style={{ padding: "24px 16px", fontSize: 13, fontWeight: 500, color: emptyColor, textAlign: "center", lineHeight: 1.5 }}>
             No contexts yet — browse to a page and click "+".
           </div>
         ) : (
@@ -205,9 +207,9 @@ function ContextPanel({ contexts, dark, onClose, onAdd, onToggle, onDelete, onDe
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: 8,
-                padding: "7px 12px",
-                opacity: ctx.active ? 1 : 0.45,
+                gap: 10,
+                padding: "8px 14px",
+                opacity: ctx.active ? 1 : 0.5,
               }}
               onMouseEnter={(e) => (e.currentTarget.style.background = rowHoverBg)}
               onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
@@ -217,26 +219,26 @@ function ContextPanel({ contexts, dark, onClose, onAdd, onToggle, onDelete, onDe
                 checked={ctx.active}
                 onChange={() => onToggle(ctx.id)}
                 title={ctx.active ? "Deactivate" : "Activate"}
-                style={{ flexShrink: 0, width: 14, height: 14, cursor: "pointer", accentColor: "#3b82f6", margin: 0 }}
+                style={{ flexShrink: 0, width: 14, height: 14, cursor: "pointer", accentColor: dark ? "#ffffff" : "#000000", margin: 0 }}
               />
               <span style={{
                 flexShrink: 0,
-                width: 22, height: 22,
-                borderRadius: 6,
+                width: 24, height: 24,
+                borderRadius: 4,
                 background: avatarBg,
-                fontSize: 11, fontWeight: 700, color: avatarColor,
+                fontSize: 12, fontWeight: 800, color: avatarColor,
                 display: "flex", alignItems: "center", justifyContent: "center",
               }}>
                 {(ctx.hostname || ctx.title || "?").charAt(0).toUpperCase()}
               </span>
-              <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }}>
+              <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
                 <span
                   title={ctx.url}
-                  style={{ fontSize: 12.5, fontWeight: 500, color: itemTitleColor, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                  style={{ fontSize: 13, fontWeight: 600, color: itemTitleColor, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
                 >
                   {(ctx.title || ctx.hostname || ctx.url).slice(0, 40)}
                 </span>
-                <span style={{ fontSize: 11, color: metaColor, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                <span style={{ fontSize: 11, fontWeight: 500, color: metaColor, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                   {ctx.hostname} · {relativeTime(ctx.time)}
                 </span>
               </div>
@@ -246,11 +248,11 @@ function ContextPanel({ contexts, dark, onClose, onAdd, onToggle, onDelete, onDe
                 onPointerDown={swallowPointer}
                 onMouseDown={swallowPointer}
                 title="Remove"
-                style={{ flexShrink: 0, background: "none", border: "none", color: "#ccc", cursor: "pointer", padding: "3px 4px", borderRadius: 4, display: "flex", alignItems: "center" }}
-                onMouseEnter={(e) => { e.currentTarget.style.color = "#dc2626"; e.currentTarget.style.background = "#fee2e2"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.color = "#ccc"; e.currentTarget.style.background = "none"; }}
+                style={{ flexShrink: 0, background: "none", border: "none", color: metaColor, cursor: "pointer", padding: "4px", borderRadius: 4, display: "flex", alignItems: "center", transition: "color 0.15s, background 0.15s" }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = dark ? "#000" : "#fff"; e.currentTarget.style.background = dark ? "#fff" : "#000"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = metaColor; e.currentTarget.style.background = "none"; }}
               >
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
               </button>
@@ -261,14 +263,14 @@ function ContextPanel({ contexts, dark, onClose, onAdd, onToggle, onDelete, onDe
 
       {/* Footer */}
       {contexts.length > 0 && (
-        <div style={{ borderTop: `1px solid ${footerBorder}`, padding: "8px 12px", flexShrink: 0 }}>
+        <div style={{ borderTop: `1px solid ${footerBorder}`, padding: "10px 14px", flexShrink: 0 }}>
           <button
             type="button"
             onClick={onDeleteAll}
             onPointerDown={swallowPointer}
             onMouseDown={swallowPointer}
-            style={{ fontSize: 12, color: metaColor, background: "none", border: "none", cursor: "pointer", padding: 0 }}
-            onMouseEnter={(e) => (e.currentTarget.style.color = "#dc2626")}
+            style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: metaColor, background: "none", border: "none", cursor: "pointer", padding: 0 }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = itemTitleColor)}
             onMouseLeave={(e) => (e.currentTarget.style.color = metaColor)}
           >
             Delete all
@@ -295,8 +297,6 @@ export function ContextFAB({ visible, contexts, onContextsChange, showToast }: F
   const fabRef = useRef<HTMLButtonElement>(null);
   const logoUrl = (() => { try { return chrome.runtime.getURL("logo.png"); } catch { return ""; } })();
   const dark = isPageDark();
-
-  const activeCount = contexts.filter((c) => c.active).length;
 
   const persist = useCallback(async (next: CapturedContext[]) => {
     await saveContexts(next);
@@ -368,20 +368,20 @@ export function ContextFAB({ visible, contexts, onContextsChange, showToast }: F
           width: 32,
           height: 32,
           padding: 0,
-          border: `1px solid ${dark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.08)"}`,
+          border: `1px solid ${dark ? "#333" : "#e5e5e5"}`,
           borderRadius: "50%",
-          background: dark ? "rgba(28,28,30,0.96)" : "rgba(255,255,255,0.96)",
+          background: dark ? "#000" : "#fff",
           cursor: adding ? "wait" : "pointer",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          boxShadow: "0 2px 10px rgba(0,0,0,0.22)",
+          boxShadow: dark ? "0 2px 10px rgba(0,0,0,0.5)" : "0 2px 10px rgba(0,0,0,0.1)",
           overflow: "visible",
           transition: "transform 0.15s ease, box-shadow 0.15s ease",
           pointerEvents: "auto",
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.1)"; e.currentTarget.style.boxShadow = "0 4px 16px rgba(0,0,0,0.3)"; }}
-        onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = "0 2px 10px rgba(0,0,0,0.22)"; }}
+        onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.1)"; e.currentTarget.style.boxShadow = dark ? "0 4px 16px rgba(0,0,0,0.6)" : "0 4px 16px rgba(0,0,0,0.15)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = dark ? "0 2px 10px rgba(0,0,0,0.5)" : "0 2px 10px rgba(0,0,0,0.1)"; }}
       >
         {!logoBroken ? (
           <img
@@ -395,8 +395,8 @@ export function ContextFAB({ visible, contexts, onContextsChange, showToast }: F
             style={{
               fontSize: 14,
               lineHeight: 1,
-              fontWeight: 700,
-              color: dark ? "#60a5fa" : "#2563eb",
+              fontWeight: 800,
+              color: dark ? "#fff" : "#000",
               fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
             }}
           >
@@ -409,10 +409,10 @@ export function ContextFAB({ visible, contexts, onContextsChange, showToast }: F
             position: "absolute",
             top: -4, right: -4,
             minWidth: 16, height: 16,
-            background: "#3b82f6",
-            border: "2px solid #fff",
+            background: dark ? "#fff" : "#000",
+            border: `2px solid ${dark ? "#000" : "#fff"}`,
             borderRadius: 8,
-            fontSize: 9, fontWeight: 700, color: "#fff",
+            fontSize: 9, fontWeight: 800, color: dark ? "#000" : "#fff",
             display: "flex", alignItems: "center", justifyContent: "center",
             padding: "0 3px",
             boxSizing: "border-box",

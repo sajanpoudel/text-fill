@@ -56,24 +56,24 @@ export function AuthScreen() {
   }
 
   return (
-    <div className="flex flex-col h-full min-h-[480px] bg-white p-6">
+    <div className="flex flex-col h-full min-h-[520px] bg-white p-8 font-sans tracking-tight">
       {/* Logo / header */}
-      <div className="mb-6 text-center">
-        <div className="text-2xl font-bold text-gray-900">CheatResume</div>
-        <div className="text-sm text-gray-500 mt-1">AI Writing Assistant</div>
+      <div className="mb-10 text-center">
+        <h1 className="text-3xl font-bold text-black tracking-tighter">CheatResume</h1>
+        <p className="text-sm text-text-muted mt-2 font-medium tracking-wide">AI WRITING ASSISTANT</p>
       </div>
 
       {/* Tab switcher */}
-      <div className="flex border border-gray-200 rounded-lg mb-6 overflow-hidden">
+      <div className="flex border border-neutral-300 rounded-md mb-8 overflow-hidden bg-white shadow-sm p-1 gap-1">
         {(["signIn", "signUp", "otp"] as const).map((f) => (
           <button
             key={f}
             onClick={() => { setFlow(f); setStep("email"); setError(null); }}
             className={cn(
-              "flex-1 py-2 text-sm font-medium transition-colors",
+              "flex-1 py-2 text-sm font-semibold transition-all rounded-sm",
               flow === f
-                ? "bg-gray-900 text-white"
-                : "text-gray-600 hover:bg-gray-50"
+                ? "bg-black text-white shadow"
+                : "text-text-muted hover:text-black hover:bg-neutral-100"
             )}
           >
             {f === "signIn" ? "Sign In" : f === "signUp" ? "Sign Up" : "Magic Code"}
@@ -85,29 +85,29 @@ export function AuthScreen() {
       {flow === "otp" && (
         <form
           onSubmit={step === "email" ? handleOtpEmailSubmit : handleOtpCodeSubmit}
-          className="flex flex-col gap-3"
+          className="flex flex-col gap-4"
         >
           {step === "email" ? (
             <>
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-neutral-600 font-medium">
                 We'll email you a 6-digit code to sign in.
               </p>
               <input
                 type="email"
-                placeholder="Email"
+                placeholder="Email address"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
                 className="input"
               />
-              <button type="submit" disabled={loading} className="btn-primary">
+              <button type="submit" disabled={loading} className="btn-primary mt-2">
                 {loading ? "Sending…" : "Send Code"}
               </button>
             </>
           ) : (
             <>
-              <p className="text-sm text-gray-600">
-                Enter the 6-digit code sent to <strong>{email}</strong>
+              <p className="text-sm text-neutral-600 font-medium">
+                Enter the 6-digit code sent to <strong className="text-black">{email}</strong>
               </p>
               <input
                 type="text"
@@ -118,18 +118,18 @@ export function AuthScreen() {
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 required
-                className="input text-center tracking-widest text-lg"
+                className="input text-center tracking-[0.5em] text-xl font-bold"
                 autoFocus
               />
-              <button type="submit" disabled={loading} className="btn-primary">
+              <button type="submit" disabled={loading} className="btn-primary mt-2">
                 {loading ? "Verifying…" : "Verify Code"}
               </button>
               <button
                 type="button"
                 onClick={() => setStep("email")}
-                className="text-sm text-gray-500 hover:text-gray-700"
+                className="text-sm text-text-muted hover:text-black font-medium mt-2"
               >
-                ← Back
+                ← Back to email
               </button>
             </>
           )}
@@ -138,10 +138,10 @@ export function AuthScreen() {
 
       {/* Password flow (signIn / signUp) */}
       {flow !== "otp" && (
-        <form onSubmit={handlePasswordSubmit} className="flex flex-col gap-3">
+        <form onSubmit={handlePasswordSubmit} className="flex flex-col gap-4">
           <input
             type="email"
-            placeholder="Email"
+            placeholder="Email address"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
@@ -156,7 +156,7 @@ export function AuthScreen() {
             minLength={8}
             className="input"
           />
-          <button type="submit" disabled={loading} className="btn-primary">
+          <button type="submit" disabled={loading} className="btn-primary mt-2">
             {loading
               ? flow === "signIn"
                 ? "Signing in…"
@@ -169,7 +169,9 @@ export function AuthScreen() {
       )}
 
       {error && (
-        <p className="mt-3 text-sm text-red-600 text-center">{error}</p>
+        <div className="mt-4 p-3 bg-neutral-50 border border-neutral-200 rounded-md">
+          <p className="text-sm text-black font-medium text-center">{error}</p>
+        </div>
       )}
     </div>
   );

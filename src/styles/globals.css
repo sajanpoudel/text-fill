@@ -1,24 +1,48 @@
 @import "tailwindcss";
 
+@theme {
+  --color-primary: #991b1b;
+  --color-primary-hover: #b91c1c;
+  --color-bg: #fcfcfb;
+  --color-surface: #ffffff;
+  --color-text: #292524;
+  --color-text-muted: #78716c;
+  --color-border: #e7e5e4;
+  --color-success: #166534;
+  --color-error: #dc2626;
+}
+
+:root {
+  --color-primary: #991b1b;
+  --color-primary-hover: #b91c1c;
+  --color-bg: #fcfcfb;
+  --color-surface: #ffffff;
+  --color-text: #292524;
+  --color-text-muted: #78716c;
+  --color-border: #e7e5e4;
+  --color-success: #166534;
+  --color-error: #dc2626;
+}
+
 @layer components {
   .input {
-    @apply w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900
-           placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300
-           focus:border-indigo-400 transition-colors bg-white;
+    @apply w-full rounded-md border border-border px-3 py-2 text-sm text-text
+           placeholder-text-muted focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary
+           transition-colors bg-surface shadow-sm;
   }
 
   .label {
-    @apply block text-sm font-medium text-gray-700;
+    @apply block text-sm font-medium text-text;
   }
 
   .btn-primary {
-    @apply w-full py-2.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg
-           hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed
-           transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-400;
+    @apply w-full py-2.5 bg-primary text-white text-sm font-semibold rounded-md
+           hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed
+           transition-all focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-1 shadow-sm;
   }
 
   .btn-secondary {
-    @apply w-full py-2.5 border border-gray-200 text-gray-700 text-sm font-medium
-           rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors;
+    @apply w-full py-2.5 border border-border text-text text-sm font-medium
+           rounded-md hover:bg-bg disabled:opacity-50 transition-all shadow-sm;
   }
 }

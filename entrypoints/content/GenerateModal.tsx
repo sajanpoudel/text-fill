@@ -22,7 +22,7 @@ interface Props {
   showToast: (message: string, type?: "success" | "error" | "info") => void;
 }
 
-const MODAL_W = 268;
+const MODAL_W = 280;
 
 function setupFocusProtection(
   instructionInput: HTMLElement,
@@ -178,7 +178,7 @@ function detectFieldMaxLength(field: Element): number | undefined {
 
 const TONE_LABELS: Record<number, string> = {
   1: "Casual",
-  2: "Casual",
+  2: "Informal",
   3: "Balanced",
   4: "Professional",
   5: "Formal",
@@ -198,16 +198,13 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
   const hasContent = getFieldValue(field).trim().length > 10;
 
   // ── Colours ──────────────────────────────────────────────────────────────────
-  const bg       = isDark ? "#111111" : "#ffffff";
-  const border   = isDark ? "#282828" : "#e8e8e8";
-  const text     = isDark ? "#f0f0f0" : "#0a0a0a";
-  const textSub  = isDark ? "#888" : "#6b6b6b";
-  const textMuted = isDark ? "#555" : "#aaa";
-  const inputBg  = isDark ? "#1a1a1a" : "#f7f7f7";
-  const divider  = isDark ? "#222" : "#f0f0f0";
-  const hoverBg  = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)";
-  const btnBg    = isDark ? "#f0f0f0" : "#0a0a0a";
-  const btnText  = isDark ? "#0a0a0a" : "#ffffff";
+  const bg       = isDark ? "#0A0A0A" : "#ffffff";
+  const border   = isDark ? "#333333" : "#e5e5e5";
+  const text     = isDark ? "#ffffff" : "#000000";
+  const textSub  = isDark ? "#888888" : "#666666";
+  const textMuted = isDark ? "#555555" : "#999999";
+  const divider  = isDark ? "#222222" : "#f0f0f0";
+  const hoverBg  = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.04)";
 
   useEffect(() => {
     setTimeout(() => inputRef.current?.focus(), 30);
@@ -247,8 +244,7 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
     };
   }, [field]);
 
-  // Outside click: mousedown bubble phase + contains — avoids capture-phase
-  // interference that was firing onClose() before button clicks could run.
+  // Outside click: mousedown bubble phase + contains
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (modalRef.current && !modalRef.current.contains(e.target as Node)) {
@@ -268,10 +264,10 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
     };
   }, [onClose]);
 
-  // Position (fixed, viewport-relative)
+  // Position
   const viewportW = window.innerWidth;
   const viewportH = window.innerHeight;
-  const MODAL_H_EST = hasContent ? 310 : 272;
+  const MODAL_H_EST = hasContent ? 280 : 230;
   let left = anchorRect.right - MODAL_W;
   let top = anchorRect.bottom + 6;
   if (left < 8) left = 8;
@@ -374,9 +370,9 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
         maxHeight: maxModalH,
         background: bg,
         border: `1px solid ${border}`,
-        borderRadius: 12,
-        boxShadow: `0 4px 24px rgba(0,0,0,${isDark ? "0.5" : "0.12"}), 0 0 0 0.5px ${border}`,
-        fontFamily: `-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif`,
+        borderRadius: 8,
+        boxShadow: `0 8px 30px rgba(0,0,0,${isDark ? "0.6" : "0.15"}), 0 0 0 1px ${border}`,
+        fontFamily: `system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`,
         fontSize: 13,
         overflow: "hidden",
         pointerEvents: "auto",
@@ -384,140 +380,175 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
         WebkitUserSelect: "text",
       }}
     >
-      {/* ── Instruction textarea ── */}
-      <textarea
-        ref={inputRef}
-        value={instruction}
-        rows={2}
-        onChange={(e) => onInstructionChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runAction("generate"); }
-          if (e.key === "Escape") onClose();
-        }}
-        placeholder="Optional instruction… (Enter to generate)"
-        style={{
-          display: "block",
-          width: "100%",
-          boxSizing: "border-box",
-          padding: "11px 12px 10px",
-          fontSize: 13,
-          lineHeight: 1.5,
-          border: "none",
-          borderBottom: `1px solid ${divider}`,
-          background: bg,
-          color: text,
-          resize: "none",
-          outline: "none",
-          fontFamily: "inherit",
-          borderRadius: 0,
-        }}
-      />
-
-      {/* ── Action buttons ── */}
-      <div style={{ padding: "10px 11px 8px", display: "flex", flexDirection: "column", gap: 5 }}>
-        {/* Primary: Generate */}
+      {/* ── Instruction textarea with integrated Send button ── */}
+      <div style={{ position: "relative", borderBottom: `1px solid ${divider}` }}>
+        <textarea
+          ref={inputRef}
+          value={instruction}
+          rows={2}
+          onChange={(e) => onInstructionChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); runAction("generate"); }
+            if (e.key === "Escape") onClose();
+          }}
+          placeholder="Instruction… (Enter to generate)"
+          style={{
+            display: "block",
+            width: "100%",
+            boxSizing: "border-box",
+            padding: "14px 44px 14px 14px",
+            fontSize: 14,
+            fontWeight: 500,
+            lineHeight: 1.5,
+            border: "none",
+            background: "transparent",
+            color: text,
+            resize: "none",
+            outline: "none",
+            fontFamily: "inherit",
+            letterSpacing: "-0.2px",
+          }}
+        />
         <button
           type="button"
           onClick={() => runAction("generate")}
           onMouseDown={stopDown}
           disabled={loading}
           style={{
-            width: "100%",
-            padding: "8px 12px",
-            background: btnBg,
-            color: btnText,
+            position: "absolute",
+            right: 8,
+            bottom: 8,
+            width: 30,
+            height: 30,
+            borderRadius: 4,
+            background: isDark ? "#ffffff" : "#000000",
+            color: isDark ? "#000000" : "#ffffff",
             border: "none",
-            borderRadius: 7,
-            fontSize: 13,
-            fontWeight: 600,
-            fontFamily: "inherit",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
             cursor: loading ? "wait" : "pointer",
-            opacity: loading ? 0.6 : 1,
+            opacity: loading ? 0.5 : 1,
+            transition: "opacity 0.2s",
           }}
         >
-          {loading ? "Generating…" : "Generate"}
+          {loading ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56" style={{ animation: "tfa-spin 0.85s linear infinite", transformOrigin: "center" }} />
+            </svg>
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="19" x2="12" y2="5" />
+              <polyline points="5 12 12 5 19 12" />
+            </svg>
+          )}
         </button>
-
-        {/* Secondary: content actions */}
-        {hasContent && (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5 }}>
-            {(["rewrite", "shorten", "expand"] as const).map((action) => (
-              <button
-                key={action}
-                type="button"
-                onClick={() => runAction(action)}
-                onMouseDown={stopDown}
-                disabled={loading}
-                style={{
-                  padding: "6px 4px",
-                  border: `1px solid ${border}`,
-                  borderRadius: 6,
-                  background: "transparent",
-                  color: textSub,
-                  fontSize: 12,
-                  fontFamily: "inherit",
-                  cursor: loading ? "wait" : "pointer",
-                  opacity: loading ? 0.5 : 1,
-                }}
-              >
-                {action === "rewrite" ? "Rewrite" : action === "shorten" ? "Shorter" : "Expand"}
-            </button>
-            ))}
-          </div>
-        )}
       </div>
 
+      {/* ── Secondary content actions (if existing content) ── */}
+      {hasContent && (
+        <div style={{ padding: "10px 14px 4px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+          {(["rewrite", "shorten", "expand"] as const).map((action) => (
+            <button
+              key={action}
+              type="button"
+              onClick={() => runAction(action)}
+              onMouseDown={stopDown}
+              disabled={loading}
+              style={{
+                padding: "6px 0",
+                border: `1px solid ${border}`,
+                borderRadius: 4,
+                background: "transparent",
+                color: textSub,
+                fontSize: 12,
+                fontWeight: 600,
+                fontFamily: "inherit",
+                cursor: loading ? "wait" : "pointer",
+                opacity: loading ? 0.5 : 1,
+                textAlign: "center",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = hoverBg)}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              {action === "rewrite" ? "Rewrite" : action === "shorten" ? "Shorter" : "Expand"}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* ── Settings: tone + domain ── */}
-      <div style={{ borderTop: `1px solid ${divider}`, padding: "8px 11px 7px" }}>
-        {/* Tone */}
-        <div style={{ marginBottom: 8 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3, userSelect: "none", WebkitUserSelect: "none" }}>
-            <span style={{ fontSize: 11, color: textMuted }}>Tone</span>
-            <span style={{ fontSize: 11, color: textSub, fontWeight: 500 }}>{TONE_LABELS[tone]}</span>
+      <div style={{ padding: hasContent ? "10px 14px 14px" : "14px", display: "flex", flexDirection: "column", gap: 14 }}>
+        {/* Tone Segmented Control */}
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, userSelect: "none" }}>
+            <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: textMuted, letterSpacing: "0.5px" }}>Tone</span>
+            <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: textSub }}>{TONE_LABELS[tone]}</span>
           </div>
-          <input
-            type="range"
-            min={1} max={5} step={1}
-            value={tone}
-            onChange={(e) => setTone(Number(e.target.value))}
-            onMouseDown={(e) => e.stopPropagation()}
-            style={{ display: "block", width: "100%", accentColor: isDark ? "#f0f0f0" : "#0a0a0a", cursor: "pointer" }}
-          />
+          <div style={{ display: "flex", gap: 2 }}>
+            {[1, 2, 3, 4, 5].map((t) => (
+              <button
+                key={t}
+                type="button"
+                onMouseDown={stopDown}
+                onClick={() => setTone(t)}
+                style={{
+                  flex: 1,
+                  height: 24,
+                  border: `1px solid ${border}`,
+                  background: tone === t ? text : "transparent",
+                  color: tone === t ? bg : textMuted,
+                  borderRadius: 2,
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  transition: "background 0.1s, color 0.1s",
+                }}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Domain chips */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-          {DOMAINS.map((d) => (
-            <button
-              key={d}
-              type="button"
-              onPointerDown={stopDown}
-              onMouseDown={stopDown}
-              onClick={() => setDomain(d)}
-              style={{
-                padding: "2px 7px",
-                borderRadius: 10,
-                fontSize: 10.5,
-                fontFamily: "inherit",
-                border: domain === d ? "none" : `1px solid ${border}`,
-                background: domain === d ? (isDark ? "#f0f0f0" : "#0a0a0a") : "transparent",
-                color: domain === d ? (isDark ? "#0a0a0a" : "#ffffff") : textSub,
-                cursor: "pointer",
-                fontWeight: domain === d ? 600 : 400,
-                userSelect: "none",
-                WebkitUserSelect: "none",
-              }}
-            >
-              {d.charAt(0).toUpperCase() + d.slice(1)}
-            </button>
-          ))}
+        <div>
+          <div style={{ marginBottom: 6, fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: textMuted, letterSpacing: "0.5px", userSelect: "none" }}>
+            Domain
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {DOMAINS.map((d) => (
+              <button
+                key={d}
+                type="button"
+                onPointerDown={stopDown}
+                onMouseDown={stopDown}
+                onClick={() => setDomain(d)}
+                style={{
+                  padding: "4px 8px",
+                  borderRadius: 4,
+                  fontSize: 11,
+                  fontFamily: "inherit",
+                  border: domain === d ? "none" : `1px solid ${border}`,
+                  background: domain === d ? (isDark ? "#fff" : "#000") : "transparent",
+                  color: domain === d ? (isDark ? "#000" : "#fff") : textSub,
+                  cursor: "pointer",
+                  fontWeight: 600,
+                  userSelect: "none",
+                  transition: "all 0.1s",
+                }}
+              >
+                {d.charAt(0).toUpperCase() + d.slice(1)}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
       {/* ── Footer ── */}
       <div style={{
         borderTop: `1px solid ${divider}`,
-        padding: "6px 11px",
+        padding: "8px 14px",
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
@@ -527,16 +558,20 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
             type="button"
             onClick={captureContext}
             onMouseDown={stopDown}
-            style={{ background: "none", border: "none", padding: "3px 2px", fontSize: 11.5, color: textMuted, cursor: "pointer", fontFamily: "inherit" }}
+            style={{ background: "none", border: "none", padding: "4px 0", fontSize: 11, fontWeight: 600, color: textSub, cursor: "pointer", fontFamily: "inherit" }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = text)}
+            onMouseLeave={(e) => (e.currentTarget.style.color = textSub)}
           >
-            {activeContextCount > 0 ? `+ Context · ${activeContextCount} active` : "+ Add context"}
+            {activeContextCount > 0 ? `+ Context (${activeContextCount})` : "+ Add context"}
           </button>
         ) : <span />}
         <button
           type="button"
           onClick={openSettings}
           onMouseDown={stopDown}
-          style={{ background: "none", border: "none", padding: "3px 2px", fontSize: 11.5, color: textMuted, cursor: "pointer", fontFamily: "inherit" }}
+          style={{ background: "none", border: "none", padding: "4px 0", fontSize: 11, fontWeight: 600, color: textSub, cursor: "pointer", fontFamily: "inherit" }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = text)}
+          onMouseLeave={(e) => (e.currentTarget.style.color = textSub)}
         >
           Settings
         </button>
@@ -544,10 +579,11 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
 
       {/* ── Error ── */}
       {error && (
-        <div style={{ fontSize: 12, color: "#dc2626", background: "#fff5f5", borderTop: "1px solid #fee2e2", padding: "7px 11px" }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: "#000", background: "#f0f0f0", borderTop: `1px solid ${border}`, padding: "8px 14px" }}>
           {error}
         </div>
       )}
+      <style>{`@keyframes tfa-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </div>,
     mountNode
   );

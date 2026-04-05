@@ -22,21 +22,21 @@ const GEMINI_EMBED_MODELS = ["gemini-embedding-001"];
 
 function Accordion({
   title,
-  dotColor,
+  dotStyle,
   chips,
   open,
   onToggle,
   children,
 }: {
   title: string;
-  dotColor: string;
+  dotStyle: React.CSSProperties;
   chips: string[];
   open: boolean;
   onToggle: () => void;
   children: React.ReactNode;
 }) {
   return (
-    <div style={{ borderTop: "1px solid #f0f0f0" }}>
+    <div style={{ borderTop: "1px solid #e5e5e5" }}>
       <button
         type="button"
         onClick={onToggle}
@@ -45,7 +45,7 @@ function Accordion({
           alignItems: "center",
           justifyContent: "space-between",
           width: "100%",
-          padding: "13px 0",
+          padding: "16px 0",
           border: "none",
           background: "transparent",
           cursor: "pointer",
@@ -53,23 +53,25 @@ function Accordion({
           gap: 8,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
-          <div style={{ width: 9, height: 9, borderRadius: "50%", background: dotColor, flexShrink: 0 }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 14, flex: 1, minWidth: 0 }}>
+          <div style={{ ...dotStyle, width: 10, height: 10, borderRadius: "50%", flexShrink: 0 }} />
           <div>
-            <span style={{ display: "block", fontSize: 14, fontWeight: 600, color: "#222" }}>{title}</span>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+            <span style={{ display: "block", fontSize: 15, fontWeight: 700, color: "var(--color-text)" }}>{title}</span>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
               {chips.map((c) => (
                 <span
                   key={c}
                   style={{
                     fontSize: 11,
-                    fontWeight: 500,
+                    fontWeight: 600,
                     color: "#666",
-                    background: "#f4f4f5",
-                    border: "1px solid #e4e4e7",
-                    borderRadius: 5,
-                    padding: "1px 6px",
+                    background: "#f5f5f5",
+                    border: "1px solid #e5e5e5",
+                    borderRadius: 4,
+                    padding: "2px 8px",
                     whiteSpace: "nowrap",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.5px"
                   }}
                 >
                   {c}
@@ -79,7 +81,7 @@ function Accordion({
           </div>
         </div>
         <svg
-          width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#aaa" strokeWidth="2.5"
+          width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="2.5"
           style={{ flexShrink: 0, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s ease" }}
         >
           <polyline points="6 9 12 15 18 9" />
@@ -87,7 +89,7 @@ function Accordion({
       </button>
 
       {open && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingBottom: 16 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, paddingBottom: 20, paddingTop: 4 }}>
           {children}
         </div>
       )}
@@ -104,17 +106,17 @@ function EyeButton({ visible, onToggle }: { visible: boolean; onToggle: () => vo
       onClick={onToggle}
       style={{
         position: "absolute",
-        right: 2,
+        right: 4,
         top: "50%",
         transform: "translateY(-50%)",
         background: "transparent",
         border: "none",
         padding: 8,
         cursor: "pointer",
-        color: "#aaa",
+        color: "#666",
         display: "flex",
         alignItems: "center",
-        borderRadius: 6,
+        borderRadius: 4,
       }}
     >
       {visible ? (
@@ -181,17 +183,18 @@ function FileUpload({
         <div
           style={{
             position: "relative",
-            border: "1.5px dashed #e4e4e7",
-            borderRadius: 8,
-            padding: 16,
+            border: "1.5px dashed #ccc",
+            borderRadius: 6,
+            padding: 20,
             textAlign: "center",
             cursor: "pointer",
-            color: "#999",
+            color: "#666",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            gap: 8,
-            fontSize: 12.5,
+            gap: 10,
+            fontSize: 13,
+            fontWeight: 600,
           }}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
@@ -201,7 +204,7 @@ function FileUpload({
           }}
           onClick={() => fileRef.current?.click()}
         >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
             <polyline points="17 8 12 3 7 8" />
             <line x1="12" y1="3" x2="12" y2="15" />
@@ -224,17 +227,18 @@ function FileUpload({
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "8px 11px",
-          background: "#f4f4f5",
-          borderRadius: 7,
+          padding: "10px 14px",
+          background: "#f5f5f5",
+          borderRadius: 6,
           fontSize: 13,
-          color: "#444",
+          fontWeight: 600,
+          color: "var(--color-text)",
         }}>
           <span>{fileName}</span>
           <button
             type="button"
             onClick={() => { setFileName(null); onChange(""); if (fileRef.current) fileRef.current.value = ""; }}
-            style={{ background: "none", border: "none", color: "#bbb", cursor: "pointer", padding: "2px 6px", fontSize: 13, borderRadius: 4 }}
+            style={{ background: "none", border: "none", color: "#666", cursor: "pointer", padding: "4px 8px", fontSize: 13, borderRadius: 4 }}
           >
             ✕
           </button>
@@ -295,7 +299,6 @@ function SettingsPage() {
           : OPENAI_EMBED_MODELS[0]
       );
     }
-    // Parse combined context back into sections (stored as JSON or plain text)
     if (profile.contextText) {
       try {
         const parsed = JSON.parse(profile.contextText);
@@ -303,13 +306,11 @@ function SettingsPage() {
         setSocialContext(parsed.social ?? "");
         setAlwaysContext(parsed.always ?? "");
       } catch {
-        // Legacy plain text — put in always
         setAlwaysContext(profile.contextText);
       }
     }
   }, [profile?._id]);
 
-  // Auto-switch model when provider changes
   useEffect(() => {
     const models = provider === "openai" ? OPENAI_MODELS : provider === "anthropic" ? ANTHROPIC_MODELS : GEMINI_MODELS;
     if (!models.includes(model)) setModel(models[0]);
@@ -337,8 +338,7 @@ function SettingsPage() {
       if (anthropicKey) patch.anthropicKey = anthropicKey;
       if (geminiKey) patch.geminiKey = geminiKey;
       await updateProfile(patch as any);
-      setStatus({ msg: "Settings saved!", ok: true });
-      // Clear key fields after save
+      setStatus({ msg: "Settings saved", ok: true });
       setOpenaiKey(""); setAnthropicKey(""); setGeminiKey("");
       setTimeout(() => setStatus(null), 3000);
     } catch (err: any) {
@@ -352,22 +352,20 @@ function SettingsPage() {
     chrome.tabs.create({ url: chrome.runtime.getURL("memory.html") });
   }
 
-  const models = provider === "openai" ? OPENAI_MODELS : provider === "anthropic" ? ANTHROPIC_MODELS : GEMINI_MODELS;
-
   return (
-    <main className="container">
+    <main className="container" style={{ fontFamily: "system-ui, -apple-system, sans-serif", color: "var(--color-text)" }}>
       {/* Header */}
       <header className="app-header">
-        <img src={chrome.runtime.getURL("logo.png")} alt="Text Fill" className="header-logo" />
+        <img src={chrome.runtime.getURL("logo.png")} alt="Text Fill" className="header-logo" style={{ borderRadius: 4 }} />
         <div className="header-text">
-          <h1>Text Fill</h1>
-          <p>AI writing assistant — works everywhere</p>
+          <h1 style={{ fontWeight: 800, letterSpacing: "-0.5px" }}>CheatResume</h1>
+          <p style={{ color: "#666", fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase", fontSize: 11 }}>AI writing assistant</p>
         </div>
       </header>
 
       {/* How it works */}
-      <div className="info-banner">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+      <div className="info-banner" style={{ background: "#f9f9f9", border: "1px solid #e5e5e5", color: "var(--color-text)" }}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
           <circle cx="12" cy="12" r="10" />
           <line x1="12" y1="8" x2="12" y2="12" />
           <line x1="12" y1="16" x2="12.01" y2="16" />
@@ -379,28 +377,35 @@ function SettingsPage() {
       </div>
 
       {/* Memory bar */}
-      <div className="memory-bar">
-        <span className="memory-bar-label">Memories learned from your activity</span>
-        <button type="button" className="btn-manage-memory" onClick={openMemory}>
+      <div className="memory-bar" style={{ background: "#000", border: "none", color: "#fff" }}>
+        <span className="memory-bar-label" style={{ color: "#fff", fontWeight: 600, letterSpacing: "0.2px" }}>Memories learned from your activity</span>
+        <button type="button" className="btn-manage-memory" onClick={openMemory} style={{ background: "#fff", color: "var(--color-text)", border: "none", borderRadius: 4, fontWeight: 700 }}>
           Manage Memory
         </button>
       </div>
 
       {/* AI Provider */}
-      <section className="card">
+      <section className="card" style={{ border: "1px solid #e5e5e5", boxShadow: "0 2px 8px rgba(0,0,0,0.02)" }}>
         <div className="card-header">
-          <h2>AI Provider</h2>
-          <span className="active-badge">{provider === "openai" ? "OpenAI" : provider === "anthropic" ? "Anthropic" : "Gemini"}</span>
+          <h2 style={{ fontWeight: 800 }}>AI Provider</h2>
+          <span className="active-badge" style={{ background: "#f0f0f0", color: "var(--color-text)", fontWeight: 700 }}>{provider === "openai" ? "OpenAI" : provider === "anthropic" ? "Anthropic" : "Gemini"}</span>
         </div>
 
         {/* Provider tabs */}
-        <div className="tabs" role="tablist">
+        <div className="tabs" role="tablist" style={{ background: "#f5f5f5", padding: 4, borderRadius: 6 }}>
           {(["openai", "anthropic", "gemini"] as const).map((p) => (
             <button
               key={p}
               className={`tab provider-tab${provider === p ? " active" : ""}`}
               role="tab"
               onClick={() => setProvider(p)}
+              style={{
+                background: provider === p ? "#000" : "transparent",
+                color: provider === p ? "#fff" : "#666",
+                fontWeight: 700,
+                borderRadius: 4,
+                boxShadow: provider === p ? "0 2px 4px rgba(0,0,0,0.1)" : "none"
+              }}
             >
               {p === "openai" ? "OpenAI" : p === "anthropic" ? "Anthropic" : "Gemini"}
             </button>
@@ -409,7 +414,7 @@ function SettingsPage() {
 
         {/* API key field */}
         {provider === "openai" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <PasswordField id="openaiKey" label="API Key" value={openaiKey} onChange={setOpenaiKey} placeholder="sk-proj-..." />
             <div className="field">
               <label htmlFor="openaiModel">Model</label>
@@ -433,7 +438,7 @@ function SettingsPage() {
         )}
 
         {provider === "anthropic" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <PasswordField id="anthropicKey" label="API Key" value={anthropicKey} onChange={setAnthropicKey} placeholder="sk-ant-..." />
             <div className="field">
               <label htmlFor="anthropicModel">Model</label>
@@ -460,8 +465,8 @@ function SettingsPage() {
             </div>
             {anthropicEmbeddingProvider === "openai" ? (
               <>
-                <div className="embed-hint">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <div className="embed-hint" style={{ background: "#f9f9f9", border: "1px solid #e5e5e5", color: "var(--color-text)" }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
                   </svg>
                   Anthropic stays active for writing. <strong>OpenAI</strong> is used only for semantic memory embeddings and retrieval.
@@ -476,8 +481,8 @@ function SettingsPage() {
               </>
             ) : (
               <>
-                <div className="embed-hint">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <div className="embed-hint" style={{ background: "#f9f9f9", border: "1px solid #e5e5e5", color: "var(--color-text)" }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
                   </svg>
                   Anthropic stays active for writing. <strong>Gemini</strong> is used only for semantic memory embeddings and retrieval.
@@ -495,7 +500,7 @@ function SettingsPage() {
         )}
 
         {provider === "gemini" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <PasswordField id="geminiKey" label="API Key" value={geminiKey} onChange={setGeminiKey} placeholder="AIza..." />
             <div className="field">
               <label htmlFor="geminiModel">Model</label>
@@ -520,18 +525,18 @@ function SettingsPage() {
       </section>
 
       {/* Your Contexts */}
-      <section className="card ctx-card">
+      <section className="card ctx-card" style={{ border: "1px solid #e5e5e5", boxShadow: "0 2px 8px rgba(0,0,0,0.02)" }}>
         <div className="card-header">
-          <h2>Your Contexts</h2>
-          <span className="auto-badge">Auto-selected by site</span>
+          <h2 style={{ fontWeight: 800 }}>Your Contexts</h2>
+          <span className="auto-badge" style={{ background: "#000", color: "#fff", fontWeight: 700 }}>Auto-selected by site</span>
         </div>
-        <p className="hint">
+        <p className="hint" style={{ color: "#444", fontWeight: 500, fontSize: 13 }}>
           Add info for different parts of your life. The extension picks the right context automatically — you never have to switch modes.
         </p>
 
         <Accordion
           title="Career & Work"
-          dotColor="#3b82f6"
+          dotStyle={{ background: "#000" }}
           chips={["LinkedIn", "Job boards", "Gmail", "Slack", "Notion"]}
           open={openAccordion === "work"}
           onToggle={() => setOpenAccordion((v) => v === "work" ? null : "work")}
@@ -543,12 +548,13 @@ function SettingsPage() {
             onChange={(e) => setWorkContext(e.target.value)}
             placeholder="Resume, skills, job history, achievements, company info you work at..."
             rows={7}
+            style={{ borderRadius: 6, border: "1px solid #e5e5e5" }}
           />
         </Accordion>
 
         <Accordion
           title="Social & Personal"
-          dotColor="#a855f7"
+          dotStyle={{ background: "#666" }}
           chips={["Twitter/X", "Instagram", "Facebook", "Reddit", "Messenger", "Discord"]}
           open={openAccordion === "social"}
           onToggle={() => setOpenAccordion((v) => v === "social" ? null : "social")}
@@ -560,12 +566,13 @@ function SettingsPage() {
             onChange={(e) => setSocialContext(e.target.value)}
             placeholder="Interests, hobbies, personality, how you like to interact online, topics you care about..."
             rows={5}
+            style={{ borderRadius: 6, border: "1px solid #e5e5e5" }}
           />
         </Accordion>
 
         <Accordion
           title="Always Active"
-          dotColor="#22c55e"
+          dotStyle={{ border: "2px solid #000", background: "transparent" }}
           chips={["Every platform"]}
           open={openAccordion === "always"}
           onToggle={() => setOpenAccordion((v) => v === "always" ? null : "always")}
@@ -576,16 +583,17 @@ function SettingsPage() {
             onChange={(e) => setAlwaysContext(e.target.value)}
             placeholder="Facts or preferences that apply everywhere — e.g. name, location, preferred tone, things to always/never say..."
             rows={4}
+            style={{ borderRadius: 6, border: "1px solid #e5e5e5" }}
           />
         </Accordion>
       </section>
 
       {/* Custom System Prompt */}
-      <section className="card">
+      <section className="card" style={{ border: "1px solid #e5e5e5", boxShadow: "0 2px 8px rgba(0,0,0,0.02)" }}>
         <div className="prompt-header">
           <div>
-            <h2>Custom System Prompt <span className="optional-label">optional</span></h2>
-            <p className="hint">Completely overrides the default AI instructions. Leave empty unless you want full control.</p>
+            <h2 style={{ fontWeight: 800 }}>Custom System Prompt <span className="optional-label" style={{ background: "#f0f0f0", color: "#666", fontWeight: 700 }}>optional</span></h2>
+            <p className="hint" style={{ color: "#444", fontWeight: 500, fontSize: 13 }}>Completely overrides the default AI instructions. Leave empty unless you want full control.</p>
           </div>
         </div>
         <textarea
@@ -594,32 +602,33 @@ function SettingsPage() {
           onChange={(e) => setSystemPrompt(e.target.value)}
           placeholder="e.g., Always write in a direct, confident tone. Never use bullet points. Mirror the style of the conversation."
           rows={3}
+          style={{ borderRadius: 6, border: "1px solid #e5e5e5" }}
         />
       </section>
 
       {/* Save */}
       <div className="actions">
-        <button id="save" className="btn-primary" onClick={save} disabled={saving}>
+        <button id="save" className="btn-primary" onClick={save} disabled={saving} style={{ background: "#000", color: "#fff", fontWeight: 700, borderRadius: 6 }}>
           {saving ? "Saving…" : "Save Settings"}
         </button>
         {status && (
-          <span id="status" className={status.ok ? "success" : "error"}>
+          <span id="status" className={status.ok ? "success" : "error"} style={{ fontWeight: 700, background: status.ok ? "#000" : "#fff", color: status.ok ? "#fff" : "#dc2626", border: status.ok ? "none" : "1px solid #dc2626", padding: "4px 10px", borderRadius: 4 }}>
             {status.msg}
           </span>
         )}
       </div>
 
       {/* Footer */}
-      <footer className="footer">
-        <a href="https://www.cheatresume.com/" target="_blank" rel="noopener">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <footer className="footer" style={{ borderTop: "1px solid #e5e5e5", paddingTop: 20 }}>
+        <a href="https://www.cheatresume.com/" target="_blank" rel="noopener" style={{ color: "var(--color-text)", fontWeight: 700 }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
             <circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" />
             <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
           </svg>
           Website
         </a>
-        <a href="https://github.com/sajanpoudel/text-fill" target="_blank" rel="noopener">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <a href="https://github.com/sajanpoudel/text-fill" target="_blank" rel="noopener" style={{ color: "var(--color-text)", fontWeight: 700 }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
             <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" />
           </svg>
           GitHub
@@ -627,7 +636,7 @@ function SettingsPage() {
         <button
           type="button"
           onClick={() => signOut()}
-          style={{ background: "none", border: "none", color: "#aaa", cursor: "pointer", fontSize: 12.5, display: "flex", alignItems: "center", gap: 5 }}
+          style={{ background: "none", border: "1px solid #ccc", borderRadius: 4, color: "var(--color-text)", cursor: "pointer", fontSize: 13, fontWeight: 700, padding: "6px 12px" }}
         >
           Sign out
         </button>
@@ -641,7 +650,7 @@ export function App() {
     <AppProviders>
       <TokenBridge />
       <AuthLoading>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", color: "#888", fontFamily: "system-ui" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", color: "#666", fontFamily: "system-ui", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
           Loading…
         </div>
       </AuthLoading>
