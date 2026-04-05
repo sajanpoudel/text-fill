@@ -6,7 +6,7 @@ Text Fill lives in your browser and watches your back. It learns your voice, rem
 
 The longer you use it, the better it knows you.
 
-![Text Fill Demo](cheatresume-extension-text-fill.gif)
+![Text Fill Demo](public/cheatresume-extension-text-fill.gif)
 
 ---
 
