@@ -17,6 +17,7 @@ import {
   querySelectorDeep,
 } from "../../src/lib/platform.ts";
 import { detectLinkedInFieldType } from "../../src/lib/platforms/linkedin.ts";
+import { sessionObserver } from "../../src/lib/session-observer.ts";
 import { FieldButton } from "./FieldButton.tsx";
 import { ContextFAB, loadContexts } from "./ContextFAB.tsx";
 import type { CapturedContext } from "./ContextFAB.tsx";
@@ -762,13 +763,18 @@ export function ContentApp() {
 
   useEffect(() => {
     const onFocusin = (e: FocusEvent) => {
-      setPlatform(detectPlatformKey(getLocationSnapshot().hostname));
-      setFocusedField(resolveEditableFromEvent(e));
+      const nextPlatform = detectPlatformKey(getLocationSnapshot().hostname);
+      setPlatform(nextPlatform);
+      const field = resolveEditableFromEvent(e);
+      setFocusedField(field);
+      if (field) sessionObserver.onFieldFocus(field, nextPlatform);
     };
 
     const onFocusout = (e: FocusEvent) => {
       const nextTarget = e.relatedTarget as Element | null;
       if (nextTarget?.closest?.("[data-tfa-ui]")) return;
+      const blurredField = resolveEditableFromEvent(e);
+      if (blurredField) sessionObserver.onFieldBlur(blurredField);
       requestAnimationFrame(() => {
         const active = document.activeElement instanceof Element
           ? resolveEditableRoot(document.activeElement)

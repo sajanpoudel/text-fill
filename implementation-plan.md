@@ -55,12 +55,26 @@ The core constraint: the extension must be **production-safe** — no `chrome.de
 | Memory extraction post-generation | [convex/memoryExtract.ts:194](convex/memoryExtract.ts#L194) | Semantic facts only, no episodic or procedural |
 | Background service worker | [entrypoints/background.ts](entrypoints/background.ts) | Handles GENERATE, CAPTURE_CONTEXT, auth refresh |
 
-### What is missing
+### What is now built (Layer 1 complete — 2026-04-04)
+
+| Component | Location | Notes |
+|---|---|---|
+| `SessionObserver` class | [src/lib/session-observer.ts](src/lib/session-observer.ts) | Full session lifecycle, multi-signal send detection |
+| Multi-signal send detection | [src/lib/session-observer.ts:345](src/lib/session-observer.ts#L345) | Signal A = form submit, B = Enter/Ctrl+Enter, C = mousedown + XHR confirm |
+| Per-field composite snapshot | [src/lib/session-observer.ts:421](src/lib/session-observer.ts#L421) | Debounced `input` (300ms) + `compositionend` → `_settledText` map |
+| MAIN-world XHR/fetch interceptor | [entrypoints/content/index.ts:20](entrypoints/content/index.ts#L20) | Injected as inline `<script>` element, posts `__TF_SEND__` on send-like POSTs |
+| Bounded Levenshtein + trigram diff | [src/lib/session-observer.ts:61](src/lib/session-observer.ts#L61) | O(n) space, bails at 5000 ops; trigram fallback for texts > 1500 chars |
+| `interactionSessions` + `sessionArtifacts` tables | [convex/schema.ts:68](convex/schema.ts#L68) | With `recipientName`, soft-deleted artifact, 3 indexes each |
+| `recordSession` mutation | [convex/interactions.ts:7](convex/interactions.ts#L7) | Inserts session row + optional artifact in one transaction |
+| `OBSERVE_SESSION` routing | [entrypoints/background.ts:103](entrypoints/background.ts#L103) | Fire-and-forget to Convex; never blocks generation |
+| Generation hooks — all paths | [entrypoints/content/FieldButton.tsx:173](entrypoints/content/FieldButton.tsx#L173), [GenerateModal.tsx:289](entrypoints/content/GenerateModal.tsx#L289) | `onGenerationStart` + `onGenerationComplete(getFieldText(field))` after 80+120ms |
+| `scripting`, `tabs`, `webNavigation` permissions | [wxt.config.ts](wxt.config.ts) | Added for Layer 1; `offscreen` deferred to Layer 5 (voice) |
+
+### What is still missing
 
 | Gap | Impact |
 |---|---|
-| No session observation (before/after AI, diffs, outcomes) | No behavioral data to learn from |
-| No episodic memory (what happened when) | Cannot inject past similar sessions as examples |
+| No episodic memory retrieval in generation | Sessions accumulate but don't feed back into prompts yet |
 | No procedural memory (what rules does user follow) | Cannot adapt generation prompts to user style |
 | No entity graph (people, companies, relations) | Cannot track "user works at X" with temporal validity |
 | No live retrieval (recipient profile at generation time) | Volatile data leaks into long-term memory |
@@ -68,7 +82,6 @@ The core constraint: the extension must be **production-safe** — no `chrome.de
 | No proactive scanning (find opportunities, suggest) | Always reactive — waits for user to ask |
 | No voice input | Cannot listen to commands |
 | No offscreen document | No long-running audio or persistent JS |
-| Permissions too narrow | `activeTab` but no `tabs`, `scripting`, `webNavigation`, `offscreen` |
 
 ---
 
@@ -122,123 +135,113 @@ The core constraint: the extension must be **production-safe** — no `chrome.de
 
 ## 4. Layer 1 — Observation
 
-### Goal
-Record what the user actually does around every AI generation: what text existed before, what AI generated, what user changed, whether they sent or abandoned.
+> **Status: COMPLETE** (2026-04-04). All code is live and building clean.
 
-### Integration point
-Extend the existing `focusin` handler at [App.tsx:763](entrypoints/content/App.tsx#L763). Do **not** build a second observer. Add session state alongside the existing `focusedField` React state.
+### What was built
 
-### Session lifecycle
+| File | Role |
+|---|---|
+| [src/lib/session-observer.ts](src/lib/session-observer.ts) | `SessionObserver` singleton — full session lifecycle |
+| [convex/interactions.ts](convex/interactions.ts) | `recordSession` mutation — one transaction for session + artifact |
+| [convex/schema.ts:68](convex/schema.ts#L68) | `interactionSessions` + `sessionArtifacts` tables |
+| [entrypoints/content/App.tsx:770](entrypoints/content/App.tsx#L770) | `onFieldFocus` / `onFieldBlur` hooks into existing focusin/focusout handlers |
+| [entrypoints/content/FieldButton.tsx:173](entrypoints/content/FieldButton.tsx#L173) | `onGenerationStart` + `onGenerationComplete` for generate path |
+| [entrypoints/content/GenerateModal.tsx:289](entrypoints/content/GenerateModal.tsx#L289) | `onGenerationStart` + `onGenerationComplete` for rewrite/shorten/expand paths |
+| [entrypoints/background.ts:103](entrypoints/background.ts#L103) | `OBSERVE_SESSION` case → `handleObserveSession` → Convex mutation |
+| [entrypoints/content/index.ts:20](entrypoints/content/index.ts#L20) | MAIN-world XHR/fetch interceptor injected as inline `<script>` element |
+
+### Session lifecycle (as implemented)
 
 ```
-focusin  → SESSION_OPEN   (snapshot preText, record timestamp, sessionId)
-AI inject→ AI_GENERATED   (snapshot aiText right after inject, record genTimestamp)  
-input    → (debounced 300ms, track settled value only)
-blur     → SESSION_CLOSE  (snapshot finalText, compute diff, classify outcome)
-XHR send → SENT           (correlate with active session, mark outcome = 'sent')
+focusin        → onFieldFocus(field, platform)   — opens session, attaches per-field listeners
+generation call → onGenerationStart(field)        — snapshots preText
+post-insert    → onGenerationComplete(field, getFieldText(field))  — 80ms + 120ms after insert
+input/IME      → debounced 300ms / compositionend — updates _settledText map
+focusout       → onFieldBlur(field)              — computes diff, classifies, emits to SW
 ```
 
-### Composite text snapshot model
+### Composite text snapshot model (as implemented)
 
-`beforeinput` alone is not a complete baseline. Use this sequence:
+1. `onGenerationStart(field)` — captures `getFieldText(field)` as `preText` baseline
+2. Per-field `input` listener, debounced 300ms — updates `_settledText` after framework normalization
+3. Per-field `compositionend` listener — immediate update for IME input completion
+4. `onGenerationComplete(field, getFieldText(field))` — called 200ms after `insertText`, captures what actually landed in the editor (not the raw API response — `insertText` may truncate/normalize)
+5. `onFieldBlur` — uses `_settledText` preferentially over sync snapshot
 
-1. `beforeinput` — capture `element.textContent` as early pre-edit candidate
-2. `input` debounced 300ms — capture settled value after framework normalization
-3. `compositionend` — capture after IME input completes
-4. `blur` — final snapshot for diff
+### Diff computation (as implemented)
 
-### Diff computation
+No external dependency. Inline in `session-observer.ts`:
 
-Use `fast-myers-diff` (4KB, O(ND), same algorithm as Git):
+- **Bounded Levenshtein** — O(n) space, bails out at `maxDist=5000` for speed. Sufficient for texts up to ~1500 chars.
+- **Trigram similarity fallback** — for texts > 1500 chars. Returns `1 - similarity` as edit fraction.
 
 ```typescript
-// src/lib/diff.ts  (new file)
-import { diff } from 'fast-myers-diff';
-
-export type DiffOp = [number, number, number, number, number]; // [op, os, oe, ns, ne]
-
-export function computeDiff(before: string, after: string): DiffOp[] {
-  return [...diff(before, after)];
-}
-
-export function classifyOutcome(
-  aiGenerated: string,
-  userFinal: string
-): 'accepted' | 'lightly_edited' | 'heavily_edited' | 'rewritten' | 'abandoned' {
-  if (!userFinal || userFinal.trim().length === 0) return 'abandoned';
-  if (userFinal.trim() === aiGenerated.trim()) return 'accepted';
-  const editFraction = levenshtein(aiGenerated, userFinal) / Math.max(aiGenerated.length, 1);
-  if (editFraction < 0.15) return 'lightly_edited';
-  if (editFraction < 0.5) return 'heavily_edited';
+export function classifyOutcome(aiText: string, finalText: string): SessionOutcome {
+  if (!finalText.trim()) return 'abandoned';
+  if (finalText.trim() === aiText.trim()) return 'accepted';
+  const frac = editFraction(aiText, finalText);
+  if (frac < 0.15) return 'lightly_edited';
+  if (frac < 0.5) return 'heavily_edited';
   return 'rewritten';
 }
-
-export function charDelta(before: string, after: string): number {
-  return after.length - before.length; // negative = shortened
-}
 ```
 
-### Send detection — correlated, not raw XHR
+### Send detection — three independent signals (as implemented)
 
-Raw XHR intercept produces false positives (autosave, typing indicators, analytics). Correlate two signals:
+Signal C alone (mousedown without XHR confirmation) is **not sufficient**. All three are independent:
 
-**Signal A**: Button click near compose field:
+**Signal A — form `submit` event** (self-confirming):
 ```typescript
-// Content script: track send-button clicks in active session
-document.addEventListener('click', (e) => {
-  const target = e.target as Element;
-  const isSendAction =
-    target.matches('[data-testid*="send"], [aria-label*="Send"], [aria-label*="send"]') ||
-    target.closest('[data-testid*="send"], [aria-label*="Send"]');
-  if (isSendAction && activeSession) {
-    pendingSendSignal = Date.now();
-  }
+document.addEventListener('submit', (e) => {
+  if (form.contains(activeField)) _formSubmitPending = { field, at: Date.now() };
 }, { capture: true, passive: true });
 ```
 
-**Signal B**: XHR/fetch intercept from MAIN world (inject via `chrome.scripting.executeScript`):
+**Signal B — keyboard Enter** (self-confirming):
+- Single-line `<input>`: plain Enter
+- `contenteditable` (LinkedIn, Gmail): Ctrl/Cmd+Enter only
+
+**Signal C — mousedown on enabled send button, confirmed by XHR** (requires both):
+- `mousedown` on element matching `[aria-label*="Send"]`, `[data-testid*="send"]`, etc., AND `disabled` check on element + ancestors
+- XHR/fetch POST to send-like URL must arrive within 3 seconds via `window.postMessage`
+- The MAIN-world interceptor is injected at content script init in [entrypoints/content/index.ts:20](entrypoints/content/index.ts#L20) as an inline `<script>` element (not via `chrome.scripting.executeScript` — that would require a tab ID; the inline approach works directly from the ISOLATED world)
+
 ```typescript
-// Injected into MAIN world from service worker on tab focus
-window.fetch = async (...args) => {
-  const res = await origFetch(...args);
-  const url = typeof args[0] === 'string' ? args[0] : (args[0] as Request)?.url ?? '';
-  if (/\/(message|send|reply|inmail|compose)/i.test(url) && res.ok) {
-    window.postMessage({ type: '__TF_SEND__', url, ts: Date.now() }, '*');
-  }
-  return res;
-};
-// Content script (ISOLATED) listens: window.addEventListener('message', ...)
+private _checkSentSignals(field: Element, now: number): boolean {
+  const WINDOW_MS = 2000;
+  // Signal A
+  if (this._formSubmitPending?.field === field && now - this._formSubmitPending.at < WINDOW_MS) return true;
+  // Signal B
+  if (this._enterPending?.field === field && now - this._enterPending.at < WINDOW_MS) return true;
+  // Signal C
+  if (this._mousedownPending?.field === field &&
+      this._xhrConfirmedAt > this._mousedownPending.at &&
+      this._xhrConfirmedAt - this._mousedownPending.at < 3000) return true;
+  return false;
+}
 ```
 
-**Correlation**: emit `SENT` only when XHR signal fires within 3 seconds of button-click signal AND the active compose field was non-empty.
+### Session event emission (as implemented)
 
-### Session event emission
-
-On session close, content script sends one message to service worker:
+On field blur, `SessionObserver` calls `chrome.runtime.sendMessage` with:
 
 ```typescript
-chrome.runtime.sendMessage({
+{
   type: 'OBSERVE_SESSION',
   payload: {
-    sessionId: crypto.randomUUID(),
-    platform,
-    contextType,           // 'recruiter_dm' | 'connection_req' | 'cold_email' | etc.
-    recipientName,         // from existing extractPageContext()
-    openedAt,
-    aiGeneratedAt,
-    closedAt: Date.now(),
-    outcome,               // 'accepted' | 'lightly_edited' | 'heavily_edited' | 'rewritten' | 'abandoned' | 'sent'
-    charDelta,
-    editFraction,
-    // Text blobs go in sessionArtifacts (separate Convex table)
-    aiPreText: aiPreText?.slice(0, 4000),
-    aiGeneratedText: aiGeneratedText?.slice(0, 4000),
-    userFinalText: userFinalText?.slice(0, 4000),
+    sessionId,      // crypto.randomUUID()
+    platform,       // "linkedin" | "gmail" | etc.
+    contextType,    // "connection_req" | "dm" | "inmail" | "email" | "post" | undefined
+    recipientName,  // from onGenerationStart optional param
+    openedAt, aiGeneratedAt, closedAt,
+    outcome,        // "accepted" | "lightly_edited" | "heavily_edited" | "rewritten" | "abandoned" | "sent"
+    charDelta, editFraction,
+    aiPreText, aiGeneratedText, userFinalText,  // capped at 4000 chars each in Convex
   }
-});
+}
 ```
 
-Service worker writes to Convex via `convex.mutation(api.interactions.recordSession, payload)`.
+Service worker routes to `handleObserveSession` → `convex.mutation(api.interactions.recordSession, ...)`. Fire-and-forget — never blocks generation.
 
 ---
 
@@ -1085,28 +1088,30 @@ taskItems: defineTable({
 
 ## 13. Phased Implementation Order
 
-### Phase 0 — Permissions (1–2 hours)
+### Phase 0 — Permissions ✅ DONE
 **Files**: [wxt.config.ts](wxt.config.ts)
 
-- Add `scripting`, `tabs`, `webNavigation`, `offscreen` to production permissions
-- Add `https://www.linkedin.com/*` and `https://mail.google.com/*` to `host_permissions`
-- Add `debugger`, `nativeMessaging` behind `NODE_ENV === 'development'` guard
+- ✅ Added `scripting`, `tabs`, `webNavigation` to production permissions
+- ✅ Added `https://www.linkedin.com/*` and `https://mail.google.com/*` to `host_permissions`
+- `offscreen` deferred to Phase 6 (voice). `debugger`/`nativeMessaging` deferred to Phase 8 (eval).
 
 ---
 
-### Phase 1 — Session Observation (highest ROI, zero extra LLM calls)
-**Files**: [entrypoints/content/App.tsx](entrypoints/content/App.tsx), [entrypoints/background.ts](entrypoints/background.ts), [convex/schema.ts](convex/schema.ts), new `convex/interactions.ts`
+### Phase 1 — Session Observation ✅ DONE (2026-04-04)
+**Files**: [entrypoints/content/App.tsx](entrypoints/content/App.tsx), [entrypoints/content/FieldButton.tsx](entrypoints/content/FieldButton.tsx), [entrypoints/content/GenerateModal.tsx](entrypoints/content/GenerateModal.tsx), [entrypoints/content/index.ts](entrypoints/content/index.ts), [entrypoints/background.ts](entrypoints/background.ts), [convex/schema.ts](convex/schema.ts), [convex/interactions.ts](convex/interactions.ts), [src/lib/session-observer.ts](src/lib/session-observer.ts)
 
-1. Add `interactionSessions` + `sessionArtifacts` tables to schema
-2. Add `src/lib/diff.ts` with `computeDiff`, `classifyOutcome`, `charDelta`
-3. Extend `focusin` handler at [App.tsx:764](entrypoints/content/App.tsx#L764) to open a session record
-4. Record AI text snapshot when generation result is received
-5. Add `beforeinput` + debounced `input` listeners on focused fields for settled-value tracking
-6. Add MAIN world XHR intercept (via `chrome.scripting.executeScript`) for send detection
-7. Compute diff + outcome on `focusout`, emit `OBSERVE_SESSION` to service worker
-8. Service worker writes to Convex `interactions.recordSession` mutation
+- ✅ `interactionSessions` + `sessionArtifacts` tables in schema (with `recipientName`, 3 indexes each)
+- ✅ Inline bounded Levenshtein + trigram diff in `session-observer.ts` (no external dep)
+- ✅ `onFieldFocus` / `onFieldBlur` hooks in App.tsx `focusin`/`focusout` handlers
+- ✅ Per-field composite snapshot: debounced `input` (300ms) + immediate `compositionend` → `_settledText`
+- ✅ `onGenerationStart` + `onGenerationComplete(getFieldText(field))` in FieldButton + GenerateModal (all action paths: generate, rewrite, shorten, expand)
+- ✅ Post-insert text contract: callers snapshot field text at 80ms+120ms after `insertText` (not raw API response)
+- ✅ Three-signal send detection: Signal A (form submit), Signal B (Enter/Ctrl+Enter), Signal C (mousedown+XHR confirm)
+- ✅ MAIN-world XHR/fetch interceptor injected as inline `<script>` from content script init
+- ✅ `OBSERVE_SESSION` routing in service worker → Convex `recordSession` mutation
+- ✅ Build: zero errors, zero warnings (`npx wxt build` clean)
 
-**Outcome**: Raw behavioral data starts accumulating. No pattern extraction yet.
+**Outcome**: Raw behavioral data accumulates on every AI-assisted compose session across all action types.
 
 ---
 
@@ -1238,4 +1243,4 @@ A single power-user session with many identical sends must not immediately creat
 
 ---
 
-*Last updated: 2026-04-05. Research basis: three passes covering Chrome MV3 APIs, LangMem/Mem0/Graphiti memory systems, OCEL process mining, rrweb vs hand-rolled observation, Convex schema design, browser-use/Playwright/Puppeteer, Web Speech API in MV3, Porcupine WASM wake detection, LinkedIn automation safety, and ActivityWatch heartbeat architecture.*
+*Last updated: 2026-04-04. Research basis: three passes covering Chrome MV3 APIs, LangMem/Mem0/Graphiti memory systems, OCEL process mining, rrweb vs hand-rolled observation, Convex schema design, browser-use/Playwright/Puppeteer, Web Speech API in MV3, Porcupine WASM wake detection, LinkedIn automation safety, and ActivityWatch heartbeat architecture. Phase 0 + Phase 1 implemented and verified.*

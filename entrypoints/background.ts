@@ -1,5 +1,6 @@
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../convex/_generated/api";
+import type { SessionPayload } from "../src/lib/session-observer.ts";
 
 // ── Client singleton ──────────────────────────────────────────────────────
 // ConvexHttpClient is stateless-friendly: safe to reuse across SW restarts.
@@ -99,6 +100,9 @@ async function handleMessage(
     case "CLEAR_CONTEXT":
       return handleClearContext();
 
+    case "OBSERVE_SESSION":
+      return handleObserveSession(msg.payload as SessionPayload);
+
     case "SAVE_MEMORY":
       return convex.mutation(api.memories.save, msg.payload);
 
@@ -112,6 +116,31 @@ async function handleMessage(
     default:
       return { error: `Unknown message type: ${msg.type}` };
   }
+}
+
+// ── Observation ──────────────────────────────────────────────────────────────
+
+async function handleObserveSession(payload: SessionPayload) {
+  try {
+    await convex.mutation(api.interactions.recordSession, {
+      sessionId: payload.sessionId,
+      platform: payload.platform,
+      contextType: payload.contextType,
+      recipientName: payload.recipientName,
+      openedAt: payload.openedAt,
+      aiGeneratedAt: payload.aiGeneratedAt,
+      closedAt: payload.closedAt,
+      outcome: payload.outcome,
+      charDelta: payload.charDelta,
+      editFraction: payload.editFraction,
+      aiPreText: payload.aiPreText,
+      aiGeneratedText: payload.aiGeneratedText,
+      userFinalText: payload.userFinalText,
+    });
+  } catch {
+    // Non-fatal — observation is best-effort, never block the user
+  }
+  return { ok: true };
 }
 
 // ── Generate ──────────────────────────────────────────────────────────────

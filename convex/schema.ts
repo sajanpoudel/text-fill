@@ -62,6 +62,36 @@ export default defineSchema({
       filterFields: ["scopeKey"],
     }),
 
+  // ── Interaction observation ─────────────────────────────────────────────────
+
+  // One row per compose session (focusin → blur / send)
+  interactionSessions: defineTable({
+    userId: v.id("users"),
+    sessionId: v.string(),                   // client-generated UUID
+    platform: v.string(),
+    contextType: v.optional(v.string()),     // "connection_req" | "dm" | "inmail" | "email" | etc.
+    recipientName: v.optional(v.string()),
+    openedAt: v.number(),
+    aiGeneratedAt: v.optional(v.number()),
+    closedAt: v.number(),
+    outcome: v.string(),                     // "accepted" | "lightly_edited" | "heavily_edited" | "rewritten" | "abandoned" | "sent"
+    charDelta: v.optional(v.number()),       // negative = shortened
+    editFraction: v.optional(v.number()),    // 0-1, fraction of AI text changed
+    artifactId: v.optional(v.id("sessionArtifacts")),
+  })
+    .index("by_user_opened", ["userId", "openedAt"])
+    .index("by_user_platform", ["userId", "platform", "openedAt"])
+    .index("by_user_outcome", ["userId", "outcome", "openedAt"]),
+
+  // Text blobs — separate so session status updates don't rewrite large strings
+  sessionArtifacts: defineTable({
+    sessionId: v.id("interactionSessions"),
+    aiPreText: v.optional(v.string()),
+    aiGeneratedText: v.optional(v.string()),
+    userFinalText: v.optional(v.string()),
+  })
+    .index("by_session", ["sessionId"]),
+
   // Cross-tab captured page context (30-min TTL, cleaned up by scheduled job)
   capturedContexts: defineTable({
     userId: v.id("users"),

@@ -5,6 +5,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { insertText } from "../../src/lib/insert-text.ts";
+import { sessionObserver, getFieldText } from "../../src/lib/session-observer.ts";
 import { extractPageContext } from "../../src/lib/context.ts";
 import { loadContexts, saveContexts } from "./ContextFAB.tsx";
 import { isPageDark } from "../../src/lib/dom/theme.ts";
@@ -295,6 +296,7 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
           ? { instruction, pageContext, platform, fieldMaxLength }
           : { existingText, instruction: instruction || undefined, platform, fieldMaxLength };
 
+      sessionObserver.onGenerationStart(field);
       const response = await chrome.runtime.sendMessage({
         type: "GENERATE",
         action,
@@ -309,7 +311,12 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
         }
         onClose();
         showToast("✓ Text inserted");
-        setTimeout(() => insertText(field, safeText, platform), 80);
+        setTimeout(() => {
+          insertText(field, safeText, platform);
+          setTimeout(() => {
+            sessionObserver.onGenerationComplete(field, getFieldText(field));
+          }, 120);
+        }, 80);
       }
     } catch (err: any) {
       const msg = err.message ?? "Generation failed";

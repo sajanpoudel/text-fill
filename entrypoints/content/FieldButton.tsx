@@ -12,6 +12,7 @@ import { getVisibleFieldAnchor } from "../../src/lib/platform.ts";
 import { extractPageContext } from "../../src/lib/context.ts";
 import type { PlatformKey } from "../../src/lib/platform.ts";
 import { insertText } from "../../src/lib/insert-text.ts";
+import { sessionObserver, getFieldText } from "../../src/lib/session-observer.ts";
 
 interface Props {
   field: Element;
@@ -168,6 +169,8 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
   }) => {
     setShowModal(false);
     setLoading(true);
+    // Snapshot pre-AI text before the network round-trip
+    sessionObserver.onGenerationStart(field);
     try {
       const pageContext = opts.pageContext ?? extractPageContext(field);
       const response = await chrome.runtime.sendMessage({
@@ -184,7 +187,12 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
       });
       if (response?.error) throw new Error(response.error);
       if (response?.text) {
-        setTimeout(() => insertText(field, response.text, platform), 80);
+        setTimeout(() => {
+          insertText(field, response.text, platform);
+          setTimeout(() => {
+            sessionObserver.onGenerationComplete(field, getFieldText(field));
+          }, 120);
+        }, 80);
         setSuccess(true);
         showToast("✓ Text inserted");
         setTimeout(() => setSuccess(false), 1500);
