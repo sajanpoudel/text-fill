@@ -1,6 +1,7 @@
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../convex/_generated/api";
 import type { SessionPayload } from "../src/lib/session-observer.ts";
+import { ChromeBrowserExecutor } from "../src/lib/browser-executor.ts";
 import {
   executeLinkedInConnectFromMoreMenuInPage,
   executeLinkedInConnectPrimaryActionInPage,
@@ -23,6 +24,7 @@ import {
 // ── Client singleton ──────────────────────────────────────────────────────
 // ConvexHttpClient is stateless-friendly: safe to reuse across SW restarts.
 const convex = new ConvexHttpClient(import.meta.env.VITE_CONVEX_URL as string);
+const browserExecutor = new ChromeBrowserExecutor(chrome);
 let currentTaskQueueScope = DEFAULT_TASK_QUEUE_SCOPE;
 let voiceRuntimeState: VoiceRuntimeState = "idle";
 
@@ -429,34 +431,6 @@ async function handleClearContext() {
 
 // ── Shared runtime helpers ───────────────────────────────────────────────────
 
-async function waitForTabComplete(
-  tabId: number,
-  timeoutMs = 15_000
-): Promise<void> {
-  const tab = await chrome.tabs.get(tabId).catch(() => null);
-  if (tab?.status === "complete") return;
-
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(onUpdated);
-      reject(new Error("tab load timeout"));
-    }, timeoutMs);
-
-    const onUpdated = (
-      updatedTabId: number,
-      info: chrome.tabs.OnUpdatedInfo
-    ) => {
-      if (updatedTabId === tabId && info.status === "complete") {
-        clearTimeout(timeout);
-        chrome.tabs.onUpdated.removeListener(onUpdated);
-        resolve();
-      }
-    };
-
-    chrome.tabs.onUpdated.addListener(onUpdated);
-  });
-}
-
 async function getActiveTab(): Promise<chrome.tabs.Tab | null> {
   const [tab] = await chrome.tabs.query({
     active: true,
@@ -674,26 +648,39 @@ function extractLinkedInJsonLdForInjection(): RecipientProfile | null {
  * ~800ms after the `complete` event before JSON-LD scripts are present.
  */
 async function openExtractClose(url: string, extraWaitMs = 800): Promise<RecipientProfile | null> {
-  let tab: chrome.tabs.Tab | undefined;
+  let tabId: number | null = null;
   try {
-    tab = await chrome.tabs.create({ url, active: false });
-    await waitForTabComplete(tab.id!, 15_000);
+    const opened = await browserExecutor.execute({
+      kind: "open_tab",
+      url,
+      active: false,
+    });
+    tabId = opened.tabId;
+    await browserExecutor.execute({
+      kind: "wait_for_tab_complete",
+      tabId,
+      timeoutMs: 15_000,
+    });
 
     // Extra wait for SPA hydration
-    await new Promise((r) => setTimeout(r, extraWaitMs));
+    await browserExecutor.execute({
+      kind: "wait",
+      durationMs: extraWaitMs,
+    });
 
-    const [result] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id! },
+    const result = await browserExecutor.execute({
+      kind: "run_script",
+      tabId,
       world: "ISOLATED",
       func: extractLinkedInJsonLdForInjection,
     });
 
-    return (result.result as RecipientProfile | null) ?? null;
+    return result.result ?? null;
   } catch {
     return null;
   } finally {
-    if (tab?.id !== undefined) {
-      chrome.tabs.remove(tab.id).catch(() => {});
+    if (tabId !== null) {
+      browserExecutor.execute({ kind: "close_tab", tabId }).catch(() => {});
     }
   }
 }
@@ -907,10 +894,23 @@ class PersistentTaskQueue {
   }
 
   private async executeLinkedInConnect(task: Task): Promise<"sent" | "failed" | "skipped"> {
-    const tab = await chrome.tabs.create({ url: task.targetUrl, active: false });
+    const opened = await browserExecutor.execute({
+      kind: "open_tab",
+      url: task.targetUrl,
+      active: false,
+    });
+    const tabId = opened.tabId;
+
     try {
-      await waitForTabComplete(tab.id!, 15_000);
-      await new Promise((r) => setTimeout(r, humanDelay(1200)));
+      await browserExecutor.execute({
+        kind: "wait_for_tab_complete",
+        tabId,
+        timeoutMs: 15_000,
+      });
+      await browserExecutor.execute({
+        kind: "wait",
+        durationMs: humanDelay(1200),
+      });
 
       const recipientProfile = await fetchRecipientProfile(task.targetUrl);
       const recipientName =
@@ -949,26 +949,35 @@ class PersistentTaskQueue {
         }).catch(() => {});
       }
 
-      const [connectResult] = await chrome.scripting.executeScript({
-        target: { tabId: tab.id! },
+      const connectResult = await browserExecutor.execute({
+        kind: "run_script",
+        tabId,
         world: "MAIN",
         func: executeLinkedInConnectPrimaryActionInPage,
       });
 
       if (connectResult.result === "opened_more") {
-        await new Promise((r) => setTimeout(r, humanDelay(700)));
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id! },
+        await browserExecutor.execute({
+          kind: "wait",
+          durationMs: humanDelay(700),
+        });
+        await browserExecutor.execute({
+          kind: "run_script",
+          tabId,
           world: "MAIN",
           func: executeLinkedInConnectFromMoreMenuInPage,
         });
       }
 
-      await new Promise((r) => setTimeout(r, humanDelay(900)));
+      await browserExecutor.execute({
+        kind: "wait",
+        durationMs: humanDelay(900),
+      });
 
       const fillAndSend = async () =>
-        chrome.scripting.executeScript({
-          target: { tabId: tab.id! },
+        browserExecutor.execute({
+          kind: "run_script",
+          tabId,
           world: "MAIN",
           func: executeLinkedInFillAndSendConnectDialogInPage,
           args: [noteText],
@@ -976,10 +985,13 @@ class PersistentTaskQueue {
 
       let finalState = "no_dialog";
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        const [state] = await fillAndSend();
+        const state = await fillAndSend();
         finalState = String(state.result ?? "");
         if (finalState === "note_opened") {
-          await new Promise((r) => setTimeout(r, humanDelay(700)));
+          await browserExecutor.execute({
+            kind: "wait",
+            durationMs: humanDelay(700),
+          });
           continue;
         }
         break;
@@ -1019,8 +1031,11 @@ class PersistentTaskQueue {
       }
       return "sent";
     } finally {
-      await new Promise((r) => setTimeout(r, 500));
-      chrome.tabs.remove(tab.id!).catch(() => {});
+      await browserExecutor.execute({
+        kind: "wait",
+        durationMs: 500,
+      });
+      browserExecutor.execute({ kind: "close_tab", tabId }).catch(() => {});
     }
   }
 }

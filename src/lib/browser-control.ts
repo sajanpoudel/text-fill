@@ -48,6 +48,76 @@ export function syntheticTypeText(el: Element, text: string): void {
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+/**
+ * Self-contained existence check for selector-based polling.
+ */
+export function executeElementExistsInPage(selector: string): boolean {
+  return !!document.querySelector(selector);
+}
+
+/**
+ * Self-contained selector-based click helper for `chrome.scripting.executeScript`.
+ */
+export function executeClickElementBySelectorInPage(selector: string): boolean {
+  const el = document.querySelector<HTMLElement>(selector);
+  if (!el) return false;
+  el.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+  el.dispatchEvent(new PointerEvent("pointerenter", { bubbles: true }));
+  el.dispatchEvent(
+    new MouseEvent("mousedown", { bubbles: true, cancelable: true })
+  );
+  el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  el.click();
+  return true;
+}
+
+/**
+ * Self-contained selector-based text input helper for `executeScript`.
+ */
+export function executeTypeIntoFieldBySelectorInPage(
+  selector: string,
+  text: string
+): boolean {
+  const el = document.querySelector<HTMLElement>(selector);
+  if (!el) return false;
+
+  if (
+    el instanceof HTMLTextAreaElement ||
+    el instanceof HTMLInputElement
+  ) {
+    const setter =
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")
+        ?.set ??
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    setter?.call(el, text);
+    el.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        inputType: "insertText",
+        data: text,
+      })
+    );
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }
+
+  if (el.isContentEditable) {
+    el.focus();
+    el.textContent = text;
+    el.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        inputType: "insertText",
+        data: text,
+      })
+    );
+    return true;
+  }
+
+  return false;
+}
+
 export function normalizeControlText(text: string | null | undefined): string {
   return (text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 }

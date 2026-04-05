@@ -1,8 +1,11 @@
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
+  executeClickElementBySelectorInPage,
+  executeElementExistsInPage,
   executeLinkedInConnectFromMoreMenuInPage,
   executeLinkedInConnectPrimaryActionInPage,
   executeLinkedInFillAndSendConnectDialogInPage,
+  executeTypeIntoFieldBySelectorInPage,
   isLinkedInAddNoteText,
   isLinkedInConnectText,
   isLinkedInMoreText,
@@ -18,8 +21,9 @@ class FakeElement {
   textContent: string;
   clicked = false;
   dispatched: string[] = [];
-  value = "";
+  declare value: string;
   focused = false;
+  isContentEditable = false;
   private selectorMap = new Map<string, FakeElement | null>();
   private selectorAllMap = new Map<string, FakeElement[]>();
 
@@ -58,6 +62,7 @@ class FakeElement {
 }
 
 class FakeTextAreaElement extends FakeElement {}
+class FakeInputElement extends FakeElement {}
 
 describe("browser control helpers", () => {
   beforeAll(() => {
@@ -66,6 +71,23 @@ describe("browser control helpers", () => {
     (globalThis as any).PointerEvent = FakeEvent;
     (globalThis as any).InputEvent = FakeEvent;
     (globalThis as any).HTMLTextAreaElement = FakeTextAreaElement;
+    (globalThis as any).HTMLInputElement = FakeInputElement;
+    Object.defineProperty(FakeTextAreaElement.prototype, "value", {
+      get() {
+        return (this as FakeTextAreaElement & { _value?: string })._value ?? "";
+      },
+      set(next: string) {
+        (this as FakeTextAreaElement & { _value?: string })._value = next;
+      },
+    });
+    Object.defineProperty(FakeInputElement.prototype, "value", {
+      get() {
+        return (this as FakeInputElement & { _value?: string })._value ?? "";
+      },
+      set(next: string) {
+        (this as FakeInputElement & { _value?: string })._value = next;
+      },
+    });
   });
 
   beforeEach(() => {
@@ -85,6 +107,25 @@ describe("browser control helpers", () => {
     expect(isLinkedInAddNoteText("Add a note")).toBe(true);
     expect(isLinkedInSendText("Send invitation")).toBe(true);
     expect(isLinkedInSendText("Cancel")).toBe(false);
+  });
+
+  test("supports generic selector existence, click, and type helpers", () => {
+    const button = new FakeElement("Click me");
+    const textarea = new FakeTextAreaElement();
+    (globalThis as any).document.querySelector = (selector: string) => {
+      if (selector === ".cta") return button;
+      if (selector === "textarea") return textarea;
+      return null;
+    };
+
+    expect(executeElementExistsInPage(".cta")).toBe(true);
+    expect(executeElementExistsInPage(".missing")).toBe(false);
+    expect(executeClickElementBySelectorInPage(".cta")).toBe(true);
+    expect(button.clicked).toBe(true);
+    expect(executeTypeIntoFieldBySelectorInPage("textarea", "Hello")).toBe(
+      true
+    );
+    expect(textarea.value).toBe("Hello");
   });
 
   test("clicks the direct LinkedIn connect button before the more menu", () => {
