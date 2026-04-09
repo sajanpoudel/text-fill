@@ -1,7 +1,10 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import type { InteractiveElementSnapshot } from "../src/lib/browser-observation";
+import type {
+  BrowserObservationScope,
+  InteractiveElementSnapshot,
+} from "../src/lib/browser-observation";
 import type { CandidateScanItem } from "../src/lib/candidate-scan.ts";
 import {
   buildDraftVerificationText,
@@ -37,17 +40,17 @@ type BootstrapCommand = {
     | {
         kind: "snapshot_interactives";
         tabId: number;
-        scope: "main";
+        scope: BrowserObservationScope;
       }
     | {
         kind: "get_accessibility_tree";
         tabId: number;
-        scope: "main";
+        scope: BrowserObservationScope;
       }
     | {
         kind: "extract_structured";
         tabId: number;
-        scope: "main";
+        scope: BrowserObservationScope;
         schema: string;
         promptHint: string;
       };
@@ -201,7 +204,7 @@ function summarizeBrowserResult(
   if (command.kind === "snapshot_interactives") {
     const elements =
       (resultDoc.result as { elements?: Array<unknown> } | undefined)?.elements ?? [];
-    return `Observed ${elements.length} interactive elements on the current page.`;
+    return `Observed ${elements.length} interactive elements on the current page (${command.scope} scan).`;
   }
 
   if (command.kind === "get_accessibility_tree") {
@@ -209,7 +212,7 @@ function summarizeBrowserResult(
       (resultDoc.result as { tree?: { tag?: string; children?: Array<unknown> } | null } | undefined)
         ?.tree ?? null;
     const childCount = Array.isArray(tree?.children) ? tree.children.length : 0;
-    return `Captured accessibility tree rooted at ${tree?.tag ?? "unknown"} with ${childCount} direct children.`;
+    return `Captured accessibility tree rooted at ${tree?.tag ?? "unknown"} with ${childCount} direct children (${command.scope} scan).`;
   }
 
   if (command.kind === "extract_structured") {
@@ -224,20 +227,23 @@ function summarizeBrowserResult(
     const matched = projected?.matchedFields?.length ?? 0;
     const unmatched = projected?.unmatchedFields?.length ?? 0;
     const text = truncate(projected?.text ?? "", 160);
-    return `Extracted structured page context (${matched} matched, ${unmatched} unmatched fields). ${text}`.trim();
+    return `Extracted structured page context (${matched} matched, ${unmatched} unmatched fields, ${command.scope} scan). ${text}`.trim();
   }
 
   throw new Error("Unsupported bootstrap command");
 }
 
-function buildBootstrapCommands(targetTabId: number): BootstrapCommand[] {
+function buildBootstrapCommands(
+  targetTabId: number,
+  scope: BrowserObservationScope
+): BootstrapCommand[] {
   return [
     {
       content: "Snapshot the visible interactive elements for the current page.",
       command: {
         kind: "snapshot_interactives",
         tabId: targetTabId,
-        scope: "main",
+        scope,
       },
     },
     {
@@ -245,7 +251,7 @@ function buildBootstrapCommands(targetTabId: number): BootstrapCommand[] {
       command: {
         kind: "get_accessibility_tree",
         tabId: targetTabId,
-        scope: "main",
+        scope,
       },
     },
     {
@@ -253,7 +259,7 @@ function buildBootstrapCommands(targetTabId: number): BootstrapCommand[] {
       command: {
         kind: "extract_structured",
         tabId: targetTabId,
-        scope: "main",
+        scope,
         schema: JSON.stringify({
           type: "object",
           properties: {
@@ -326,116 +332,171 @@ type BootstrapObservationPassResult = {
   structuredResult?: StructuredExtractionResult;
 };
 
+function isEmptyBootstrapObservation(
+  observation: BootstrapObservationPassResult
+): boolean {
+  const interactiveCount = observation.interactiveElements?.length ?? 0;
+  const structuredText = observation.structuredResult?.text?.trim() ?? "";
+  const matchedFields = observation.structuredResult?.matchedFields?.length ?? 0;
+  return (
+    interactiveCount === 0 &&
+    matchedFields === 0 &&
+    structuredText.length === 0
+  );
+}
+
 async function runBootstrapObservationPass(step: any, args: {
   runId: Id<"agentRuns">;
   targetTabId: number;
 }): Promise<BootstrapObservationPassResult | null> {
-  const resultSummaries: string[] = [];
-  let interactiveSummary: string | undefined;
-  let accessibilitySummary: string | undefined;
-  let interactiveElements: InteractiveElementSnapshot[] | undefined;
-  let structuredResult: StructuredExtractionResult | undefined;
+  const runSingleBootstrapPass = async (
+    scope: BrowserObservationScope
+  ): Promise<BootstrapObservationPassResult | null> => {
+    const resultSummaries: string[] = [];
+    let interactiveSummary: string | undefined;
+    let accessibilitySummary: string | undefined;
+    let interactiveElements: InteractiveElementSnapshot[] | undefined;
+    let structuredResult: StructuredExtractionResult | undefined;
 
-  for (const bootstrap of buildBootstrapCommands(args.targetTabId)) {
-    const stepEntry = await step.runMutation(
-      internal.agentRuns.appendStep,
-      {
-        runId: args.runId,
-        role: "browser_command",
-        content: bootstrap.content,
-        toolCall: bootstrap.command,
-      },
-      { inline: true, name: `append ${bootstrap.command.kind} step` }
-    );
-
-    const completionEventId = await workflow.createEvent(step, {
-      name: `browser-command:${bootstrap.command.kind}`,
-      workflowId: step.workflowId,
-    });
-
-    const commandEntry = await step.runMutation(
-      internal.agentRuns.enqueueBrowserCommand,
-      {
-        runId: args.runId,
-        stepId: stepEntry.stepId as Id<"agentRunSteps">,
-        deliveryScope: "specific_tab",
-        targetTabId: args.targetTabId,
-        command: bootstrap.command,
-        completionEventId: completionEventId as string,
-      },
-      { inline: true, name: `enqueue ${bootstrap.command.kind}` }
-    );
-
-    await step.runMutation(
-      internal.agentRuns.scheduleBrowserCommandTimeout,
-      {
-        commandId: commandEntry.commandId as Id<"browserCommands">,
-        timeoutMs: BOOTSTRAP_BROWSER_COMMAND_TIMEOUT_MS,
-      },
-      { inline: true, name: `schedule ${bootstrap.command.kind} timeout` }
-    );
-
-    const completion = await step.awaitEvent({
-      id: completionEventId,
-      validator: browserCommandCompletionEventValidator,
-    });
-
-    const resultDoc = await step.runQuery(
-      internal.agentRuns.getBrowserCommandResultForWorkflow,
-      {
-        commandId: commandEntry.commandId as Id<"browserCommands">,
-      },
-      { inline: true, name: `read ${bootstrap.command.kind} result` }
-    );
-
-    const summary = summarizeBrowserResult(bootstrap.command, resultDoc);
-    resultSummaries.push(summary);
-    if (bootstrap.command.kind === "snapshot_interactives") {
-      interactiveSummary = summary;
-      interactiveElements =
-        (resultDoc?.result as { elements?: InteractiveElementSnapshot[] } | undefined)
-          ?.elements ?? undefined;
-    } else if (bootstrap.command.kind === "get_accessibility_tree") {
-      accessibilitySummary = summary;
-    } else if (bootstrap.command.kind === "extract_structured") {
-      structuredResult =
-        (resultDoc?.result as { result?: StructuredExtractionResult } | undefined)
-          ?.result ?? undefined;
-    }
-
-    await step.runMutation(
-      internal.agentRuns.appendStep,
-      {
-        runId: args.runId,
-        role: "browser_result",
-        content: summary,
-        commandId: completion.commandId,
-        toolCall: resultDoc?.result,
-      },
-      { inline: true, name: `append ${bootstrap.command.kind} result` }
-    );
-    await maybeAppendRollingSummary(step, args.runId);
-
-    if (completion.status === "failed") {
-      await step.runMutation(
-        internal.agentRuns.setRunStatus,
+    for (const bootstrap of buildBootstrapCommands(args.targetTabId, scope)) {
+      const stepEntry = await step.runMutation(
+        internal.agentRuns.appendStep,
         {
           runId: args.runId,
-          status: "failed",
-          lastError: resultDoc?.errorMessage ?? `${bootstrap.command.kind} failed`,
+          role: "browser_command",
+          content: bootstrap.content,
+          toolCall: bootstrap.command,
         },
-        { inline: true, name: `fail after ${bootstrap.command.kind}` }
+        { inline: true, name: `append ${bootstrap.command.kind} step` }
       );
-      return null;
+
+      const completionEventId = await workflow.createEvent(step, {
+        name: `browser-command:${bootstrap.command.kind}`,
+        workflowId: step.workflowId,
+      });
+
+      const commandEntry = await step.runMutation(
+        internal.agentRuns.enqueueBrowserCommand,
+        {
+          runId: args.runId,
+          stepId: stepEntry.stepId as Id<"agentRunSteps">,
+          deliveryScope: "specific_tab",
+          targetTabId: args.targetTabId,
+          command: bootstrap.command,
+          completionEventId: completionEventId as string,
+        },
+        { inline: true, name: `enqueue ${bootstrap.command.kind}` }
+      );
+
+      await step.runMutation(
+        internal.agentRuns.scheduleBrowserCommandTimeout,
+        {
+          commandId: commandEntry.commandId as Id<"browserCommands">,
+          timeoutMs: BOOTSTRAP_BROWSER_COMMAND_TIMEOUT_MS,
+        },
+        { inline: true, name: `schedule ${bootstrap.command.kind} timeout` }
+      );
+
+      const completion = await step.awaitEvent({
+        id: completionEventId,
+        validator: browserCommandCompletionEventValidator,
+      });
+
+      const resultDoc = await step.runQuery(
+        internal.agentRuns.getBrowserCommandResultForWorkflow,
+        {
+          commandId: commandEntry.commandId as Id<"browserCommands">,
+        },
+        { inline: true, name: `read ${bootstrap.command.kind} result` }
+      );
+
+      const summary = summarizeBrowserResult(bootstrap.command, resultDoc);
+      resultSummaries.push(summary);
+      if (bootstrap.command.kind === "snapshot_interactives") {
+        interactiveSummary = summary;
+        interactiveElements =
+          (resultDoc?.result as { elements?: InteractiveElementSnapshot[] } | undefined)
+            ?.elements ?? undefined;
+      } else if (bootstrap.command.kind === "get_accessibility_tree") {
+        accessibilitySummary = summary;
+      } else if (bootstrap.command.kind === "extract_structured") {
+        structuredResult =
+          (resultDoc?.result as { result?: StructuredExtractionResult } | undefined)
+            ?.result ?? undefined;
+      }
+
+      await step.runMutation(
+        internal.agentRuns.appendStep,
+        {
+          runId: args.runId,
+          role: "browser_result",
+          content: summary,
+          commandId: completion.commandId,
+          toolCall: resultDoc?.result,
+        },
+        { inline: true, name: `append ${bootstrap.command.kind} result` }
+      );
+      await maybeAppendRollingSummary(step, args.runId);
+
+      if (completion.status === "failed") {
+        await step.runMutation(
+          internal.agentRuns.setRunStatus,
+          {
+            runId: args.runId,
+            status: "failed",
+            lastError: resultDoc?.errorMessage ?? `${bootstrap.command.kind} failed`,
+          },
+          { inline: true, name: `fail after ${bootstrap.command.kind}` }
+        );
+        return null;
+      }
     }
+
+    return {
+      resultSummaries,
+      interactiveSummary,
+      accessibilitySummary,
+      interactiveElements,
+      structuredResult,
+    };
+  };
+
+  const mainObservation = await runSingleBootstrapPass("main");
+  if (!mainObservation) {
+    return null;
+  }
+  if (!isEmptyBootstrapObservation(mainObservation)) {
+    return mainObservation;
+  }
+
+  await step.runMutation(
+    internal.agentRuns.appendStep,
+    {
+      runId: args.runId,
+      role: "system",
+      content:
+        "Main-region bootstrap observation was empty, retrying with a top-down full-page scan.",
+    },
+    { inline: true, name: "append bootstrap viewport fallback" }
+  );
+
+  const viewportObservation = await runSingleBootstrapPass("viewport");
+  if (!viewportObservation) {
+    return null;
   }
 
   return {
-    resultSummaries,
-    interactiveSummary,
-    accessibilitySummary,
-    interactiveElements,
-    structuredResult,
+    resultSummaries: [
+      ...mainObservation.resultSummaries,
+      ...viewportObservation.resultSummaries,
+    ],
+    interactiveSummary: viewportObservation.interactiveSummary ?? mainObservation.interactiveSummary,
+    accessibilitySummary:
+      viewportObservation.accessibilitySummary ?? mainObservation.accessibilitySummary,
+    interactiveElements:
+      viewportObservation.interactiveElements ?? mainObservation.interactiveElements,
+    structuredResult:
+      viewportObservation.structuredResult ?? mainObservation.structuredResult,
   };
 }
 
@@ -511,6 +572,11 @@ async function runLinkedInCandidateScanPass(step: any, args: {
       scan?: {
         candidates?: CandidateScanItem[];
         nextPageUrl?: string | null;
+        diagnostics?: {
+          totalCards?: number;
+          totalProfileLinks?: number;
+          cardsWithConnectSignal?: number;
+        };
       };
     } | undefined)?.scan ?? null;
   const scannedCandidates = Array.isArray(scan?.candidates)
@@ -518,10 +584,11 @@ async function runLinkedInCandidateScanPass(step: any, args: {
     : [];
   const nextPageUrl =
     typeof scan?.nextPageUrl === "string" ? scan.nextPageUrl : null;
+  const diagnostics = scan?.diagnostics;
 
   const resultSummary =
     completion.status === "completed"
-      ? `Scanned the current LinkedIn people-search page and found ${scannedCandidates.length} connectable candidate${scannedCandidates.length === 1 ? "" : "s"}${nextPageUrl ? "; a next page is available." : "."}`
+      ? `Scanned the current LinkedIn people-search page and found ${scannedCandidates.length} connectable candidate${scannedCandidates.length === 1 ? "" : "s"}${diagnostics ? ` from ${diagnostics.totalCards ?? 0} cards, ${diagnostics.totalProfileLinks ?? 0} profile links, and ${diagnostics.cardsWithConnectSignal ?? 0} inline connect signals` : ""}${nextPageUrl ? "; a next page is available." : "."}`
       : `Failed to scan the current LinkedIn people-search page: ${resultDoc?.errorMessage ?? "unknown error"}`;
 
   await step.runMutation(

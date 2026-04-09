@@ -11,6 +11,7 @@ import {
   enrichLinkedInSearchBatchItems,
   extractLinkedInSearchNextPageUrl,
   extractLinkedInSearchCandidates,
+  inferPlannerPlatformFromUrl,
   isLinkedInConnectIntent,
   isLinkedInProfileContext,
   isLinkedInSearchResultsContext,
@@ -38,6 +39,21 @@ describe("agent planner helpers", () => {
         "https://www.linkedin.com/search/results/people/?keywords=recruiter"
       )
     ).toBe(true);
+    expect(
+      isLinkedInProfileContext(
+        undefined,
+        "https://www.linkedin.com/in/example-recruiter/"
+      )
+    ).toBe(true);
+    expect(
+      isLinkedInSearchResultsContext(
+        undefined,
+        "https://www.linkedin.com/search/results/people/?keywords=recruiter"
+      )
+    ).toBe(true);
+    expect(
+      inferPlannerPlatformFromUrl("https://mail.google.com/mail/u/0/#inbox")
+    ).toBe("gmail");
   });
 
   test("parses a requested connect count with sane fallback and cap", () => {
@@ -96,6 +112,18 @@ describe("agent planner helpers", () => {
       shouldUseConversationDraftFlow({
         goal: "Draft a reply",
         platformHint: "gmail",
+        pageUrl: "https://mail.google.com/mail/u/0/#inbox",
+        pageContext: "Audience: Taylor Recruiter",
+        fieldTarget: {
+          selector: "#composer",
+          platform: "gmail",
+        },
+      })
+    ).toBe(true);
+
+    expect(
+      shouldUseConversationDraftFlow({
+        goal: "Draft a reply",
         pageUrl: "https://mail.google.com/mail/u/0/#inbox",
         pageContext: "Audience: Taylor Recruiter",
         fieldTarget: {
@@ -531,6 +559,68 @@ describe("agent planner helpers", () => {
     expect(decision.payload.items).toHaveLength(1);
     expect(decision.payload.items[0]?.targetName).toBe("Carolyn Wilmes Orr");
     expect(decision.generatedText?.length ?? 0).toBeLessThanOrEqual(300);
+  });
+
+  test("derives a LinkedIn profile connect handoff from the profile url when structured data is empty", () => {
+    const decision = deriveBootstrapPlannerDecision({
+      goal: "Queue a connection request for this LinkedIn profile after approval.",
+      platformHint: "linkedin",
+      pageUrl: "https://www.linkedin.com/in/gianna-satriano-a467a0228/",
+      structured: {
+        data: {
+          title: null,
+          headline: null,
+          summary: null,
+        },
+        matchedFields: [],
+        unmatchedFields: ["title", "headline", "summary"],
+        headings: [],
+        text: "",
+      },
+      interactiveElements: [],
+    });
+
+    expect(decision.kind).toBe("request_approval");
+    if (
+      decision.kind !== "request_approval" ||
+      decision.payload.actionType !== "create_task_batch"
+    ) {
+      throw new Error("Expected request_approval decision");
+    }
+    expect(decision.payload.batchType).toBe("linkedin_connect");
+    expect(decision.payload.items).toHaveLength(1);
+    expect(decision.payload.items[0]?.targetName).toBe("Gianna Satriano");
+    expect(decision.payload.items[0]?.targetUrl).toBe(
+      "https://www.linkedin.com/in/gianna-satriano-a467a0228/"
+    );
+  });
+
+  test("derives a LinkedIn profile connect handoff from the profile url without an explicit platform hint", () => {
+    const decision = deriveBootstrapPlannerDecision({
+      goal: "Queue a connection request for this LinkedIn profile after approval.",
+      pageUrl: "https://www.linkedin.com/in/gianna-satriano-a467a0228/",
+      structured: {
+        data: {
+          title: null,
+          headline: null,
+          summary: null,
+        },
+        matchedFields: [],
+        unmatchedFields: ["title", "headline", "summary"],
+        headings: [],
+        text: "",
+      },
+      interactiveElements: [],
+    });
+
+    expect(decision.kind).toBe("request_approval");
+    if (
+      decision.kind !== "request_approval" ||
+      decision.payload.actionType !== "create_task_batch"
+    ) {
+      throw new Error("Expected request_approval decision");
+    }
+    expect(decision.payload.items[0]?.targetName).toBe("Gianna Satriano");
   });
 
   test("derives multi-target approval-gated connect handoff for LinkedIn search goals", () => {

@@ -21,6 +21,19 @@ class FakeElement {
   scrollTop = 0;
   children: FakeElement[] = [];
   childNodes: Array<{ nodeType: number; textContent?: string }> = [];
+  computedStyle = {
+    display: "block",
+    visibility: "visible",
+    opacity: "1",
+  };
+  rect = {
+    width: 100,
+    height: 20,
+    top: 0,
+    left: 0,
+    right: 100,
+    bottom: 20,
+  };
   private attributes = new Map<string, string>();
   private selectorMap = new Map<string, FakeElement | null>();
   private selectorAllMap = new Map<string, FakeElement[]>();
@@ -47,7 +60,7 @@ class FakeElement {
   }
 
   getBoundingClientRect() {
-    return { width: 100, height: 20, top: 0, left: 0, right: 100, bottom: 20 };
+    return this.rect;
   }
 
   setAttribute(name: string, value: string) {
@@ -211,11 +224,7 @@ describe("browser executor", () => {
         (globalThis as any).window.scrollY += delta;
         (globalThis as any).window.pageYOffset += delta;
       },
-      getComputedStyle: () => ({
-        display: "block",
-        visibility: "visible",
-        opacity: "1",
-      }),
+      getComputedStyle: (el: FakeElement) => el.computedStyle,
     };
     (globalThis as any).location = {
       href: "https://www.linkedin.com/search/results/people/?keywords=recruiter",
@@ -251,6 +260,7 @@ describe("browser executor", () => {
     (globalThis as any).document = {
       body: new FakeElement("body"),
       querySelector: () => null,
+      querySelectorAll: () => [],
       getElementById: () => null,
     };
   });
@@ -665,9 +675,12 @@ describe("browser executor", () => {
     (globalThis as any).document.querySelectorAll = (selector: string) => {
       if (
         selector ===
-        "[data-chameleon-result-urn], .reusable-search__result-container, li.reusable-search__result-container"
+        "[data-chameleon-result-urn], .reusable-search__result-container, li.reusable-search__result-container, .entity-result"
       ) {
         return [card];
+      }
+      if (selector === "a[href*='/in/']") {
+        return [profileLink];
       }
       if (selector === "a[href], button, [role='button']") {
         return [nextPage];
@@ -697,6 +710,48 @@ describe("browser executor", () => {
         ],
         nextPageUrl:
           "https://www.linkedin.com/search/results/people/?keywords=recruiter&page=2",
+        diagnostics: {
+          totalCards: 1,
+          totalProfileLinks: 1,
+          cardsWithConnectSignal: 1,
+          acceptedCandidates: 1,
+        },
+      },
+    });
+  });
+
+  test("tolerates a null structured snapshot from executeScript", async () => {
+    const api = createFakeBrowserApi();
+    const executor = new ChromeBrowserExecutor(api as any);
+    api.setTab(21, makeTab(21, "https://example.com", "complete", true));
+    api.scripting.executeScript.mockResolvedValueOnce([{ result: null }]);
+
+    await expect(
+      executor.execute({
+        kind: "extract_structured",
+        tabId: 21,
+        scope: "main",
+        schema: JSON.stringify({
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            summary: { type: "string" },
+          },
+        }),
+      })
+    ).resolves.toEqual({
+      kind: "extract_structured",
+      tabId: 21,
+      scope: "main",
+      result: {
+        data: {
+          title: null,
+          summary: null,
+        },
+        matchedFields: [],
+        unmatchedFields: ["title", "summary"],
+        headings: [],
+        text: "",
       },
     });
   });
@@ -721,5 +776,28 @@ describe("browser executor", () => {
       tabId: opened.tabId,
       result: "agent-executor",
     });
+  });
+
+  test("retries transient frame-removal errors when injecting scripts", async () => {
+    const api = createFakeBrowserApi();
+    const executor = new ChromeBrowserExecutor(api as any);
+    api.setTab(31, makeTab(31, "https://www.linkedin.com/in/example/", "complete", false));
+
+    api.scripting.executeScript
+      .mockRejectedValueOnce(new Error("Frame with ID 0 was removed."))
+      .mockResolvedValueOnce([{ result: "recovered" }]);
+
+    const result = await executor.execute({
+      kind: "run_script",
+      tabId: 31,
+      func: () => "ignored",
+    });
+
+    expect(result).toEqual({
+      kind: "run_script",
+      tabId: 31,
+      result: "recovered",
+    });
+    expect(api.scripting.executeScript).toHaveBeenCalledTimes(2);
   });
 });

@@ -102,4 +102,28 @@ describe("browser observation helpers", () => {
       text: "hello",
     });
   });
+
+  test("tolerates a missing structured snapshot and returns empty projected data", () => {
+    expect(
+      projectStructuredDataFromSnapshot(
+        null,
+        JSON.stringify({
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            summary: { type: "string" },
+          },
+        })
+      )
+    ).toEqual({
+      data: {
+        title: null,
+        summary: null,
+      },
+      matchedFields: [],
+      unmatchedFields: ["title", "summary"],
+      headings: [],
+      text: "",
+    });
+  });
 });

@@ -349,6 +349,8 @@ const DEFAULT_POLL_INTERVAL_MS = 200;
 const DEFAULT_ELEMENT_TIMEOUT_MS = 5_000;
 const DEFAULT_OBSERVATION_SCOPE: BrowserObservationScope = "main";
 const DEFAULT_SCROLL_AMOUNT_PX = 640;
+const TRANSIENT_SCRIPT_RETRY_LIMIT = 3;
+const TRANSIENT_SCRIPT_RETRY_DELAY_MS = 300;
 
 export type BrowserCommandResultFor<TCommand extends BrowserCommand<any>> =
   TCommand extends BrowserOpenTabCommand
@@ -417,6 +419,17 @@ export interface BrowserExecutor {
   execute<TCommand extends BrowserCommand<any>>(
     command: TCommand
   ): Promise<BrowserCommandResultFor<TCommand>>;
+}
+
+function isTransientScriptExecutionError(error: unknown): boolean {
+  const message =
+    error instanceof Error ? error.message : String(error ?? "");
+  return (
+    message.includes("Frame with ID 0 was removed") ||
+    message.includes("No frame with id 0") ||
+    message.includes("The frame was removed") ||
+    message.includes("Cannot access contents of url")
+  );
 }
 
 export function normalizeBrowserCommand<T = unknown>(
@@ -805,7 +818,7 @@ export class ChromeBrowserExecutor implements BrowserExecutor {
       }
 
       case "extract_structured": {
-        const snapshot = await this.runScript<StructuredDataSnapshot>({
+        const snapshot = await this.runScript<StructuredDataSnapshot | null>({
           kind: "run_script",
           tabId: normalized.tabId,
           world: normalized.world,
@@ -921,13 +934,36 @@ export class ChromeBrowserExecutor implements BrowserExecutor {
   private async runScript<T = unknown>(
     command: Extract<NormalizedBrowserCommand<T>, { kind: "run_script" }>
   ): Promise<T> {
-    const [result] = await this.api.scripting.executeScript({
-      target: { tabId: command.tabId },
-      world: command.world,
-      func: command.func,
-      args: command.args,
-    });
-    return result?.result as T;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < TRANSIENT_SCRIPT_RETRY_LIMIT; attempt += 1) {
+      try {
+        const [result] = await this.api.scripting.executeScript({
+          target: { tabId: command.tabId },
+          world: command.world,
+          func: command.func,
+          args: command.args,
+        });
+        return result?.result as T;
+      } catch (error) {
+        lastError = error;
+        if (!isTransientScriptExecutionError(error)) {
+          throw error;
+        }
+
+        if (attempt >= TRANSIENT_SCRIPT_RETRY_LIMIT - 1) {
+          break;
+        }
+
+        await this.waitForTabComplete(
+          command.tabId,
+          Math.min(DEFAULT_TAB_TIMEOUT_MS, 5_000)
+        ).catch(() => {});
+        await this.wait(TRANSIENT_SCRIPT_RETRY_DELAY_MS * (attempt + 1));
+      }
+    }
+
+    throw lastError;
   }
 
   private async wait(durationMs: number) {

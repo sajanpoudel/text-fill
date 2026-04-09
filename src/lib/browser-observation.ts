@@ -161,20 +161,26 @@ function fallbackValueForProperty(
 }
 
 export function projectStructuredDataFromSnapshot(
-  snapshot: StructuredDataSnapshot,
+  snapshot: StructuredDataSnapshot | null | undefined,
   schema: string,
   _promptHint?: string
 ): StructuredDataExtractionResult {
+  const safeSnapshot: StructuredDataSnapshot = snapshot ?? {
+    text: "",
+    headings: [],
+    fields: [],
+    interactives: [],
+  };
   const properties = parseSchemaProperties(schema);
   const propertyNames = Object.keys(properties);
   const data: Record<string, string | boolean | string[] | null> = {};
   const matchedFields: string[] = [];
   const unmatchedFields: string[] = [];
-  const normalizedText = snapshot.text.replace(/\s+/g, " ").trim();
+  const normalizedText = safeSnapshot.text.replace(/\s+/g, " ").trim();
 
   for (const propertyName of propertyNames) {
     const aliases = buildLookupAliases(propertyName);
-    const fieldMatch = findBestFieldMatch(snapshot.fields, aliases);
+    const fieldMatch = findBestFieldMatch(safeSnapshot.fields, aliases);
     const matchedValue = fieldMatch ? coerceStructuredValue(fieldMatch.value) : null;
 
     if (matchedValue !== null) {
@@ -192,7 +198,7 @@ export function projectStructuredDataFromSnapshot(
 
     const fallback = fallbackValueForProperty(
       propertyName,
-      snapshot.headings,
+      safeSnapshot.headings,
       normalizedText
     );
     if (fallback !== null) {
@@ -209,7 +215,7 @@ export function projectStructuredDataFromSnapshot(
     data,
     matchedFields,
     unmatchedFields,
-    headings: snapshot.headings,
+    headings: safeSnapshot.headings,
     text: normalizedText,
   };
 }

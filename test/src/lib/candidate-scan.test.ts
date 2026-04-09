@@ -6,6 +6,7 @@ class FakeElement {
   innerText: string;
   tagName = "DIV";
   href?: string;
+  parentElement: FakeElement | null = null;
   private attributes = new Map<string, string>();
   private selectorMap = new Map<string, FakeElement | null>();
   private selectorAllMap = new Map<string, FakeElement[]>();
@@ -29,6 +30,21 @@ class FakeElement {
 
   hasAttribute(name: string) {
     return this.attributes.has(name);
+  }
+
+  closest<T>(selector: string): T | null {
+    if (
+      selector.includes("header") ||
+      selector.includes("nav") ||
+      selector.includes("aside") ||
+      selector.includes("footer") ||
+      selector.includes("navigation") ||
+      selector.includes("banner") ||
+      selector.includes("contentinfo")
+    ) {
+      return null;
+    }
+    return this.parentElement as T | null;
   }
 
   setQuerySelector(selector: string, value: FakeElement | null) {
@@ -77,6 +93,7 @@ describe("candidate scan helpers", () => {
     const firstConnect = new FakeElement("Connect");
     const firstLink = new FakeElement();
     firstLink.href = "https://www.linkedin.com/in/carolyn-wilmes-orr/?trk=feed";
+    firstLink.parentElement = firstCard;
     const firstName = new FakeElement("Carolyn Wilmes Orr");
     const firstHeadline = new FakeElement("Senior Software Engineering Recruiter");
     firstCard.setQuerySelectorAll("button, [role='button']", [firstConnect]);
@@ -91,6 +108,7 @@ describe("candidate scan helpers", () => {
     const secondConnect = new FakeElement("Connect");
     const secondLink = new FakeElement();
     secondLink.href = "https://www.linkedin.com/in/taylor-recruiter/";
+    secondLink.parentElement = secondCard;
     const secondName = new FakeElement("Taylor Recruiter");
     secondCard.setQuerySelectorAll("button, [role='button']", [secondConnect]);
     secondCard.setQuerySelector("a[href*='/in/']", secondLink);
@@ -110,9 +128,12 @@ describe("candidate scan helpers", () => {
     (globalThis as any).document.querySelectorAll = (selector: string) => {
       if (
         selector ===
-        "[data-chameleon-result-urn], .reusable-search__result-container, li.reusable-search__result-container"
+        "[data-chameleon-result-urn], .reusable-search__result-container, li.reusable-search__result-container, .entity-result"
       ) {
         return [firstCard, secondCard];
+      }
+      if (selector === "a[href*='/in/']") {
+        return [firstLink, secondLink];
       }
       if (selector === "a[href], button, [role='button']") {
         return [nextLink];
@@ -133,5 +154,104 @@ describe("candidate scan helpers", () => {
       },
     ]);
     expect(scan.nextPageUrl).toContain("page=2");
+    expect(scan.diagnostics).toMatchObject({
+      totalCards: 2,
+      totalProfileLinks: 2,
+      cardsWithConnectSignal: 2,
+      acceptedCandidates: 2,
+    });
+  });
+
+  test("detects connectable candidates when the button label is only in aria-label and the name comes from the profile link", () => {
+    const card = new FakeElement();
+    card.setAttribute("class", "entity-result");
+
+    const connect = new FakeElement();
+    connect.setAttribute("aria-label", "Invite Taylor Recruiter to connect");
+
+    const profileLink = new FakeElement("Taylor Recruiter 2nd");
+    profileLink.href = "https://www.linkedin.com/in/taylor-recruiter/?miniProfileUrn=abc";
+    profileLink.parentElement = card;
+
+    card.setQuerySelectorAll("button, [role='button']", [connect]);
+    card.setQuerySelector("a[href*='/in/']", profileLink);
+    card.setQuerySelector(
+      ".entity-result__title-text a span[aria-hidden='true'], .entity-result__title-line a span[aria-hidden='true']",
+      null
+    );
+    card.setQuerySelector("a[href*='/in/']", profileLink);
+
+    (globalThis as any).document.querySelectorAll = (selector: string) => {
+      if (
+        selector ===
+        "[data-chameleon-result-urn], .reusable-search__result-container, li.reusable-search__result-container, .entity-result"
+      ) {
+        return [card];
+      }
+      if (selector === "a[href*='/in/']") {
+        return [profileLink];
+      }
+      if (selector === "a[href], button, [role='button']") {
+        return [];
+      }
+      return [];
+    };
+
+    const scan = scanLinkedInCandidatesInPage(5);
+    expect(scan.candidates).toEqual([
+      {
+        targetName: "Taylor Recruiter",
+        targetUrl: "https://www.linkedin.com/in/taylor-recruiter/",
+      },
+    ]);
+    expect(scan.diagnostics).toMatchObject({
+      totalCards: 1,
+      totalProfileLinks: 1,
+      cardsWithConnectSignal: 1,
+      acceptedCandidates: 1,
+    });
+  });
+
+  test("falls back to visible profile links on LinkedIn search pages when result card selectors do not match", () => {
+    (globalThis as any).location = {
+      href: "https://www.linkedin.com/search/results/people/?keywords=software%20engineer%20recuiter&origin=SWITCH_SEARCH_VERTICAL",
+    };
+
+    const resultContainer = new FakeElement(
+      "Gianna Satriano Software Engineering Recruiter Cincinnati, Ohio"
+    );
+    const profileLink = new FakeElement("Gianna Satriano");
+    profileLink.href = "https://www.linkedin.com/in/gianna-satriano-a467a0228/";
+    profileLink.parentElement = resultContainer;
+
+    (globalThis as any).document.querySelectorAll = (selector: string) => {
+      if (
+        selector ===
+        "[data-chameleon-result-urn], .reusable-search__result-container, li.reusable-search__result-container, .entity-result"
+      ) {
+        return [];
+      }
+      if (selector === "a[href*='/in/']") {
+        return [profileLink];
+      }
+      if (selector === "a[href], button, [role='button']") {
+        return [];
+      }
+      return [];
+    };
+
+    const scan = scanLinkedInCandidatesInPage(5);
+    expect(scan.candidates).toEqual([
+      {
+        targetName: "Gianna Satriano",
+        targetUrl: "https://www.linkedin.com/in/gianna-satriano-a467a0228/",
+        headline: "Software Engineering Recruiter Cincinnati, Ohio",
+      },
+    ]);
+    expect(scan.diagnostics).toMatchObject({
+      totalCards: 1,
+      totalProfileLinks: 1,
+      acceptedCandidates: 1,
+    });
   });
 });

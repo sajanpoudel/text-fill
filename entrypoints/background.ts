@@ -4,9 +4,8 @@ import type { SessionPayload } from "../src/lib/session-observer.ts";
 import { ChromeBrowserExecutor } from "../src/lib/browser-executor.ts";
 import type { SerializableBrowserCommand } from "../src/lib/browser-command-spec.ts";
 import {
-  executeLinkedInConnectFromMoreMenuInPage,
-  executeLinkedInConnectPrimaryActionInPage,
-  executeLinkedInFillAndSendConnectDialogInPage,
+  executeWaitForLinkedInPrimaryActionsInPage,
+  executeLinkedInConnectWorkflowInPage,
 } from "../src/lib/browser-control.ts";
 import {
   executeSerializableBrowserCommand,
@@ -28,6 +27,25 @@ import {
   type TaskQueueTask,
 } from "../src/lib/task-batch-handoff.ts";
 import {
+  buildLinkedInConnectPageContext,
+  buildLinkedInCustomInviteUrl,
+  coalesceLinkedInRecipientProfile,
+  type LinkedInRecipientProfile,
+} from "../src/lib/linkedin-recipient-profile.ts";
+import {
+  mergeCapturedGenerationContexts,
+  normalizeCapturedGenerationContexts,
+  type GenerationCapturedContext,
+} from "../src/lib/captured-contexts.ts";
+import {
+  appendPlatformDomObservation,
+  createEmptyPlatformDomLearningState,
+  derivePlatformDomHints,
+  normalizePlatformDomLabels,
+  normalizePlatformDomLearningState,
+  type PlatformDomHints,
+} from "../src/lib/platform-dom-learning.ts";
+import {
   normalizeVoiceRuntimeState,
   type VoiceRuntimeState,
 } from "../src/lib/voice-runtime.ts";
@@ -38,6 +56,7 @@ const convex = new ConvexHttpClient(import.meta.env.VITE_CONVEX_URL as string);
 const browserExecutor = new ChromeBrowserExecutor(chrome);
 let currentTaskQueueScope = DEFAULT_TASK_QUEUE_SCOPE;
 let voiceRuntimeState: VoiceRuntimeState = "idle";
+const PLATFORM_DOM_LEARNING_KEY = "platformDomLearning";
 
 // ── Auth sync + silent refresh ────────────────────────────────────────────
 // The popup stores the JWT (convexToken) and refresh token (convexRefreshToken)
@@ -367,6 +386,85 @@ async function notifyMemoryUpdates(
   }
 }
 
+async function loadCapturedContextsForGeneration(): Promise<
+  GenerationCapturedContext[]
+> {
+  let localContexts: GenerationCapturedContext[] = [];
+  try {
+    const { capturedContexts } = await chrome.storage.local.get("capturedContexts");
+    localContexts = normalizeCapturedGenerationContexts(capturedContexts);
+  } catch {
+    // Non-fatal
+  }
+
+  let activeBackendContext: GenerationCapturedContext[] = [];
+  try {
+    const activeContext = await convex.query(api.context.getActive, {});
+    activeBackendContext = normalizeCapturedGenerationContexts(
+      activeContext
+        ? [
+            {
+              id: String(activeContext._id),
+              title: activeContext.title,
+              url: activeContext.url,
+              text: activeContext.text,
+              capturedAt: activeContext.capturedAt,
+              isActive: activeContext.isActive,
+            },
+          ]
+        : []
+    );
+  } catch {
+    // Non-fatal
+  }
+
+  return mergeCapturedGenerationContexts(localContexts, activeBackendContext);
+}
+
+async function loadPlatformDomHints(
+  surface: "linkedin_profile_connect"
+): Promise<PlatformDomHints> {
+  try {
+    const { [PLATFORM_DOM_LEARNING_KEY]: stored } = await chrome.storage.local.get(
+      PLATFORM_DOM_LEARNING_KEY
+    );
+    const state = normalizePlatformDomLearningState(stored);
+    return derivePlatformDomHints(state, surface);
+  } catch {
+    return derivePlatformDomHints(createEmptyPlatformDomLearningState(), surface);
+  }
+}
+
+async function recordPlatformDomObservation(params: {
+  surface: "linkedin_profile_connect";
+  finalState: string;
+  succeeded: boolean;
+  labels: string[];
+  pageUrl?: string;
+  resolutionPath?: string[];
+}) {
+  try {
+    const { [PLATFORM_DOM_LEARNING_KEY]: stored } = await chrome.storage.local.get(
+      PLATFORM_DOM_LEARNING_KEY
+    );
+    const next = appendPlatformDomObservation(
+      normalizePlatformDomLearningState(stored),
+      {
+        surface: params.surface,
+        finalState: params.finalState,
+        succeeded: params.succeeded,
+        labels: normalizePlatformDomLabels(params.labels),
+        pageUrl: params.pageUrl,
+        resolutionPath: params.resolutionPath,
+        observedAt: Date.now(),
+      }
+    );
+    await chrome.storage.local.set({ [PLATFORM_DOM_LEARNING_KEY]: next });
+  } catch {
+    // Non-fatal
+  }
+}
+
 async function handleGenerate(
   action: string,
   payload: Record<string, unknown>,
@@ -374,16 +472,7 @@ async function handleGenerate(
 ) {
   const { recipientProfileUrl, ...generationPayload } = payload;
 
-  // Read active contexts from local storage (multi-context library)
-  let capturedContexts: Array<{ id: string; title: string; url: string; hostname: string; text: string; time: number; active: boolean }> = [];
-  try {
-    const { capturedContexts: stored } = await chrome.storage.local.get("capturedContexts");
-    if (Array.isArray(stored)) {
-      capturedContexts = stored.filter((c: any) => c && c.active !== false && typeof c.text === "string" && c.text.trim());
-    }
-  } catch {
-    // Non-fatal
-  }
+  const capturedContexts = await loadCapturedContextsForGeneration();
 
   // Live recipient profile lookup (Layer 3) — only for LinkedIn, fire-and-forget on fail
   let recipientContext: string | undefined;
@@ -969,6 +1058,35 @@ function formatRecipientProfile(profile: RecipientProfile): string {
   return lines.join("\n");
 }
 
+function summarizeLinkedInConnectDebug(result: {
+  debug?: {
+    primaryButtons?: string[];
+    menuOptions?: string[];
+    dialogButtons?: string[];
+    resolutionPath?: string[];
+  };
+}): string {
+  const parts: string[] = [];
+  const primary = result.debug?.primaryButtons?.slice(0, 5).join(", ");
+  const menu = result.debug?.menuOptions?.slice(0, 5).join(", ");
+  const dialog = result.debug?.dialogButtons?.slice(0, 5).join(", ");
+  const path = result.debug?.resolutionPath?.slice(0, 8).join(" -> ");
+  if (primary) parts.push(`primary=${primary}`);
+  if (menu) parts.push(`menu=${menu}`);
+  if (dialog) parts.push(`dialog=${dialog}`);
+  if (path) parts.push(`path=${path}`);
+  return parts.join(" | ");
+}
+
+function isRetriableLinkedInConnectError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return (
+    message.includes("Frame with ID 0 was removed") ||
+    message.includes("No frame with id 0") ||
+    message.includes("The frame was removed")
+  );
+}
+
 // ── Persistent task queue (Tier 3 browser automation) ────────────────────────
 
 type Task = TaskQueueTask;
@@ -1220,7 +1338,24 @@ class PersistentTaskQueue {
   private async executeTask(task: Task): Promise<"sent" | "failed" | "skipped"> {
     try {
       if (task.type === "linkedin_connect") {
-        return await this.executeLinkedInConnect(task);
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            return await this.executeLinkedInConnect(task);
+          } catch (error) {
+            if (!isRetriableLinkedInConnectError(error) || attempt > 0) {
+              throw error;
+            }
+            console.warn(
+              "[TaskQueue] transient linkedin_connect retry",
+              task.targetUrl,
+              error instanceof Error ? error.message : error
+            );
+            await new Promise((resolve) =>
+              setTimeout(resolve, humanDelay(1200 + attempt * 600))
+            );
+          }
+        }
+        return "failed";
       }
       if (task.itemId) {
         await convex.mutation(api.tasks.updateItemStatus, {
@@ -1244,12 +1379,15 @@ class PersistentTaskQueue {
   }
 
   private async executeLinkedInConnect(task: Task): Promise<"sent" | "failed" | "skipped"> {
+    const previousActiveTab = await getActiveTab().catch(() => null);
+    const domHints = await loadPlatformDomHints("linkedin_profile_connect");
     const opened = await browserExecutor.execute({
       kind: "open_tab",
       url: task.targetUrl,
-      active: false,
+      active: true,
     });
     const tabId = opened.tabId;
+    let closeTabOnExit = true;
 
     try {
       await browserExecutor.execute({
@@ -1262,28 +1400,57 @@ class PersistentTaskQueue {
         durationMs: humanDelay(1200),
       });
 
-      const recipientProfile = await fetchRecipientProfile(task.targetUrl);
-      const recipientName =
-        recipientProfile?.name || task.targetName || "this person";
-      const recipientHeadline = recipientProfile?.headline ?? "";
-      const pageContext = [
-        "[CONNECT_NOTE_300]",
-        recipientName
-          ? `Audience: ${recipientName}${recipientHeadline ? ` — ${recipientHeadline}` : ""}`
-          : "",
-      ]
-        .filter(Boolean)
-        .join("\n");
+      const actionProbe = await browserExecutor.execute({
+        kind: "run_script",
+        tabId,
+        world: "MAIN",
+        func: executeWaitForLinkedInPrimaryActionsInPage,
+        args: [9_000, domHints],
+      });
+      const actionProbeResult = actionProbe.result as unknown as Awaited<
+        ReturnType<typeof executeWaitForLinkedInPrimaryActionsInPage>
+      >;
+      const preflightLabels = Array.isArray(actionProbeResult?.labels)
+        ? actionProbeResult.labels
+        : [];
+      if (!actionProbeResult?.ready) {
+        console.warn("[TaskQueue] linkedin_connect preflight", {
+          targetUrl: task.targetUrl,
+          targetName: task.targetName,
+          labels: preflightLabels.join(", "),
+        });
+      }
+
+      const currentTabProfile = await browserExecutor.execute({
+        kind: "run_script",
+        tabId,
+        world: "ISOLATED",
+        func: extractLinkedInJsonLdForInjection,
+      });
+      const recipientProfile = coalesceLinkedInRecipientProfile({
+        observedProfile:
+          (currentTabProfile.result as LinkedInRecipientProfile | null | undefined) ??
+          null,
+        fallbackTargetName: task.targetName,
+      });
+      const pageContext = buildLinkedInConnectPageContext({
+        recipientProfile,
+        fallbackTargetName: task.targetName,
+      });
 
       let noteText = (task.userEditedText ?? task.generatedText ?? "").trim();
       if (!noteText) {
         try {
+          const capturedContexts = await loadCapturedContextsForGeneration();
           const generated = await convex.action(api.generate.generate, {
             instruction:
               "Write a concise, natural LinkedIn connection note. Sound human, specific, and low-pressure.",
             pageContext,
             platform: "linkedin",
             fieldMaxLength: 300,
+            ...(capturedContexts.length > 0
+              ? { capturedContexts }
+              : {}),
             ...(recipientProfile
               ? { recipientContext: formatRecipientProfile(recipientProfile) }
               : {}),
@@ -1305,74 +1472,120 @@ class PersistentTaskQueue {
         kind: "run_script",
         tabId,
         world: "MAIN",
-        func: executeLinkedInConnectPrimaryActionInPage,
+        func: executeLinkedInConnectWorkflowInPage,
+        args: [noteText, domHints],
       });
-
-      if (connectResult.result === "opened_more") {
-        await browserExecutor.execute({
-          kind: "wait",
-          durationMs: humanDelay(700),
-        });
-        await browserExecutor.execute({
-          kind: "run_script",
-          tabId,
-          world: "MAIN",
-          func: executeLinkedInConnectFromMoreMenuInPage,
-        });
-      }
-
-      await browserExecutor.execute({
-        kind: "wait",
-        durationMs: humanDelay(900),
-      });
-
-      const fillAndSend = async () =>
-        browserExecutor.execute({
-          kind: "run_script",
-          tabId,
-          world: "MAIN",
-          func: executeLinkedInFillAndSendConnectDialogInPage,
-          args: [noteText],
-        });
-
-      let finalState = "no_dialog";
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        const state = await fillAndSend();
-        finalState = String(state.result ?? "");
-        if (finalState === "note_opened") {
+      let connectFlow = connectResult.result as unknown as Awaited<
+        ReturnType<typeof executeLinkedInConnectWorkflowInPage>
+      >;
+      if (String(connectFlow?.state ?? "") === "dialog_not_found") {
+        const customInviteUrl = buildLinkedInCustomInviteUrl(task.targetUrl);
+        if (customInviteUrl) {
+          await browserExecutor.execute({
+            kind: "navigate",
+            tabId,
+            url: customInviteUrl,
+            waitForComplete: true,
+            timeoutMs: 15_000,
+          });
           await browserExecutor.execute({
             kind: "wait",
-            durationMs: humanDelay(700),
+            durationMs: humanDelay(900),
           });
-          continue;
+          const retryResult = await browserExecutor.execute({
+            kind: "run_script",
+            tabId,
+            world: "MAIN",
+            func: executeLinkedInConnectWorkflowInPage,
+            args: [noteText, domHints],
+          });
+          connectFlow = retryResult.result as unknown as Awaited<
+            ReturnType<typeof executeLinkedInConnectWorkflowInPage>
+          >;
         }
-        break;
       }
+      const finalState = String(connectFlow?.state ?? "dialog_not_found");
+      const debugSummary =
+        summarizeLinkedInConnectDebug(connectFlow ?? {}) ||
+        (preflightLabels.length > 0
+          ? `preflight=${preflightLabels.slice(0, 8).join(", ")}`
+          : "");
 
-      if (
-        connectResult.result === "not_found" ||
-        finalState === "send_not_found" ||
-        finalState === "no_dialog"
-      ) {
+      console.warn("[TaskQueue] linkedin_connect", {
+        targetUrl: task.targetUrl,
+        targetName: task.targetName,
+        finalState,
+        debugSummary,
+      });
+
+      const observedLabels = normalizePlatformDomLabels([
+        ...preflightLabels,
+        ...(connectFlow?.debug?.primaryButtons ?? []),
+        ...(connectFlow?.debug?.menuOptions ?? []),
+        ...(connectFlow?.debug?.dialogButtons ?? []),
+      ]);
+      await recordPlatformDomObservation({
+        surface: "linkedin_profile_connect",
+        finalState,
+        succeeded: finalState === "sent",
+        labels: observedLabels,
+        pageUrl: task.targetUrl,
+        resolutionPath: connectFlow?.debug?.resolutionPath,
+      });
+
+      if (finalState === "already_connected" || finalState === "already_pending") {
         if (task.itemId) {
           await convex.mutation(api.tasks.updateItemStatus, {
             itemId: task.itemId as any,
             status: "skipped",
-            errorMessage: "LinkedIn connect controls not found",
+            errorMessage: [
+              finalState === "already_pending"
+                ? "LinkedIn invitation already pending"
+                : "LinkedIn profile already connected",
+              debugSummary,
+            ]
+              .filter(Boolean)
+              .join(" | ")
+              .slice(0, 500),
           });
         }
         return "skipped";
       }
 
       if (finalState !== "sent") {
+        if (
+          finalState === "dialog_not_found" ||
+          finalState === "note_editor_not_found" ||
+          finalState === "send_not_found"
+        ) {
+          closeTabOnExit = false;
+          console.warn("[TaskQueue] linkedin_connect preserved_tab", {
+            targetUrl: task.targetUrl,
+            targetName: task.targetName,
+            finalState,
+          });
+        }
         if (task.itemId) {
           await convex.mutation(api.tasks.updateItemStatus, {
             itemId: task.itemId as any,
-            status: "failed",
-            errorMessage: `Unexpected LinkedIn dialog state: ${finalState}`,
+            status:
+              finalState === "no_connect_control" ||
+              finalState === "menu_connect_not_found"
+                ? "skipped"
+                : "failed",
+            errorMessage: [
+              `LinkedIn connect flow ended: ${finalState}`,
+              debugSummary,
+            ]
+              .filter(Boolean)
+              .join(" | ")
+              .slice(0, 500),
           });
         }
-        return "failed";
+        return finalState === "no_connect_control" ||
+          finalState === "menu_connect_not_found"
+          ? "skipped"
+          : "failed";
       }
 
       if (task.itemId) {
@@ -1387,7 +1600,18 @@ class PersistentTaskQueue {
         kind: "wait",
         durationMs: 500,
       });
-      browserExecutor.execute({ kind: "close_tab", tabId }).catch(() => {});
+      if (closeTabOnExit) {
+        browserExecutor.execute({ kind: "close_tab", tabId }).catch(() => {});
+      }
+      if (
+        closeTabOnExit &&
+        previousActiveTab?.id &&
+        previousActiveTab.id !== tabId
+      ) {
+        chrome.tabs
+          .update(previousActiveTab.id, { active: true })
+          .catch(() => {});
+      }
     }
   }
 }

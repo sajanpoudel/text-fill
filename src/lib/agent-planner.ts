@@ -134,6 +134,41 @@ const DIRECT_DRAFT_PLATFORM_SET = new Set([
   "linkedin",
 ]);
 
+export function inferPlannerPlatformFromUrl(
+  pageUrl: string | undefined
+): string | undefined {
+  const raw = normalizeText(pageUrl);
+  if (!raw) return undefined;
+
+  try {
+    const url = new URL(raw);
+    const hostname = url.hostname.toLowerCase();
+    if (/(\.|^)linkedin\.com$/.test(hostname)) return "linkedin";
+    if (/(\.|^)mail\.google\.com$/.test(hostname)) return "gmail";
+    if (/(\.|^)outlook\.office\.com$/.test(hostname) || /(\.|^)outlook\.live\.com$/.test(hostname)) {
+      return "outlook";
+    }
+    if (/(\.|^)slack\.com$/.test(hostname)) return "slack";
+    if (/(\.|^)discord\.com$/.test(hostname)) return "discord";
+    if (/(\.|^)messenger\.com$/.test(hostname)) return "messenger";
+    if (/(\.|^)facebook\.com$/.test(hostname)) return "facebook";
+    if (/(\.|^)x\.com$/.test(hostname) || /(\.|^)twitter\.com$/.test(hostname)) {
+      return "twitter";
+    }
+    if (/(\.|^)threads\.net$/.test(hostname)) return "threads";
+    if (/(\.|^)instagram\.com$/.test(hostname)) return "instagram";
+    if (/(\.|^)youtube\.com$/.test(hostname)) return "youtube";
+    if (/(\.|^)reddit\.com$/.test(hostname)) return "reddit";
+    if (/(\.|^)instructure\.com$/.test(hostname) || hostname.startsWith("canvas.")) {
+      return "canvas";
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
 function extractAudienceNameFromPlannerContext(
   context: string | undefined
 ): string | undefined {
@@ -341,6 +376,7 @@ function inferTargetName(observation: BootstrapPlannerObservation): string | nul
     normalizeText(structured?.title) ??
     normalizeText(structured?.name) ??
     observation.structured?.headings?.map(normalizeText).find(Boolean) ??
+    inferLinkedInProfileNameFromUrl(observation.pageUrl) ??
     null
   );
 }
@@ -355,6 +391,40 @@ function inferTargetHeadline(observation: BootstrapPlannerObservation): string |
   );
 }
 
+function inferLinkedInProfileNameFromUrl(
+  pageUrl: string | undefined
+): string | null {
+  const raw = normalizeText(pageUrl);
+  if (!raw) return null;
+
+  try {
+    const url = new URL(raw);
+    if (!/(\.|^)linkedin\.com$/i.test(url.hostname)) return null;
+    const match = url.pathname.match(/^\/in\/([^/?#]+)\/?$/i);
+    if (!match?.[1]) return null;
+
+    const tokens = match[1]
+      .split("-")
+      .map((token) => token.trim())
+      .filter(Boolean)
+      .filter((token, index, all) => {
+        if (index < all.length - 1) return true;
+        return !/\d/.test(token);
+      })
+      .map((token) => token.replace(/[^a-z]/gi, ""))
+      .filter(Boolean);
+
+    if (tokens.length === 0) return null;
+
+    return tokens
+      .slice(0, 4)
+      .map((token) => token.charAt(0).toUpperCase() + token.slice(1).toLowerCase())
+      .join(" ");
+  } catch {
+    return null;
+  }
+}
+
 export function isLinkedInConnectIntent(goal: string): boolean {
   return /\b(connect|connection requests?|invite|outreach|reach out)\b/i.test(goal);
 }
@@ -363,8 +433,9 @@ export function isLinkedInProfileContext(
   platformHint: string | undefined,
   pageUrl: string | undefined
 ): boolean {
+  const platform = platformHint ?? inferPlannerPlatformFromUrl(pageUrl);
   return (
-    platformHint === "linkedin" &&
+    platform === "linkedin" &&
     typeof pageUrl === "string" &&
     /linkedin\.com\/in\//i.test(pageUrl)
   );
@@ -374,8 +445,9 @@ export function isLinkedInSearchResultsContext(
   platformHint: string | undefined,
   pageUrl: string | undefined
 ): boolean {
+  const platform = platformHint ?? inferPlannerPlatformFromUrl(pageUrl);
   return (
-    platformHint === "linkedin" &&
+    platform === "linkedin" &&
     typeof pageUrl === "string" &&
     /linkedin\.com\/search\/results\/people/i.test(pageUrl)
   );
@@ -392,9 +464,11 @@ export function parseRequestedConnectCount(
 }
 
 export function supportsDirectDraftPlatform(
-  platformHint: string | undefined
+  platformHint: string | undefined,
+  pageUrl?: string
 ): boolean {
-  return Boolean(platformHint && DIRECT_DRAFT_PLATFORM_SET.has(platformHint));
+  const platform = platformHint ?? inferPlannerPlatformFromUrl(pageUrl);
+  return Boolean(platform && DIRECT_DRAFT_PLATFORM_SET.has(platform));
 }
 
 export function shouldUseConversationDraftFlow(args: {
@@ -404,7 +478,7 @@ export function shouldUseConversationDraftFlow(args: {
   fieldTarget?: PlannerFieldTarget;
   pageUrl?: string;
 }): boolean {
-  if (!supportsDirectDraftPlatform(args.platformHint)) {
+  if (!supportsDirectDraftPlatform(args.platformHint, args.pageUrl)) {
     return false;
   }
   if (!args.fieldTarget?.selector || !args.pageContext?.trim()) {

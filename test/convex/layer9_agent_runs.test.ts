@@ -194,9 +194,17 @@ async function completeBootstrapObservationPass(args: {
   runId: Id<"agentRuns">;
   tabId: number;
   pageUrl: string;
+  scope?: "main" | "viewport";
   title?: string;
   headline?: string;
   summary?: string;
+  structuredResult?: {
+    data?: Record<string, unknown>;
+    matchedFields?: string[];
+    unmatchedFields?: string[];
+    headings?: string[];
+    text?: string;
+  };
   interactiveElements?: Array<{
     id: string;
     selector: string;
@@ -210,6 +218,7 @@ async function completeBootstrapObservationPass(args: {
   }>;
 }) {
   const { authed, t, tabId, pageUrl } = args;
+  const scope = args.scope ?? "main";
 
   let pending = await authed.query(api.agentRuns.listPendingCommandsForTab, {
     tabId,
@@ -229,7 +238,7 @@ async function completeBootstrapObservationPass(args: {
     result: {
       kind: "snapshot_interactives",
       tabId,
-      scope: "main",
+      scope,
       elements:
         args.interactiveElements ?? [
           {
@@ -267,7 +276,7 @@ async function completeBootstrapObservationPass(args: {
     result: {
       kind: "get_accessibility_tree",
       tabId,
-      scope: "main",
+      scope,
       tree: {
         tag: "main",
         role: "main",
@@ -298,18 +307,19 @@ async function completeBootstrapObservationPass(args: {
     result: {
       kind: "extract_structured",
       tabId,
-      scope: "main",
-      result: {
-        data: {
-          title: args.title ?? "Example Recruiter",
-          headline: args.headline ?? "Senior Technical Recruiter",
-          summary: args.summary ?? "Focused on software engineering hiring.",
+      scope,
+      result:
+        args.structuredResult ?? {
+          data: {
+            title: args.title ?? "Example Recruiter",
+            headline: args.headline ?? "Senior Technical Recruiter",
+            summary: args.summary ?? "Focused on software engineering hiring.",
+          },
+          matchedFields: ["title", "headline", "summary"],
+          unmatchedFields: [],
+          headings: [args.title ?? "Example Recruiter"],
+          text: args.summary ?? "Focused on software engineering hiring.",
         },
-        matchedFields: ["title", "headline", "summary"],
-        unmatchedFields: [],
-        headings: [args.title ?? "Example Recruiter"],
-        text: args.summary ?? "Focused on software engineering hiring.",
-      },
     },
   });
 
@@ -354,6 +364,12 @@ async function completeLinkedInCandidateScanPass(args: {
         pageType: "people_search",
         candidates: args.candidates,
         nextPageUrl: args.nextPageUrl ?? null,
+        diagnostics: {
+          totalCards: args.candidates.length,
+          totalProfileLinks: args.candidates.length,
+          cardsWithConnectSignal: args.candidates.length,
+          acceptedCandidates: args.candidates.length,
+        },
       },
     },
   });
@@ -1611,6 +1627,233 @@ describe("agent runs", () => {
         pageUrl: "https://www.linkedin.com/in/timeout-case/",
       });
       expect(pending).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("bootstrap workflow falls back to a top-down viewport scan when the main-region pass is empty", async () => {
+    vi.useFakeTimers();
+    try {
+      const { t, authed } = await setup();
+      const pageUrl = "https://www.linkedin.com/search/results/people/?keywords=recruiter";
+      const { runId } = await authed.mutation(api.agentOrchestration.startRun, {
+        goal: "Inspect this page, gather context, and summarize the next safe agentic action.",
+        platformHint: "linkedin",
+        targetTabId: 77,
+        pageUrl,
+      });
+
+      await flushDueScheduled(t);
+
+      await completeBootstrapObservationPass({
+        authed,
+        t,
+        runId,
+        tabId: 77,
+        pageUrl,
+        interactiveElements: [],
+        structuredResult: {
+          data: {},
+          matchedFields: [],
+          unmatchedFields: ["title", "headline", "summary"],
+          headings: [],
+          text: "",
+        },
+      });
+
+      let pending = await authed.query(api.agentRuns.listPendingCommandsForTab, {
+        tabId: 77,
+        pageUrl,
+      });
+      expect(pending).toHaveLength(1);
+      expect((pending[0].command as { kind?: string; scope?: string }).kind).toBe(
+        "snapshot_interactives"
+      );
+      expect((pending[0].command as { scope?: string }).scope).toBe("viewport");
+
+      await completeBootstrapObservationPass({
+        authed,
+        t,
+        runId,
+        tabId: 77,
+        pageUrl,
+        scope: "viewport",
+        title: "Search results for recruiter",
+        headline: "Visible recruiter profiles",
+        summary: "Several visible LinkedIn recruiter results are present on the page.",
+        interactiveElements: [
+          {
+            id: "interactive-1",
+            selector: "a[href='/in/example-recruiter/']",
+            tag: "a",
+            role: null,
+            type: null,
+            href: "https://www.linkedin.com/in/example-recruiter/",
+            label: "Example Recruiter",
+            text: "Example Recruiter",
+            disabled: false,
+          },
+        ],
+      });
+
+      const details = await authed.query(api.agentRuns.getRun, {
+        runId,
+        stepLimit: 50,
+      });
+      expect(details?.run.status).toBe("completed");
+      expect(
+        details?.steps.some(
+          (entry) =>
+            entry.role === "system" &&
+            entry.content.includes("retrying with a top-down full-page scan")
+        )
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("linkedin profile connect runs still reach approval when bootstrap observations are empty", async () => {
+    vi.useFakeTimers();
+    try {
+      const { authed, t } = await setup();
+      const started = await authed.mutation(api.agentOrchestration.startRun, {
+        goal: "Queue a connection request for this LinkedIn profile after approval.",
+        platformHint: "linkedin",
+        targetTabId: 71,
+        pageUrl: "https://www.linkedin.com/in/gianna-satriano-a467a0228/",
+      });
+
+      await flushDueScheduled(t);
+
+      await completeBootstrapObservationPass({
+        authed,
+        t,
+        runId: started.runId,
+        tabId: 71,
+        pageUrl: "https://www.linkedin.com/in/gianna-satriano-a467a0228/",
+        scope: "main",
+        interactiveElements: [],
+        structuredResult: {
+          data: {
+            title: null,
+            headline: null,
+            summary: null,
+          },
+          matchedFields: [],
+          unmatchedFields: ["title", "headline", "summary"],
+          headings: [],
+          text: "",
+        },
+      });
+
+      await completeBootstrapObservationPass({
+        authed,
+        t,
+        runId: started.runId,
+        tabId: 71,
+        pageUrl: "https://www.linkedin.com/in/gianna-satriano-a467a0228/",
+        scope: "viewport",
+        interactiveElements: [],
+        structuredResult: {
+          data: {
+            title: null,
+            headline: null,
+            summary: null,
+          },
+          matchedFields: [],
+          unmatchedFields: ["title", "headline", "summary"],
+          headings: [],
+          text: "",
+        },
+      });
+
+      const approvals = await authed.query(api.agentRuns.listPendingApprovals, {});
+      expect(approvals).toHaveLength(1);
+      expect(approvals[0].approvalKind).toBe("connect");
+      expect(approvals[0].title).toContain("Gianna Satriano");
+      expect(
+        (approvals[0].payload as { items?: Array<{ targetName?: string; targetUrl?: string }> })
+          .items?.[0]
+      ).toMatchObject({
+        targetName: "Gianna Satriano",
+        targetUrl: "https://www.linkedin.com/in/gianna-satriano-a467a0228/",
+      });
+
+      const details = await authed.query(api.agentRuns.getRun, {
+        runId: started.runId,
+        stepLimit: 20,
+      });
+      expect(details?.run.status).toBe("awaiting_approval");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("linkedin profile connect runs still reach approval without an explicit platform hint", async () => {
+    vi.useFakeTimers();
+    try {
+      const { authed, t } = await setup();
+      const started = await authed.mutation(api.agentOrchestration.startRun, {
+        goal: "Queue a connection request for this LinkedIn profile after approval.",
+        targetTabId: 72,
+        pageUrl: "https://www.linkedin.com/in/gianna-satriano-a467a0228/",
+      });
+
+      await flushDueScheduled(t);
+
+      await completeBootstrapObservationPass({
+        authed,
+        t,
+        runId: started.runId,
+        tabId: 72,
+        pageUrl: "https://www.linkedin.com/in/gianna-satriano-a467a0228/",
+        scope: "main",
+        interactiveElements: [],
+        structuredResult: {
+          data: {
+            title: null,
+            headline: null,
+            summary: null,
+          },
+          matchedFields: [],
+          unmatchedFields: ["title", "headline", "summary"],
+          headings: [],
+          text: "",
+        },
+      });
+
+      await completeBootstrapObservationPass({
+        authed,
+        t,
+        runId: started.runId,
+        tabId: 72,
+        pageUrl: "https://www.linkedin.com/in/gianna-satriano-a467a0228/",
+        scope: "viewport",
+        interactiveElements: [],
+        structuredResult: {
+          data: {
+            title: null,
+            headline: null,
+            summary: null,
+          },
+          matchedFields: [],
+          unmatchedFields: ["title", "headline", "summary"],
+          headings: [],
+          text: "",
+        },
+      });
+
+      const approvals = await authed.query(api.agentRuns.listPendingApprovals, {});
+      expect(approvals).toHaveLength(1);
+      expect(approvals[0].title).toContain("Gianna Satriano");
+
+      const details = await authed.query(api.agentRuns.getRun, {
+        runId: started.runId,
+        stepLimit: 20,
+      });
+      expect(details?.run.status).toBe("awaiting_approval");
     } finally {
       vi.useRealTimers();
     }
