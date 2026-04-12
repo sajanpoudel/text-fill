@@ -58,8 +58,13 @@ export default defineContentScript({
         __tfMethod?: string;
         __tfUrl?: string;
       };
-      xhr.__tfMethod = method;
-      xhr.__tfUrl = String(url);
+      const urlStr = String(url);
+      // Only track http/https URLs; skip chrome://, file://, etc. to avoid
+      // false attribution when other extensions make non-web XHR requests.
+      if (/^https?:\/\//i.test(urlStr)) {
+        xhr.__tfMethod = method;
+        xhr.__tfUrl = urlStr;
+      }
       return originalOpen.call(this, method, url, async ?? true, username, password);
     };
 
