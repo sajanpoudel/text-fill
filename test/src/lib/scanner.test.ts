@@ -56,4 +56,22 @@ describe("ChangeThreshold", () => {
     threshold.forceNow();
     expect(onTrigger).toHaveBeenCalledTimes(1);
   });
+
+  test("does not trigger when recorded changes are below minChanges", () => {
+    vi.useFakeTimers();
+    const onTrigger = vi.fn();
+    const threshold = new ChangeThreshold(onTrigger, {
+      minChanges: 5,
+      debounceMs: 100,
+      cooldownMs: 1000,
+    });
+
+    // Only record 2 changes, well below the minChanges=5 threshold
+    threshold.record(1);
+    threshold.record(1);
+    vi.advanceTimersByTime(200);
+
+    expect(onTrigger).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
 });

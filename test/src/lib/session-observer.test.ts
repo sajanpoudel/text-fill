@@ -60,4 +60,25 @@ describe("session observer helpers", () => {
       helpers.chooseFinalText("Hello there", "Hello there", "Hello there\n")
     ).toBe("Hello there\n");
   });
+
+  test("classifies heavily edited text between 15 and 50 percent change", () => {
+    // Construct a case where roughly 30% of chars change — squarely in the heavily_edited band.
+    const base = "This is a generated message about software engineering careers.";
+    const modified = "This is a generated message about software design principles.";
+    expect(helpers.classifyOutcome(base, modified)).toBe("heavily_edited");
+  });
+
+  test("editFraction uses trigram similarity path for texts longer than 1500 chars", () => {
+    const longBase = "word ".repeat(320); // ~1600 chars
+    const longModified = "word ".repeat(160) + "other ".repeat(160); // half replaced
+    const fraction = helpers.editFraction(longBase, longModified);
+    expect(fraction).toBeGreaterThan(0);
+    expect(fraction).toBeLessThanOrEqual(1);
+  });
+
+  test("charDelta returns a positive value when text expands", () => {
+    expect(
+      helpers.charDelta("Short text", "This is a much longer expanded text")
+    ).toBeGreaterThan(0);
+  });
 });

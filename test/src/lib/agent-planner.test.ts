@@ -56,6 +56,32 @@ describe("agent planner helpers", () => {
     ).toBe("gmail");
   });
 
+  test("inferPlannerPlatformFromUrl maps all supported hostnames to their platforms", () => {
+    expect(inferPlannerPlatformFromUrl("https://www.linkedin.com/in/example/")).toBe("linkedin");
+    expect(inferPlannerPlatformFromUrl("https://mail.google.com/mail/u/0/#inbox")).toBe("gmail");
+    expect(inferPlannerPlatformFromUrl("https://outlook.office.com/mail/inbox")).toBe("outlook");
+    expect(inferPlannerPlatformFromUrl("https://outlook.live.com/mail/0/")).toBe("outlook");
+    expect(inferPlannerPlatformFromUrl("https://app.slack.com/client/T123/C456")).toBe("slack");
+    expect(inferPlannerPlatformFromUrl("https://discord.com/channels/123/456")).toBe("discord");
+    expect(inferPlannerPlatformFromUrl("https://www.messenger.com/t/123")).toBe("messenger");
+    expect(inferPlannerPlatformFromUrl("https://www.facebook.com/messages/")).toBe("facebook");
+    expect(inferPlannerPlatformFromUrl("https://x.com/home")).toBe("twitter");
+    expect(inferPlannerPlatformFromUrl("https://twitter.com/home")).toBe("twitter");
+    expect(inferPlannerPlatformFromUrl("https://www.threads.net/@someone")).toBe("threads");
+    expect(inferPlannerPlatformFromUrl("https://www.instagram.com/direct/inbox/")).toBe("instagram");
+    expect(inferPlannerPlatformFromUrl("https://www.youtube.com/watch?v=abc")).toBe("youtube");
+    expect(inferPlannerPlatformFromUrl("https://www.reddit.com/r/programming/")).toBe("reddit");
+    expect(inferPlannerPlatformFromUrl("https://canvas.example.edu/courses/1")).toBe("canvas");
+    expect(inferPlannerPlatformFromUrl("https://myschool.instructure.com/courses/1")).toBe("canvas");
+  });
+
+  test("inferPlannerPlatformFromUrl returns undefined for unknown or empty URLs", () => {
+    expect(inferPlannerPlatformFromUrl(undefined)).toBeUndefined();
+    expect(inferPlannerPlatformFromUrl("")).toBeUndefined();
+    expect(inferPlannerPlatformFromUrl("https://example.com/page")).toBeUndefined();
+    expect(inferPlannerPlatformFromUrl("not-a-url")).toBeUndefined();
+  });
+
   test("parses a requested connect count with sane fallback and cap", () => {
     expect(parseRequestedConnectCount("Find 12 software recruiters")).toBe(12);
     expect(parseRequestedConnectCount("Find 200 software recruiters")).toBe(20);

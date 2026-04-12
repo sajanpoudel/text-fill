@@ -43,4 +43,74 @@ describe("generate helpers", () => {
     expect(deriveContextType("[COMMENT]", undefined, "linkedin")).toBe("comment");
     expect(deriveContextType("[POST_COMPOSE]", undefined, "linkedin")).toBe("post");
   });
+
+  test("deriveContextType maps [INMAIL_SUBJECT] to inmail", () => {
+    expect(deriveContextType("[INMAIL_SUBJECT] Subject line here", undefined, "linkedin")).toBe(
+      "inmail"
+    );
+  });
+
+  test("deriveContextType returns undefined for non-LinkedIn platforms", () => {
+    expect(deriveContextType("Some gmail context", undefined, "gmail")).toBeUndefined();
+    expect(deriveContextType("Slack message body", undefined, "slack")).toBeUndefined();
+    expect(deriveContextType("General text", undefined, "general")).toBeUndefined();
+  });
+
+  test("deriveContextType falls back to connection_req when fieldMaxLength is 300 on linkedin", () => {
+    expect(deriveContextType("Plain context text", 300, "linkedin")).toBe("connection_req");
+  });
+
+  test("deriveContextType returns undefined for fieldMaxLength 300 on non-linkedin platform", () => {
+    expect(deriveContextType("Plain context text", 300, "gmail")).toBeUndefined();
+  });
+
+  test("buildPrompt section ordering: Style Rules before Recent Patterns before Recipient Context", () => {
+    const { user } = buildPrompt({
+      instruction: "Write a note",
+      action: "generate",
+      pageContext: "Audience: Jane",
+      memoryContext: "- Some fact.",
+      proceduralContext: "Keep it concise.",
+      episodicContext: "- outcome: accepted",
+      recipientContext: "Name: Jane\nHeadline: Engineer",
+      platform: "linkedin",
+    });
+
+    const styleIdx = user.indexOf("=== Your Style Rules ===");
+    const patternsIdx = user.indexOf("=== Recent Patterns ===");
+    const recipientIdx = user.indexOf("=== Recipient Context (transient) ===");
+
+    expect(styleIdx).toBeGreaterThan(-1);
+    expect(patternsIdx).toBeGreaterThan(-1);
+    expect(recipientIdx).toBeGreaterThan(-1);
+    expect(styleIdx).toBeLessThan(patternsIdx);
+    expect(patternsIdx).toBeLessThan(recipientIdx);
+  });
+
+  test("buildPrompt omits Style Rules and Recent Patterns sections when those contexts are empty", () => {
+    const { user } = buildPrompt({
+      instruction: "Write a message",
+      action: "generate",
+      pageContext: "Audience: Bob",
+      memoryContext: "",
+      platform: "linkedin",
+    });
+
+    expect(user).not.toContain("=== Your Style Rules ===");
+    expect(user).not.toContain("=== Recent Patterns ===");
+  });
+
+  test("buildPrompt injects existingText in Existing Content section", () => {
+    const { user } = buildPrompt({
+      instruction: "Rewrite this",
+      action: "rewrite",
+      pageContext: "Audience: Bob",
+      memoryContext: "",
+      existingText: "Original draft text here.",
+      platform: "linkedin",
+    });
+
+    expect(user).toContain("=== Existing Content ===");
+    expect(user).toContain("Original draft text here.");
+  });
 });

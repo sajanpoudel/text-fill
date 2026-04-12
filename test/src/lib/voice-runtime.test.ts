@@ -18,4 +18,18 @@ describe("voice runtime helpers", () => {
     expect(isVoiceRuntimeActive("idle")).toBe(false);
     expect(isVoiceRuntimeActive("error")).toBe(false);
   });
+
+  test("normalizes all valid VOICE_RUNTIME_STATES to themselves", () => {
+    const validStates = ["idle", "starting", "listening", "stopping", "error"] as const;
+    for (const state of validStates) {
+      expect(normalizeVoiceRuntimeState(state)).toBe(state);
+    }
+  });
+
+  test("normalizes non-string values to idle", () => {
+    expect(normalizeVoiceRuntimeState(42)).toBe("idle");
+    expect(normalizeVoiceRuntimeState(null)).toBe("idle");
+    expect(normalizeVoiceRuntimeState({})).toBe("idle");
+    expect(normalizeVoiceRuntimeState(true)).toBe("idle");
+  });
 });

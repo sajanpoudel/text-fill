@@ -137,6 +137,68 @@ describe("entity graph", () => {
     expect(resolvedId).toBe(companyId);
   });
 
+  test("upsertEntity is idempotent — returns the same id on repeated calls with same normalizedName", async () => {
+    const { t, userId } = await setup();
+    const firstId = await t.mutation(internal.entities.upsertEntity, {
+      userId: userId as any,
+      name: "Acme Corp",
+      type: "company",
+      normalizedName: "acme corp",
+    });
+    const secondId = await t.mutation(internal.entities.upsertEntity, {
+      userId: userId as any,
+      name: "Acme Corp",
+      type: "company",
+      normalizedName: "acme corp",
+    });
+    expect(firstId).toBe(secondId);
+  });
+
+  test("non-exclusive knows edges do not invalidate each other", async () => {
+    const { t, userId } = await setup();
+    const selfId = await t.mutation(internal.entities.getOrCreateSelfEntity, {
+      userId: userId as any,
+    });
+    const personAId = await t.mutation(internal.entities.upsertEntity, {
+      userId: userId as any,
+      name: "Alice",
+      type: "person",
+      normalizedName: "alice",
+    });
+    const personBId = await t.mutation(internal.entities.upsertEntity, {
+      userId: userId as any,
+      name: "Bob",
+      type: "person",
+      normalizedName: "bob",
+    });
+
+    const edgeAId = await t.mutation(internal.entities.upsertEdge, {
+      userId: userId as any,
+      fromEntityId: selfId,
+      toEntityId: personAId,
+      relation: "knows",
+      validAt: 1000,
+    });
+    const edgeBId = await t.mutation(internal.entities.upsertEdge, {
+      userId: userId as any,
+      fromEntityId: selfId,
+      toEntityId: personBId,
+      relation: "knows",
+      validAt: 2000,
+    });
+
+    const edgeADoc = (await t.run((ctx) => ctx.db.get(edgeAId))) as
+      | { invalidAt?: number }
+      | null;
+    const edgeBDoc = (await t.run((ctx) => ctx.db.get(edgeBId))) as
+      | { invalidAt?: number }
+      | null;
+
+    // Both knows edges should remain active — knows is not exclusive
+    expect(edgeADoc?.invalidAt).toBeUndefined();
+    expect(edgeBDoc?.invalidAt).toBeUndefined();
+  });
+
   test("resolveEntity stores an embedding row for newly created entities when embeddings are configured", async () => {
     const { t, userId } = await setup();
     await t.run(async (ctx) => {

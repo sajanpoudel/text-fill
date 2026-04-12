@@ -133,6 +133,60 @@ describe("tracing", () => {
     expect(stats?.outcomes.accepted).toBe(1);
   });
 
+  test("updateOutcome is idempotent — calling twice with different action updates to the latest value", async () => {
+    const { authed, userId } = await setup();
+    const traceId = await authed.mutation(internal.traces.recordTrace, {
+      userId: userId as any,
+      platform: "linkedin",
+      modelId: "gpt-5-nano",
+      promptFingerprint: "idem-test",
+      presentedOutput: "Draft output",
+      hadLiveContext: false,
+      retrievedPatternCount: 0,
+      episodeExampleCount: 0,
+      latencyMs: 200,
+    });
+    const sessionId = await authed.run(async (ctx) =>
+      ctx.db.insert("interactionSessions", {
+        userId: userId as any,
+        sessionId: crypto.randomUUID(),
+        platform: "linkedin",
+        openedAt: Date.now() - 500,
+        closedAt: Date.now(),
+        outcome: "accepted",
+        aiGeneratedAt: Date.now() - 250,
+      })
+    );
+
+    await authed.mutation(internal.traces.updateOutcome, {
+      traceId,
+      sessionId,
+      userAction: "accepted",
+      editFraction: 0,
+    });
+    await authed.mutation(internal.traces.updateOutcome, {
+      traceId,
+      sessionId,
+      userAction: "lightly_edited",
+      editFraction: 0.1,
+    });
+
+    const trace = (await authed.run((ctx) => ctx.db.get(traceId))) as
+      | { userAction?: string; editFraction?: number }
+      | null;
+    expect(trace?.userAction).toBe("lightly_edited");
+    expect(trace?.editFraction).toBe(0.1);
+  });
+
+  test("getTraceStats returns zero counts when no traces exist for the user", async () => {
+    const { authed } = await setup();
+    const stats = await authed.query(api.traces.getTraceStats, {});
+    expect(stats?.total).toBe(0);
+    expect(stats?.withOutcome).toBe(0);
+    expect(stats?.avgLatency).toBe(0);
+    expect(stats?.outcomes).toEqual({});
+  });
+
   test("getRecentBadCases caps results at 50 newest traces across bad outcomes", async () => {
     const { authed, userId } = await setup();
 
