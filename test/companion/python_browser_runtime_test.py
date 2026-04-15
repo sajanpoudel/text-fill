@@ -10,6 +10,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from companion.python_browser_runtime import (
     PythonBrowserRuntime,
+    build_effective_system_prompt,
     extract_json_payload,
     is_linkedin_profile_connect_goal,
 )
@@ -73,6 +74,16 @@ class ExtractJsonPayloadTests(unittest.TestCase):
                 }
             )
         )
+
+    def test_appends_saved_system_instructions(self):
+        prompt = build_effective_system_prompt(
+            "Base instructions.",
+            "Keep the tone concise and factual.",
+        )
+
+        self.assertIn("Base instructions.", prompt)
+        self.assertIn("Additional saved user instructions:", prompt)
+        self.assertIn("Keep the tone concise and factual.", prompt)
 
 
 class RunAgentJsonTaskTests(unittest.IsolatedAsyncioTestCase):

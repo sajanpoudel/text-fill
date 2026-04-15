@@ -1084,6 +1084,7 @@ class PythonBrowserRuntime:
                     "goal": str(payload.get("goal") or "").strip(),
                     "pageContext": str(payload.get("pageContext") or "").strip(),
                     "userContext": str(payload.get("userContext") or "").strip(),
+                    "systemPrompt": str(payload.get("systemPrompt") or "").strip(),
                 },
                 provider_config,
             )

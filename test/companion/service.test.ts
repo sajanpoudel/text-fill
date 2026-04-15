@@ -38,6 +38,7 @@ class FakeRuntime {
     platformHint?: string;
     pageContext?: string;
     userContext?: string;
+    systemPrompt?: string;
     fieldTarget?: LocalCompanionFieldTarget;
     structured?: unknown;
     scannedCandidates?: unknown[];
@@ -227,6 +228,7 @@ describe("LocalAgentCompanionService", () => {
       pageContext:
         "Audience: Taylor Recruiter\nThread context:\nFollowing up on backend hiring.",
       userContext: "I build backend and AI agent tooling for recruiting workflows.",
+      systemPrompt: "Be direct and avoid fluff.",
       fieldTarget: {
         selector: "#composer",
         platform: "gmail",
@@ -255,6 +257,7 @@ describe("LocalAgentCompanionService", () => {
       pageUrl: "https://mail.google.com/mail/u/0/#inbox/FMfcgzQabcd",
       platformHint: "gmail",
       userContext: "I build backend and AI agent tooling for recruiting workflows.",
+      systemPrompt: "Be direct and avoid fluff.",
     });
     expect(runtime.draftCalls).toHaveLength(0);
 
