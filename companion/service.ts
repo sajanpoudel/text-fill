@@ -643,6 +643,12 @@ export class LocalAgentCompanionService {
       ...(typeof params.pageContext === "string"
         ? { pageContext: params.pageContext }
         : {}),
+      ...(typeof params.userContext === "string"
+        ? { userContext: params.userContext }
+        : {}),
+      ...(typeof params.systemPrompt === "string"
+        ? { systemPrompt: params.systemPrompt }
+        : {}),
       ...(params.fieldTarget ? { fieldTarget: params.fieldTarget } : {}),
       ...(params.structured ? { structured: params.structured } : {}),
       ...(params.scannedCandidates && params.scannedCandidates.length > 0

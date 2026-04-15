@@ -61,6 +61,19 @@ Return only compact JSON that matches the requested schema. Do not return markdo
 """.strip()
 
 
+def build_effective_system_prompt(base_prompt: str, custom_prompt: str | None) -> str:
+    trimmed = str(custom_prompt or "").strip()
+    if not trimmed:
+        return base_prompt
+    return "\n\n".join(
+        [
+            base_prompt,
+            "Additional saved user instructions:",
+            trimmed,
+        ]
+    )
+
+
 def log_runtime(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
@@ -263,6 +276,14 @@ def truncate_text(value: str, max_length: int) -> str:
     return normalized[: max_length - 1].rstrip() + "…"
 
 
+def summarize_json_value(value: Any, max_length: int = 400) -> str:
+    try:
+        serialized = json.dumps(serialize_result(value), ensure_ascii=True)
+    except Exception:
+        serialized = repr(value)
+    return truncate_text(serialized, max_length)
+
+
 def extract_json_payload(text: str) -> dict[str, Any]:
     candidates: list[str] = [text.strip()]
     candidates.extend(
@@ -365,6 +386,10 @@ def build_general_task_prompt(payload: dict[str, Any]) -> str:
     if page_context:
         parts.extend(["", "Observed page context:", page_context[:4000]])
 
+    user_context = str(payload.get("userContext") or "").strip()
+    if user_context:
+        parts.extend(["", "User-specific context:", user_context[:4000]])
+
     field_target = payload.get("fieldTarget")
     if isinstance(field_target, dict):
         selector = str(field_target.get("selector") or "").strip()
@@ -427,6 +452,9 @@ def build_linkedin_connect_prompt(item: dict[str, Any]) -> str:
     note_text = str(item.get("generatedText") or "").strip()
     target_url = str(item.get("targetUrl") or "").strip()
     target_name = str(item.get("targetName") or "").strip() or "the target profile"
+    goal = str(item.get("goal") or "").strip()
+    page_context = str(item.get("pageContext") or "").strip()
+    user_context = str(item.get("userContext") or "").strip()
     return "\n".join(
         [
             "Send a LinkedIn connection request on the focused profile page.",
@@ -435,17 +463,65 @@ def build_linkedin_connect_prompt(item: dict[str, Any]) -> str:
             "- Use Chrome DevTools MCP tools only.",
             "- Use take_snapshot to inspect the page tree before interacting.",
             "- Confirm whether the profile is already connected or already pending before sending anything.",
-            "- If a personalized note editor is available and note text is provided, add that exact note text.",
+            "- If note text is provided, add that exact note text.",
+            "- If note text is empty and the goal requests a note, draft a concise note of 300 characters or less.",
+            "- When drafting a note, use only the provided user context plus visible profile information. Do not invent personal facts that are not in the supplied context.",
             "- After acting, verify the final page state from the live browser before returning.",
             "- If the flow becomes ambiguous or blocked, stop and report failure instead of guessing.",
             "",
             f"Target profile URL: {target_url}",
             f"Target name: {target_name}",
             f"Note text: {json.dumps(note_text, ensure_ascii=True)}",
+            *(["", f"Original goal: {goal}"] if goal else []),
+            *(["", f"Observed page context: {page_context[:2500]}"] if page_context else []),
+            *(["", f"User context: {user_context[:2500]}"] if user_context else []),
             "",
             'Return JSON: {"summary":"...", "status":"sent|skipped|failed", "finalState":"sent|already_connected|already_pending|connect_not_found|failed", "preservePage":true|false}',
         ]
     )
+
+
+def is_linkedin_profile_connect_goal(payload: dict[str, Any]) -> bool:
+    goal = str(payload.get("goal") or "").strip().lower()
+    platform_hint = str(payload.get("platformHint") or "").strip().lower()
+    page_url = str(payload.get("pageUrl") or "").strip().lower()
+
+    if not goal:
+        return False
+
+    is_linkedin = platform_hint == "linkedin" or "linkedin.com" in page_url
+    is_profile = "/linkedin.com/in/" in page_url or "linkedin.com/in/" in page_url
+    wants_connect = any(
+        phrase in goal
+        for phrase in (
+            "connect",
+            "connection request",
+            "invite",
+            "add a note",
+            "connection note",
+        )
+    )
+    return is_linkedin and is_profile and wants_connect
+
+
+def extract_linkedin_target_name(payload: dict[str, Any]) -> str | None:
+    structured = payload.get("structured")
+    if isinstance(structured, dict):
+        data = structured.get("data")
+        if isinstance(data, dict):
+            for key in ("name", "title"):
+                value = str(data.get(key) or "").strip()
+                if value:
+                    return value
+
+    page_context = str(payload.get("pageContext") or "").strip()
+    match = re.search(r"Page:\s*([^\n]+)", page_context)
+    if match:
+        value = match.group(1).strip()
+        if value:
+            return value
+
+    return None
 
 
 class PythonBrowserRuntime:
@@ -453,20 +529,33 @@ class PythonBrowserRuntime:
         self.agent = agent
 
     async def call_tool(
-        self, name: str, args: dict[str, Any] | None = None
+        self,
+        name: str,
+        args: dict[str, Any] | None = None,
+        *,
+        trace: bool = True,
     ) -> Any:
+        if trace:
+            log_runtime(
+                f"[mcp-tool] start name={name} args={summarize_json_value(args or {})}"
+            )
         result = await self.agent.call_tool(
             name,
             args or {},
             server_name="chrome-devtools",
         )
+        if trace:
+            result_text = tool_result_text(result).strip()
+            log_runtime(
+                f"[mcp-tool] complete name={name} result={truncate_text(result_text, 500) if result_text else '<no-text>'}"
+            )
         if is_tool_error(result):
             message = tool_result_text(result).strip()
             raise RuntimeError(message or f"Chrome DevTools MCP tool failed: {name}")
         return result
 
-    async def list_pages(self) -> list[dict[str, Any]]:
-        result = await self.call_tool("list_pages")
+    async def list_pages(self, *, trace: bool = True) -> list[dict[str, Any]]:
+        result = await self.call_tool("list_pages", trace=trace)
         return parse_page_list(tool_result_text(result))
 
     async def select_page(self, page_id: int, bring_to_front: bool = False) -> None:
@@ -723,7 +812,7 @@ class PythonBrowserRuntime:
         return parsed
 
     async def health(self) -> dict[str, Any]:
-        pages = await self.list_pages()
+        pages = await self.list_pages(trace=False)
         return {
             "connected": True,
             "pageCount": len(pages),
@@ -935,7 +1024,10 @@ class PythonBrowserRuntime:
             agent_result = await self.run_agent_json_task(
                 provider_config=provider_config,
                 task_label="linkedin_connect",
-                system_prompt=BASE_AGENT_SYSTEM_PROMPT,
+                system_prompt=build_effective_system_prompt(
+                    BASE_AGENT_SYSTEM_PROMPT,
+                    str(item.get("systemPrompt") or "").strip() or None,
+                ),
                 user_prompt=build_linkedin_connect_prompt(item),
                 max_iterations=14,
                 max_tokens=1400,
@@ -949,10 +1041,21 @@ class PythonBrowserRuntime:
                 str(agent_result.get("finalState") or "").strip() or outcome
             )
             preserve_page = bool(agent_result.get("preservePage"))
+            summary = str(agent_result.get("summary") or "").strip()
+            if not summary:
+                if outcome == "sent":
+                    summary = f"Sent a LinkedIn connection request to {str(item.get('targetName') or 'the target profile').strip() or 'the target profile'}."
+                elif final_state == "already_connected":
+                    summary = "This LinkedIn profile is already connected."
+                elif final_state == "already_pending":
+                    summary = "A LinkedIn invitation is already pending for this profile."
+                else:
+                    summary = f"LinkedIn connect flow ended in state: {final_state}."
 
             return {
                 "outcome": outcome,
                 "finalState": final_state,
+                "summary": summary,
                 "debugSummary": truncate_text(
                     str(agent_result.get("_rawResponse") or ""), 300
                 ),
@@ -970,6 +1073,35 @@ class PythonBrowserRuntime:
         if not isinstance(provider_config, dict):
             raise RuntimeError("providerConfig is required")
 
+        if is_linkedin_profile_connect_goal(payload):
+            target_url = str(payload.get("pageUrl") or "").strip()
+            if not target_url:
+                raise RuntimeError("A LinkedIn profile URL is required for connect tasks.")
+            connect_result = await self.execute_linkedin_connect_item(
+                {
+                    "targetUrl": target_url,
+                    "targetName": extract_linkedin_target_name(payload),
+                    "goal": str(payload.get("goal") or "").strip(),
+                    "pageContext": str(payload.get("pageContext") or "").strip(),
+                    "userContext": str(payload.get("userContext") or "").strip(),
+                },
+                provider_config,
+            )
+            if connect_result["outcome"] == "failed":
+                raise RuntimeError(connect_result["summary"])
+
+            return {
+                "summary": connect_result["summary"],
+                "metadata": {
+                    "kind": "execute_agent_task",
+                    "taskType": "linkedin_profile_connect",
+                    "finalState": connect_result["finalState"],
+                    "status": connect_result["outcome"],
+                    "targetUrl": target_url,
+                    "preservedPage": connect_result["preservedPage"],
+                },
+            }
+
         page_url = str(payload.get("pageUrl") or "").strip()
         focused_page: dict[str, Any] | None = None
         if page_url:
@@ -979,7 +1111,10 @@ class PythonBrowserRuntime:
         agent_result = await self.run_agent_json_task(
             provider_config=provider_config,
             task_label="generic_browser_task",
-            system_prompt=BASE_AGENT_SYSTEM_PROMPT,
+            system_prompt=build_effective_system_prompt(
+                BASE_AGENT_SYSTEM_PROMPT,
+                str(payload.get("systemPrompt") or "").strip() or None,
+            ),
             user_prompt=build_general_task_prompt(payload),
             max_iterations=12,
             max_tokens=1400,

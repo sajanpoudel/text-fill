@@ -75,6 +75,8 @@ export interface LocalCompanionStartRunParams {
   platformHint?: string;
   pageUrl?: string;
   pageContext?: string;
+  userContext?: string;
+  systemPrompt?: string;
   fieldTarget?: LocalCompanionFieldTarget;
   scannedCandidates?: LocalCompanionCandidateScanItem[];
   nextPageUrl?: string | null;

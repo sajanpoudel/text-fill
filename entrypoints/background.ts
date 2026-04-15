@@ -54,6 +54,7 @@ import {
   DEFAULT_LOCAL_COMPANION_URL,
   requestLocalCompanion,
 } from "../src/lib/local-agent-bridge.ts";
+import { formatSavedSettingsContext } from "../src/lib/agent-user-context.ts";
 import type {
   LocalCompanionAction,
   LocalCompanionPanelState,
@@ -269,6 +270,53 @@ async function loadCurrentProviderConfig(): Promise<LocalCompanionProviderConfig
     apiKey,
     model: profile.memoryModel ?? profile.model ?? "gpt-5-nano",
   };
+}
+
+async function loadCurrentAgentUserContext(): Promise<string | null> {
+  const profile = await convex.query(api.users.getProfile, {});
+  const parts: string[] = [];
+
+  const formattedSettingsContext = formatSavedSettingsContext(profile?.contextText);
+  if (formattedSettingsContext) {
+    parts.push(formattedSettingsContext);
+  }
+
+  const capturedContexts = await loadCapturedContextsForGeneration();
+  if (capturedContexts.length > 0) {
+    const serialized = capturedContexts
+      .slice(0, 6)
+      .map((context, index) => {
+        const title =
+          typeof context.title === "string" && context.title.trim()
+            ? context.title.trim()
+            : `Captured context ${index + 1}`;
+        const url =
+          typeof context.url === "string" && context.url.trim()
+            ? `URL: ${context.url.trim()}`
+            : null;
+        const text =
+          typeof context.text === "string" && context.text.trim()
+            ? context.text.trim().slice(0, 1200)
+            : "";
+        const pieces = [title, url, text].filter((value): value is string => Boolean(value));
+        return pieces.join("\n");
+      })
+      .filter((value) => value.trim().length > 0);
+
+    if (serialized.length > 0) {
+      parts.push(`Captured user context:\n${serialized.join("\n\n---\n\n")}`);
+    }
+  }
+
+  const combined = parts.join("\n\n");
+  return combined.trim() ? combined.trim() : null;
+}
+
+async function loadCurrentAgentSystemPrompt(): Promise<string | null> {
+  const profile = await convex.query(api.users.getProfile, {});
+  const systemPrompt =
+    typeof profile?.systemPrompt === "string" ? profile.systemPrompt.trim() : "";
+  return systemPrompt || null;
 }
 
 // ── Event listeners — MUST be synchronous top-level ──────────────────────
@@ -1038,6 +1086,8 @@ async function handleStartAgentRun(
   }
 
   const providerConfig = await loadCurrentProviderConfig();
+  const userContext = await loadCurrentAgentUserContext();
+  const systemPrompt = await loadCurrentAgentSystemPrompt();
   const scannedCandidates = Array.isArray(payload?.scannedCandidates)
     ? payload.scannedCandidates
         .map((item) => ({
@@ -1075,6 +1125,8 @@ async function handleStartAgentRun(
           typeof payload?.pageContext === "string" && payload.pageContext.trim()
             ? payload.pageContext.trim()
             : undefined,
+        userContext: userContext ?? undefined,
+        systemPrompt: systemPrompt ?? undefined,
         fieldTarget:
           payload?.fieldTarget &&
           typeof payload.fieldTarget.selector === "string" &&

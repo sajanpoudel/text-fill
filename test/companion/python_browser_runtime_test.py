@@ -11,6 +11,7 @@ if str(ROOT_DIR) not in sys.path:
 from companion.python_browser_runtime import (
     PythonBrowserRuntime,
     extract_json_payload,
+    is_linkedin_profile_connect_goal,
 )
 
 
@@ -51,6 +52,26 @@ class ExtractJsonPayloadTests(unittest.TestCase):
                 "summary": "Done",
                 "status": "completed",
             },
+        )
+
+    def test_detects_linkedin_profile_connect_goals(self):
+        self.assertTrue(
+            is_linkedin_profile_connect_goal(
+                {
+                    "goal": "Please connect this person and write a connection note.",
+                    "platformHint": "linkedin",
+                    "pageUrl": "https://www.linkedin.com/in/example-person/",
+                }
+            )
+        )
+        self.assertFalse(
+            is_linkedin_profile_connect_goal(
+                {
+                    "goal": "Search software engineering jobs on LinkedIn",
+                    "platformHint": "linkedin",
+                    "pageUrl": "https://www.linkedin.com/jobs/search/",
+                }
+            )
         )
 
 

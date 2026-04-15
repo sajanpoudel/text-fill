@@ -371,6 +371,8 @@ export class ChromeDevtoolsMcpRuntime {
     pageUrl?: string;
     platformHint?: string;
     pageContext?: string;
+    userContext?: string;
+    systemPrompt?: string;
     fieldTarget?: LocalCompanionFieldTarget;
     structured?: LocalCompanionStructuredExtraction | null;
     scannedCandidates?: LocalCompanionCandidateScanItem[];

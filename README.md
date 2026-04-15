@@ -68,14 +68,39 @@ The extension includes a full agent runtime for autonomous multi-step browser ta
 
 ---
 
-### Local Companion Runtime
+### Local Companion Runtime and MCP Architecture
 
-Long-running agentic tasks run through a **local Node.js companion** (`companion/`), not through a cloud service. This companion:
+Long-running agentic tasks run through a **local Node.js companion** (`companion/`), not through a cloud service. The companion runs a WebSocket server on `localhost:4315` that the extension connects to automatically.
 
-- Runs a WebSocket server on `localhost:4315`
-- Connects to Chrome via Chrome DevTools Protocol (MCP)
-- Manages run lifecycle, approval state, and action results locally
-- Means your browser automation tasks stay on your machine
+The companion uses **two MCP layers** stacked together to give the agent full browser control:
+
+```
+Chrome Extension
+      │  WebSocket (localhost:4315)
+      ▼
+companion/server.ts  (Node.js)
+      │
+      ▼
+LocalAgentCompanionService
+      │
+      ▼
+ChromeDevtoolsMcpRuntime
+      ├─── chrome-devtools-mcp (npm)       ← MCP server: exposes Chrome DevTools as tools
+      │         list_pages, select_page, new_page,
+      │         navigate_page, close_page, evaluate_script
+      │
+      └─── mcp-agent (Python via uv)       ← AI agent: reasons over MCP tools to execute goals
+                python_browser_runtime.py
+                + mcp_agent_bridge.py
+```
+
+**`chrome-devtools-mcp`** is an npm package (`chrome-devtools-mcp@latest`) that connects to Chrome's remote debugging port and exposes browser control as MCP tools. The companion launches it via `npx` and communicates through the MCP protocol.
+
+**`mcp-agent`** is a Python AI agent framework (installed via `uv`) that acts as the reasoning layer. It receives a goal in natural language, uses `chrome-devtools-mcp` tools to observe and interact with the browser, and iterates until the task is complete. This is what handles open-ended instructions like "fill in this job application" or "connect with all recruiters on this page."
+
+The two layers are bridged through `mcp-agent-bridge.ts` (Node.js → Python JSON-over-stdin/stdout) and `python_browser_runtime.py` (Python agent entry point).
+
+**Chrome must have remote debugging enabled.** The companion connects via `--remote-debugging-port=9222` or `--autoConnect`. If Chrome is running without remote debugging, the companion will surface a clear error with instructions.
 
 To start the companion:
 
@@ -83,7 +108,22 @@ To start the companion:
 npm run companion:dev
 ```
 
-The extension automatically connects to it when available. Without the companion, the extension still handles all writing features.
+Without the companion, all writing features still work. The companion is only required for autonomous multi-step browser tasks.
+
+**Prerequisites for the companion:**
+- Python 3 with `uv` installed (`pip install uv` or `brew install uv`)
+- Chrome started with `--remote-debugging-port=9222`, or remote debugging enabled in `chrome://inspect`
+
+**Environment variables (optional):**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CHROME_DEVTOOLS_MCP_BROWSER_URL` | auto-connect | Override the Chrome debug endpoint |
+| `CHROME_DEVTOOLS_MCP_AUTO_CONNECT` | `1` | Set to `0` to disable auto-connect |
+| `CHROME_DEVTOOLS_MCP_HEADLESS` | `0` | Run Chrome headlessly |
+| `CHROME_DEVTOOLS_MCP_USER_DATA_DIR` | default profile | Chrome user data dir |
+| `MCP_AGENT_BRIDGE_SCRIPT` | `companion/mcp_agent_bridge.py` | Path to the Python bridge script |
+| `MCP_AGENT_PYTHON_RUNTIME_SCRIPT` | `companion/python_browser_runtime.py` | Path to the Python agent runtime |
 
 ---
 
@@ -222,10 +262,12 @@ Bring your own API keys. Keys are stored on the Convex backend — not in `chrom
 | Extension build | WXT (Chrome MV3) |
 | UI | React 18, Tailwind CSS v4, Radix UI, Lucide |
 | Backend | Convex (auth, database, vector search, actions, crons) |
-| Agent orchestration | Convex Workflows + local companion |
-| Browser control | Chrome DevTools Protocol via MCP |
+| Agent orchestration | Convex Workflows + local companion (Node.js) |
+| Browser automation — tools | `chrome-devtools-mcp` (npm) — exposes Chrome DevTools as MCP tools |
+| Browser automation — reasoning | `mcp-agent` (Python, via `uv`) — AI agent that drives those tools |
+| Browser protocol | Chrome DevTools Protocol (`--remote-debugging-port=9222`) |
 | Voice | Web Speech API (offscreen document), Porcupine wake word |
-| LLM | Vercel AI SDK (`@ai-sdk/openai`) |
+| LLM | Vercel AI SDK (`@ai-sdk/openai`), Anthropic SDK, Google GenAI |
 | Local companion | Node.js, WebSocket (`ws`), `tsx` |
 
 ---
@@ -293,12 +335,15 @@ text-fill-v2/
 │   ├── crons.ts                   # Scheduled: pattern decay, memory archival
 │   └── llmProvider.ts             # Provider resolution by user config
 ├── companion/
-│   ├── server.ts                  # WebSocket server (localhost:4315)
-│   ├── service.ts                 # LocalAgentCompanionService
-│   ├── chrome-devtools-mcp-runtime.ts # Chrome DevTools MCP runtime
-│   ├── mcp-agent-bridge.ts        # Companion ↔ MCP orchestration bridge
-│   ├── state-store.ts             # Local approval + run state persistence
-│   └── live-logger.ts             # Companion logging
+│   ├── server.ts                      # WebSocket server (localhost:4315)
+│   ├── service.ts                     # LocalAgentCompanionService: run + approval lifecycle
+│   ├── chrome-devtools-mcp-runtime.ts # Drives chrome-devtools-mcp and python agent bridge
+│   ├── mcp-agent-bridge.ts            # Node.js → Python mcp-agent bridge (JSON over stdin/stdout)
+│   ├── python-browser-runtime-bridge.ts # Node.js → Python browser runtime bridge
+│   ├── python_browser_runtime.py      # Python agent entry point (uses mcp-agent + openai/anthropic)
+│   ├── mcp_agent_bridge.py            # Python bridge: receives tool calls, forwards to chrome-devtools-mcp
+│   ├── state-store.ts                 # Local approval + run state persistence
+│   └── live-logger.ts                 # Companion logging to .data/live.log
 ├── test/                          # Vitest unit + integration tests
 ├── public/
 ├── wxt.config.ts

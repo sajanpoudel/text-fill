@@ -59,6 +59,12 @@ async function dispatchRequest(
         ...(typeof request.params?.pageContext === "string"
           ? { pageContext: request.params.pageContext }
           : {}),
+        ...(typeof request.params?.userContext === "string"
+          ? { userContext: request.params.userContext }
+          : {}),
+        ...(typeof request.params?.systemPrompt === "string"
+          ? { systemPrompt: request.params.systemPrompt }
+          : {}),
         ...(request.params?.fieldTarget &&
         typeof request.params.fieldTarget === "object"
           ? { fieldTarget: request.params.fieldTarget as any }
