@@ -3,17 +3,11 @@ import {
   useEffect,
   useRef,
   useCallback,
-  type CSSProperties,
   type RefObject,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { isPageDark } from "../../src/lib/dom/theme.ts";
-import {
-  isVoiceRuntimeActive,
-  normalizeVoiceRuntimeState,
-  type VoiceRuntimeState,
-} from "../../src/lib/voice-runtime.ts";
 
 export interface CapturedContext {
   id: string;
@@ -285,123 +279,6 @@ function ContextPanel({ contexts, dark, onClose, onAdd, onToggle, onDelete, onDe
         </div>
       )}
     </div>
-  );
-}
-
-// ── Voice FAB ─────────────────────────────────────────────────────────────────
-
-interface VoiceFABProps {
-  visible: boolean;
-  showToast: (msg: string, type?: "success" | "error" | "info") => void;
-}
-
-export function VoiceFAB({ visible, showToast: _showToast }: VoiceFABProps) {
-  const dark = isPageDark();
-  const [runtimeState, setRuntimeState] =
-    useState<VoiceRuntimeState>("idle");
-  const hasLocalSpeechRecognition =
-    typeof window !== "undefined" &&
-    (typeof (window as any).SpeechRecognition === "function" ||
-      typeof (window as any).webkitSpeechRecognition === "function");
-
-  useEffect(() => {
-    if (hasLocalSpeechRecognition) return;
-    const handler = (message: { type?: string; state?: unknown }) => {
-      if (message?.type !== "VOICE_STATE") return;
-      setRuntimeState(normalizeVoiceRuntimeState(message.state));
-    };
-    try {
-      chrome.runtime.onMessage.addListener(handler);
-      return () => {
-        try {
-          chrome.runtime.onMessage.removeListener(handler);
-        } catch {
-          /* invalidated */
-        }
-      };
-    } catch {
-      return () => {};
-    }
-  }, [hasLocalSpeechRecognition]);
-
-  const handleClick = useCallback(async () => {
-    if (hasLocalSpeechRecognition) {
-      document.dispatchEvent(
-        new CustomEvent("tfa-voice-activate", { bubbles: false })
-      );
-      return;
-    }
-
-    try {
-      if (isVoiceRuntimeActive(runtimeState)) {
-        setRuntimeState("stopping");
-        await chrome.runtime.sendMessage({ type: "STOP_VOICE" });
-        return;
-      }
-      setRuntimeState("starting");
-      await chrome.runtime.sendMessage({ type: "START_VOICE" });
-    } catch {
-      setRuntimeState("idle");
-      document.dispatchEvent(
-        new CustomEvent("tfa-voice-activate", { bubbles: false })
-      );
-    }
-  }, [hasLocalSpeechRecognition, runtimeState]);
-
-  if (!visible) return null;
-
-  const listening = isVoiceRuntimeActive(runtimeState);
-
-  const micStyle: CSSProperties = {
-    position: "fixed",
-    bottom: 60,
-    right: 20,
-    zIndex: 2147483647,
-    width: 32,
-    height: 32,
-    padding: 0,
-    border: `1px solid ${dark ? "rgba(68, 64, 60, 0.5)" : "rgba(231, 229, 228, 0.5)"}`,
-    borderRadius: "50%",
-    background: dark ? "rgba(28, 25, 23, 0.7)" : "rgba(252, 252, 251, 0.7)",
-    backdropFilter: "blur(8px)",
-    WebkitBackdropFilter: "blur(8px)",
-    cursor: "pointer",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    boxShadow: dark ? "0 2px 10px rgba(0,0,0,0.5)" : "0 2px 10px rgba(0,0,0,0.1)",
-    transition: "all 0.15s ease",
-    pointerEvents: "auto",
-  };
-
-  return (
-    <button
-      type="button"
-      data-tfa-ui="voice-fab"
-      title="Voice command — speak your instruction"
-      style={micStyle}
-      onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleClick(); }}
-      onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-      onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-      onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.1)"; e.currentTarget.style.boxShadow = dark ? "0 4px 16px rgba(0,0,0,0.6)" : "0 4px 16px rgba(0,0,0,0.15)"; }}
-      onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = dark ? "0 2px 10px rgba(0,0,0,0.5)" : "0 2px 10px rgba(0,0,0,0.1)"; }}
-    >
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke={listening ? "#ef4444" : dark ? "#ffffff" : "#000000"}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <rect x="9" y="2" width="6" height="11" rx="3" />
-        <path d="M5 10a7 7 0 0 0 14 0" />
-        <line x1="12" y1="17" x2="12" y2="22" />
-        <line x1="8" y1="22" x2="16" y2="22" />
-      </svg>
-    </button>
   );
 }
 

@@ -13,6 +13,7 @@ import {
   extractLinkedInSearchCandidates,
   inferPlannerPlatformFromUrl,
   isLinkedInConnectIntent,
+  isLinkedInJobsIntent,
   isLinkedInProfileContext,
   isLinkedInSearchResultsContext,
   normalizeConversationDraft,
@@ -27,6 +28,8 @@ describe("agent planner helpers", () => {
   test("detects LinkedIn connect intent and profile/search contexts", () => {
     expect(isLinkedInConnectIntent("Find this recruiter and send a connection request")).toBe(true);
     expect(isLinkedInConnectIntent("Just inspect the page")).toBe(false);
+    expect(isLinkedInJobsIntent("Search software engineering jobs on LinkedIn")).toBe(true);
+    expect(isLinkedInJobsIntent("Inspect the LinkedIn page")).toBe(false);
     expect(
       isLinkedInProfileContext("linkedin", "https://www.linkedin.com/in/example/")
     ).toBe(true);
@@ -720,5 +723,23 @@ describe("agent planner helpers", () => {
       throw new Error("Expected complete decision");
     }
     expect(decision.summary).toContain("safe summary");
+  });
+
+  test("derives a direct LinkedIn jobs navigation action for safe search goals", () => {
+    const decision = deriveBootstrapPlannerDecision({
+      goal: "Search software engineering jobs in the LinkedIn site",
+      platformHint: "linkedin",
+      pageUrl: "https://www.linkedin.com/feed/",
+    });
+
+    expect(decision.kind).toBe("execute");
+    if (decision.kind !== "execute") {
+      throw new Error("Expected execute decision");
+    }
+    expect(decision.payload.actionType).toBe("navigate_url");
+    expect(decision.payload.targetUrl).toContain(
+      "https://www.linkedin.com/jobs/search/?keywords=software%20engineering"
+    );
+    expect(decision.payload.currentPageUrl).toBe("https://www.linkedin.com/feed/");
   });
 });

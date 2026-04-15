@@ -74,6 +74,13 @@ export type PlannerDraftInsertPayload = {
   pageUrl?: string;
 };
 
+export type PlannerNavigatePayload = {
+  actionType: "navigate_url";
+  targetUrl: string;
+  currentPageUrl?: string;
+  targetLabel?: string;
+};
+
 export type PlannerDecision =
   | {
       kind: "request_approval";
@@ -100,6 +107,12 @@ export type PlannerDecision =
       strategicPlan: string;
       tacticalPlan: string;
       summary: string;
+    }
+  | {
+      kind: "execute";
+      strategicPlan: string;
+      tacticalPlan: string;
+      payload: PlannerNavigatePayload;
     };
 
 export type LinkedInSearchCollectionDecision =
@@ -427,6 +440,66 @@ function inferLinkedInProfileNameFromUrl(
 
 export function isLinkedInConnectIntent(goal: string): boolean {
   return /\b(connect|connection requests?|invite|outreach|reach out)\b/i.test(goal);
+}
+
+export function isLinkedInJobsIntent(goal: string): boolean {
+  const normalized = normalizeForMatching(goal);
+  const hasJobsTarget = /\b(job|jobs|role|roles|position|positions|openings)\b/i.test(
+    goal
+  );
+  const hasSearchVerb =
+    normalized.includes(" search ") ||
+    normalized.includes(" find ") ||
+    normalized.includes(" look for ") ||
+    normalized.includes(" browse ") ||
+    normalized.includes(" show ") ||
+    normalized.includes(" open ") ||
+    normalized.includes(" see ");
+  return hasJobsTarget && hasSearchVerb;
+}
+
+function extractLinkedInJobsKeywords(goal: string): string | null {
+  const trimmed = normalizeText(goal);
+  if (!trimmed) return null;
+
+  const patterns = [
+    /\b(?:search|find|browse|show|open|see)\s+(.+?)\s+jobs?\b/i,
+    /\blook for\s+(.+?)\s+jobs?\b/i,
+    /\bjobs?\s+(?:for|about|in)\s+(.+)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = trimmed.match(pattern);
+    const candidate = normalizeText(match?.[1]);
+    if (candidate) {
+      const cleaned = candidate
+        .replace(/\b(?:on|in|at)\s+linkedin\b/gi, "")
+        .replace(/\blinkedin\b/gi, "")
+        .replace(/[.?!,]+$/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (cleaned) {
+        return cleaned;
+      }
+    }
+  }
+
+  const fallback = trimmed
+    .replace(/\blinkedin\b/gi, " ")
+    .replace(
+      /\b(?:search|find|browse|show|open|see|look|for|jobs?|roles?|positions?|openings|please|me|the|on|in|at)\b/gi,
+      " "
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return fallback || null;
+}
+
+function buildLinkedInJobsSearchUrl(keywords: string): string {
+  return `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(
+    keywords
+  )}`;
 }
 
 export function isLinkedInProfileContext(
@@ -1164,6 +1237,27 @@ export function deriveBootstrapPlannerDecision(
     });
     if (decision.kind !== "collect_more") {
       return decision;
+    }
+  }
+
+  const inferredPlatform =
+    observation.platformHint ?? inferPlannerPlatformFromUrl(observation.pageUrl);
+  if (inferredPlatform === "linkedin" && isLinkedInJobsIntent(goal)) {
+    const keywords = extractLinkedInJobsKeywords(goal);
+    if (keywords) {
+      return {
+        kind: "execute",
+        strategicPlan:
+          `${strategicBase} This run is a reversible LinkedIn jobs-search navigation, so it can execute directly without an approval gate.`,
+        tacticalPlan:
+          `Open LinkedIn jobs search results for ${keywords} and complete the run after navigation succeeds.`,
+        payload: {
+          actionType: "navigate_url",
+          targetUrl: buildLinkedInJobsSearchUrl(keywords),
+          ...(observation.pageUrl ? { currentPageUrl: observation.pageUrl } : {}),
+          targetLabel: `${keywords} jobs`,
+        },
+      };
     }
   }
 

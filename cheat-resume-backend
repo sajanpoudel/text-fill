@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+show_help() {
+  cat <<'EOF'
+Usage:
+  ./cheat-resume-backend
+  ./cheat-resume-backend doctor
+  ./cheat-resume-backend logs
+  ./cheat-resume-backend --help
+
+Starts the local CheatResume companion backend.
+Requires Node.js, Python 3, and uv. If uv is missing, the launcher will
+install it with `python3 -m pip install --user uv`, falling back to
+`--break-system-packages` when needed.
+
+Optional environment variables:
+  LOCAL_COMPANION_HOST   Host to bind the backend to. Default: 127.0.0.1
+  LOCAL_COMPANION_PORT   Port to bind the backend to. Default: 4315
+  LOCAL_COMPANION_LOG_FILE  Live log file path. Default: companion/.data/live.log
+EOF
+}
+
+run_doctor() {
+  local browser_url="${CHROME_DEVTOOLS_MCP_BROWSER_URL:-http://127.0.0.1:9222}"
+  local chrome_version="unknown"
+  local chrome_profile_dir=""
+  local devtools_active_port=""
+
+  case "$(uname -s)" in
+    Darwin)
+      chrome_profile_dir="$HOME/Library/Application Support/Google/Chrome"
+      chrome_version="$(defaults read "/Applications/Google Chrome.app/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo unknown)"
+      ;;
+    Linux)
+      chrome_profile_dir="${HOME}/.config/google-chrome"
+      chrome_version="$(google-chrome --version 2>/dev/null | awk '{print $3}' || echo unknown)"
+      ;;
+    *)
+      chrome_version="unknown"
+      ;;
+  esac
+
+  if [[ -n "$chrome_profile_dir" ]]; then
+    devtools_active_port="${chrome_profile_dir}/DevToolsActivePort"
+  fi
+
+  echo "CheatResume backend doctor"
+  echo "Chrome version: ${chrome_version}"
+
+  if pgrep -x "Google Chrome" >/dev/null 2>&1; then
+    echo "Chrome process: running"
+  else
+    echo "Chrome process: not running"
+  fi
+
+  if [[ -n "$devtools_active_port" && -f "$devtools_active_port" ]]; then
+    echo "DevToolsActivePort: present at ${devtools_active_port}"
+  elif [[ -n "$devtools_active_port" ]]; then
+    echo "DevToolsActivePort: missing at ${devtools_active_port}"
+  else
+    echo "DevToolsActivePort: not checked on this platform"
+  fi
+
+  if curl -sf "${browser_url}/json/version" >/dev/null 2>&1; then
+    echo "Remote debugging endpoint: reachable at ${browser_url}"
+  else
+    echo "Remote debugging endpoint: not reachable at ${browser_url}"
+  fi
+
+  echo
+
+  if [[ -n "$devtools_active_port" && -f "$devtools_active_port" ]]; then
+    echo "Diagnosis: Chrome auto-connect should be available for Chrome DevTools MCP."
+    return 0
+  fi
+
+  if curl -sf "${browser_url}/json/version" >/dev/null 2>&1; then
+    echo "Diagnosis: Manual remote-debugging connection is available."
+    echo "If the app still fails, keep CHROME_DEVTOOLS_MCP_BROWSER_URL=${browser_url} in the backend environment."
+    return 0
+  fi
+
+  echo "Diagnosis: Chrome is running, but Chrome DevTools MCP has nothing to attach to yet."
+  echo "Next step for the default auto-connect path:"
+  echo "  1. Open chrome://inspect/#remote-debugging in Chrome."
+  echo "  2. Enable remote debugging."
+  echo "  3. Allow incoming debugging connections when Chrome prompts."
+  echo
+  echo "Alternative manual port path:"
+  echo "  Start Chrome with --remote-debugging-port=9222 and a non-default --user-data-dir,"
+  echo "  then set CHROME_DEVTOOLS_MCP_BROWSER_URL=http://127.0.0.1:9222 before running this script."
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  show_help
+  exit 0
+fi
+
+if [[ "${1:-}" == "doctor" ]]; then
+  run_doctor
+  exit 0
+fi
+
+if [[ "${1:-}" == "logs" ]]; then
+  LOG_FILE="${LOCAL_COMPANION_LOG_FILE:-companion/.data/live.log}"
+  mkdir -p "$(dirname "$LOG_FILE")"
+  touch "$LOG_FILE"
+  echo "Tailing ${LOG_FILE}"
+  exec tail -n 200 -f "$LOG_FILE"
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "Error: Node.js is required to run the local backend." >&2
+  exit 1
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "Error: Python 3 is required for the mcp-agent bridge runtime." >&2
+  exit 1
+fi
+
+if ! command -v npm >/dev/null 2>&1; then
+  echo "Error: npm is required to run the local backend." >&2
+  exit 1
+fi
+
+if ! python3 -m uv --version >/dev/null 2>&1; then
+  echo "Installing uv for the mcp-agent bridge runtime..."
+  if ! python3 -m pip install --user uv; then
+    python3 -m pip install --user --break-system-packages uv
+  fi
+fi
+
+if [[ ! -d node_modules || ! -x node_modules/.bin/tsx ]]; then
+  echo "Installing project dependencies for the local backend..."
+  npm install
+fi
+
+HOST="${LOCAL_COMPANION_HOST:-127.0.0.1}"
+PORT="${LOCAL_COMPANION_PORT:-4315}"
+
+echo "Starting CheatResume backend on ws://${HOST}:${PORT}/ws"
+exec env LOCAL_COMPANION_HOST="$HOST" LOCAL_COMPANION_PORT="$PORT" npm run companion:dev

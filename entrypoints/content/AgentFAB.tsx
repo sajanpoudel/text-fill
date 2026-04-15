@@ -4,11 +4,10 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
-  type RefObject,
 } from "react";
+import { createPortal } from "react-dom";
 import { isPageDark } from "../../src/lib/dom/theme.ts";
 import {
   buildDefaultAgentGoal,
@@ -24,6 +23,7 @@ import {
   type AgentPanelRun as AgentRunListEntry,
 } from "../../src/lib/agent-panel-runtime.ts";
 import { buildAgentRunStartContext } from "../../src/lib/agent-run-context.ts";
+import { buildAgentRunBootstrapContext } from "../../src/lib/agent-run-bootstrap.ts";
 import type { PlatformKey } from "../../src/lib/platform.ts";
 
 type ToastType = "success" | "error" | "info";
@@ -33,6 +33,20 @@ interface AgentFABProps {
   platform: PlatformKey;
   currentField: Element | null;
   showToast: (msg: string, type?: ToastType) => void;
+}
+
+type SpeechRecognitionConstructor = typeof window.SpeechRecognition;
+
+const SR: SpeechRecognitionConstructor | undefined =
+  window.SpeechRecognition ?? window.webkitSpeechRecognition;
+
+function createRecognition(): SpeechRecognition | null {
+  if (!SR) return null;
+  const recognition = new SR();
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.lang = "en-US";
+  return recognition;
 }
 
 function relativeTime(ts: number): string {
@@ -48,7 +62,7 @@ function getStatusColors(status: string, dark: boolean) {
     case "completed":
     case "approved":
       return {
-        background: dark ? "rgba(22,101,52,0.25)" : "rgba(22,101,52,0.08)",
+        background: dark ? "rgba(22,101,52,0.22)" : "rgba(22,101,52,0.08)",
         color: dark ? "#bbf7d0" : "#166534",
       };
     case "awaiting_approval":
@@ -56,19 +70,19 @@ function getStatusColors(status: string, dark: boolean) {
     case "executing":
     case "running":
       return {
-        background: dark ? "rgba(37,99,235,0.25)" : "rgba(37,99,235,0.08)",
+        background: dark ? "rgba(37,99,235,0.22)" : "rgba(37,99,235,0.08)",
         color: dark ? "#bfdbfe" : "#1d4ed8",
       };
     case "failed":
     case "rejected":
     case "cancelled":
       return {
-        background: dark ? "rgba(220,38,38,0.25)" : "rgba(220,38,38,0.08)",
+        background: dark ? "rgba(220,38,38,0.22)" : "rgba(220,38,38,0.08)",
         color: dark ? "#fecaca" : "#b91c1c",
       };
     default:
       return {
-        background: dark ? "rgba(168,85,247,0.22)" : "rgba(120,113,108,0.08)",
+        background: dark ? "rgba(120,113,108,0.22)" : "rgba(120,113,108,0.08)",
         color: dark ? "#e7e5e4" : "#57534e",
       };
   }
@@ -83,498 +97,287 @@ function scheduleTaskQueueNudge() {
   }
 }
 
-function AgentPanel({
+function AgentComposer({
   dark,
   goal,
-  runs,
-  approvals,
   authenticated,
+  runtimeConnected,
+  runtimeError,
   placeholder,
   loading,
   starting,
+  latestRun,
+  approvals,
   actingApprovalId,
   onGoalChange,
   onRefresh,
   onStart,
   onResolve,
   onClose,
-  fabRef,
+  isListening,
+  onVoiceToggle,
 }: {
   dark: boolean;
   goal: string;
-  runs: AgentRunListEntry[];
-  approvals: AgentApprovalListEntry[];
   authenticated: boolean;
+  runtimeConnected: boolean;
+  runtimeError?: string;
   placeholder: string;
   loading: boolean;
   starting: boolean;
+  latestRun: AgentRunListEntry | null;
+  approvals: AgentApprovalListEntry[];
   actingApprovalId: string | null;
   onGoalChange: (next: string) => void;
   onRefresh: () => void;
   onStart: () => void;
-  onResolve: (
-    approvalId: string,
-    decision: "approved" | "rejected"
-  ) => void;
+  onResolve: (approvalId: string, decision: "approved" | "rejected") => void;
   onClose: () => void;
-  fabRef: RefObject<HTMLButtonElement | null>;
+  isListening: boolean;
+  onVoiceToggle: () => void;
 }) {
-  const panelRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ right: number; bottom: number }>({
-    right: 64,
-    bottom: 60,
-  });
+  const composerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  
+  // ── Theme Colours (Matched to GenerateModal) ──────────────────────────────
+  const bg        = dark ? "#0A0A0A" : "#ffffff";
+  const border    = dark ? "#333333" : "#e5e5e5";
+  const text      = dark ? "#ffffff" : "#000000";
+  const textSub   = dark ? "#888888" : "#666666";
+  const textMuted = dark ? "#555555" : "#999999";
+  const divider   = dark ? "#222222" : "#f0f0f0";
+  const hoverBg   = dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.04)";
+  const primary   = dark ? "#ffffff" : "#000000";
 
-  const swallowPointer = (event: ReactPointerEvent | ReactMouseEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
+  const primaryDisabled =
+    starting || !runtimeConnected || !normalizeAgentGoal(goal);
+  const firstApproval = approvals[0] ?? null;
+
+  useEffect(() => {
+    window.setTimeout(() => inputRef.current?.focus(), 40);
+  }, []);
+
+  const stopDown = (e: ReactMouseEvent | ReactPointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
   };
 
-  useEffect(() => {
-    if (!fabRef.current) return;
-    const rect = fabRef.current.getBoundingClientRect();
-    const PANEL_W = 336;
-    const right = Math.max(window.innerWidth - rect.right, 8);
-    const bottom = window.innerHeight - rect.top + 8;
-    setPos({
-      right: Math.min(right, Math.max(8, window.innerWidth - PANEL_W - 8)),
-      bottom,
-    });
-  }, [fabRef]);
+  const statusColors = latestRun ? getStatusColors(latestRun.status, dark) : null;
+  const summary = latestRun ? getAgentRunSummary(latestRun) : null;
 
-  useEffect(() => {
-    const handler = (event: MouseEvent) => {
-      const path = event.composedPath ? event.composedPath() : [];
-      const fab = fabRef.current;
-      if (
-        panelRef.current &&
-        !path.includes(panelRef.current) &&
-        !(fab && path.includes(fab))
-      ) {
-        onClose();
-      }
-    };
-    const timer = window.setTimeout(() => {
-      document.addEventListener("click", handler, true);
-    }, 50);
-    return () => {
-      window.clearTimeout(timer);
-      document.removeEventListener("click", handler, true);
-    };
-  }, [fabRef, onClose]);
+  let detail = "Start a bounded task for the current page.";
+  if (!authenticated) {
+    detail = "Sign in to start agent runs.";
+  } else if (!runtimeConnected) {
+    detail = runtimeError?.trim() ? runtimeError : "Connect local companion.";
+  } else if (summary) {
+    detail = summary;
+  }
 
-  const bg = dark ? "#111111" : "#ffffff";
-  const border = dark ? "#333333" : "#e5e5e5";
-  const muted = dark ? "#a8a29e" : "#57534e";
-  const title = dark ? "#ffffff" : "#0f172a";
-
-  return (
+  return createPortal(
     <div
-      ref={panelRef}
-      data-tfa-ui="agent-panel"
+      data-tfa-ui="modal-overlay"
       style={{
         position: "fixed",
-        right: pos.right,
-        bottom: pos.bottom,
+        inset: 0,
         zIndex: 2147483647,
-        width: 336,
-        maxHeight: 460,
-        background: bg,
-        border: `1px solid ${border}`,
-        borderRadius: 12,
-        boxShadow: dark
-          ? "0 16px 48px rgba(0,0,0,0.72)"
-          : "0 16px 48px rgba(15,23,42,0.16)",
+        background: "transparent", // No blocking/blurring overlay
         display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-        pointerEvents: "auto",
-        fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
-        animation: "tfa-fadein 0.15s cubic-bezier(0.16,1,0.3,1)",
+        alignItems: "flex-end",
+        justifyContent: "center",
+        paddingBottom: 40,
+        pointerEvents: "none",
       }}
-      onPointerDown={(event) => event.stopPropagation()}
     >
       <div
+        ref={composerRef}
+        onMouseDown={(e) => e.stopPropagation()}
         style={{
+          width: 640,
+          background: bg,
+          border: `1px solid ${border}`,
+          borderRadius: 8,
+          boxShadow: `0 8px 30px rgba(0,0,0,${dark ? "0.6" : "0.15"}), 0 0 0 1px ${border}`,
+          fontFamily: `system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`,
+          overflow: "hidden",
           display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "12px 14px",
-          borderBottom: `1px solid ${border}`,
-          flexShrink: 0,
+          flexDirection: "column",
+          animation: "tfa-modal-in 0.2s ease-out",
+          pointerEvents: "auto",
+          userSelect: "text",
+          WebkitUserSelect: "text",
         }}
       >
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <span
-            style={{
-              fontSize: 12,
-              fontWeight: 800,
-              color: title,
-              textTransform: "uppercase",
-              letterSpacing: "0.5px",
-            }}
-          >
-            Agent Tasks
-          </span>
-          <span style={{ fontSize: 11, color: muted }}>
-            Start a durable run or review approval gates.
-          </span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button
-            type="button"
-            onClick={onRefresh}
-            onPointerDown={swallowPointer}
-            onMouseDown={swallowPointer}
-            style={{
-              border: "none",
-              background: "none",
-              cursor: loading ? "wait" : "pointer",
-              padding: 0,
-              color: muted,
-              fontSize: 11,
+        {/* Header/Status Strip */}
+        <div style={{ padding: "10px 14px", borderBottom: `1px solid ${divider}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+            <span style={{
+              padding: "2px 6px",
+              borderRadius: 4,
+              fontSize: 10,
               fontWeight: 700,
-            }}
-            disabled={loading}
-          >
-            Refresh
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            onPointerDown={swallowPointer}
-            onMouseDown={swallowPointer}
-            style={{
-              border: "none",
-              background: "none",
-              cursor: "pointer",
-              padding: 0,
-              color: muted,
-              fontSize: 18,
-              lineHeight: 1,
-            }}
-          >
-            ×
-          </button>
-        </div>
-      </div>
-
-      <div style={{ padding: "14px", borderBottom: `1px solid ${border}` }}>
-        {!authenticated ? (
-          <div style={{ fontSize: 13, lineHeight: 1.5, color: muted }}>
-            Sign in through the extension popup to start durable agent runs.
+              textTransform: "uppercase",
+              background: statusColors ? statusColors.background : divider,
+              color: statusColors ? statusColors.color : textMuted,
+            }}>
+              {latestRun ? formatAgentRunStatus(latestRun.status) : "Agent Ready"}
+            </span>
+            <span style={{ fontSize: 11, color: textSub, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {detail}
+            </span>
           </div>
-        ) : (
-          <>
-            <label
-              htmlFor="tfa-agent-goal"
-              style={{
-                display: "block",
-                marginBottom: 8,
-                fontSize: 12,
-                fontWeight: 700,
-                color: title,
-              }}
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <button
+              onClick={onRefresh}
+              onMouseDown={stopDown}
+              disabled={loading}
+              title="Refresh"
+              style={{ background: "none", border: "none", color: textSub, cursor: "pointer", padding: 4, borderRadius: 4, display: "flex" }}
+              onMouseEnter={(e) => e.currentTarget.style.background = hoverBg}
+              onMouseLeave={(e) => e.currentTarget.style.background = "none"}
             >
-              Goal for this page
-            </label>
-            <textarea
-              id="tfa-agent-goal"
-              value={goal}
-              onChange={(event) => onGoalChange(event.target.value)}
-              placeholder={placeholder}
-              rows={3}
-              style={{
-                width: "100%",
-                resize: "vertical",
-                minHeight: 74,
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: `1px solid ${border}`,
-                background: dark ? "#292524" : "#ffffff",
-                color: title,
-                fontSize: 13,
-                lineHeight: 1.5,
-                fontFamily: "inherit",
-                boxSizing: "border-box",
-              }}
-            />
-            <div
-              style={{
-                marginTop: 6,
-                fontSize: 11,
-                lineHeight: 1.4,
-                color: muted,
-              }}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: loading ? "tfa-spin 1s linear infinite" : "none" }}>
+                <path d="M21 12a9 9 0 1 1-6.219-8.56" /><polyline points="21 3 21 9 15 9" />
+              </svg>
+            </button>
+            <button
+              onClick={onClose}
+              onMouseDown={stopDown}
+              title="Close"
+              style={{ background: "none", border: "none", color: textSub, cursor: "pointer", padding: 4, borderRadius: 4, display: "flex" }}
+              onMouseEnter={(e) => e.currentTarget.style.background = hoverBg}
+              onMouseLeave={(e) => e.currentTarget.style.background = "none"}
             >
-              {goal || "Describe a bounded task for the current page."}
-            </div>
-            <div
-              style={{
-                marginTop: 10,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-              }}
-            >
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <span style={{ fontSize: 11, color: muted }}>
-                  Agent runs are durable and stop for approval before irreversible actions.
-                </span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        {/* Input Area */}
+        <div style={{ position: "relative" }}>
+          <textarea
+            ref={inputRef}
+            value={goal}
+            onChange={(e) => onGoalChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onStart(); }
+              if (e.key === "Escape") onClose();
+            }}
+            placeholder={isListening ? "Listening…" : placeholder}
+            rows={2}
+            style={{
+              display: "block",
+              width: "100%",
+              boxSizing: "border-box",
+              padding: "14px 14px 44px", // Bottom padding for absolute mic/start buttons
+              fontSize: 14,
+              lineHeight: 1.5,
+              border: "none",
+              background: "transparent",
+              color: text,
+              resize: "none",
+              outline: "none",
+              fontFamily: "inherit",
+            }}
+          />
+
+          {/* Bottom Floating Controls */}
+          <div style={{ position: "absolute", bottom: 8, left: 8, right: 8, display: "flex", justifyContent: "space-between", alignItems: "center", pointerEvents: "none" }}>
+            <div style={{ display: "flex", gap: 6, pointerEvents: "auto" }}>
+              {SR && (
                 <button
                   type="button"
-                  onClick={() => onGoalChange(placeholder)}
-                  onPointerDown={swallowPointer}
-                  onMouseDown={swallowPointer}
+                  onClick={onVoiceToggle}
+                  onMouseDown={stopDown}
                   style={{
-                    alignSelf: "flex-start",
-                    border: "none",
-                    background: "none",
-                    padding: 0,
-                    color: dark ? "#bfdbfe" : "#1d4ed8",
-                    cursor: "pointer",
-                    fontSize: 11,
-                    fontWeight: 700,
+                    width: 26, height: 26, borderRadius: 4, border: `1px solid ${isListening ? text : border}`,
+                    background: isListening ? text : "transparent", color: isListening ? bg : textSub,
+                    display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
                   }}
                 >
-                  Use page suggestion
+                  {isListening ? (
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: bg, animation: "tfa-pulse 1s infinite" }} />
+                  ) : (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+                  )}
                 </button>
-              </div>
+              )}
+              <button
+                type="button"
+                onClick={() => onGoalChange(placeholder)}
+                onMouseDown={stopDown}
+                style={{
+                  height: 26, padding: "0 8px", borderRadius: 4, border: `1px solid ${border}`,
+                  background: bg, color: textSub, fontSize: 11, fontWeight: 600, cursor: "pointer",
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = hoverBg}
+                onMouseLeave={(e) => e.currentTarget.style.background = bg}
+              >
+                Suggestion
+              </button>
+            </div>
+            
+            <div style={{ display: "flex", alignItems: "center", gap: 10, pointerEvents: "auto" }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: textMuted }}>Enter to run</div>
               <button
                 type="button"
                 onClick={onStart}
-                onPointerDown={swallowPointer}
-                onMouseDown={swallowPointer}
-                disabled={starting || !normalizeAgentGoal(goal)}
+                onMouseDown={stopDown}
+                disabled={primaryDisabled}
                 style={{
-                  border: "none",
-                  borderRadius: 8,
-                  background: dark ? "#ffffff" : "#111827",
-                  color: dark ? "#000000" : "#ffffff",
-                  padding: "9px 12px",
-                  minWidth: 92,
-                  cursor:
-                    starting || !normalizeAgentGoal(goal) ? "not-allowed" : "pointer",
-                  fontSize: 12,
-                  fontWeight: 700,
+                  width: 30, height: 30, borderRadius: 4, background: primary, color: bg, border: "none",
+                  display: "flex", alignItems: "center", justifyContent: "center", cursor: primaryDisabled ? "not-allowed" : "pointer",
+                  opacity: primaryDisabled ? 0.5 : 1, transition: "opacity 0.2s",
                 }}
               >
-                {starting ? "Starting…" : "Start Run"}
+                {starting ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: "tfa-spin 1s linear infinite" }}><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></svg>
+                )}
               </button>
             </div>
-          </>
+          </div>
+        </div>
+
+        {/* Approvals Strip */}
+        {firstApproval && (
+          <div style={{ padding: "8px 14px", borderTop: `1px solid ${divider}`, background: dark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.01)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: text }}>{firstApproval.title}</div>
+              <div style={{ fontSize: 10, color: textSub, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {summarizeApprovalPayload(firstApproval.payload) ?? "Review required."}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 4 }}>
+              <button
+                onClick={() => onResolve(firstApproval._id, "rejected")}
+                disabled={actingApprovalId === firstApproval._id}
+                style={{ height: 24, padding: "0 8px", borderRadius: 4, border: `1px solid ${border}`, background: bg, color: text, fontSize: 10, fontWeight: 700, cursor: "pointer" }}
+              >
+                Reject
+              </button>
+              <button
+                onClick={() => onResolve(firstApproval._id, "approved")}
+                disabled={actingApprovalId === firstApproval._id}
+                style={{ height: 24, padding: "0 8px", borderRadius: 4, border: "none", background: text, color: bg, fontSize: 10, fontWeight: 800, cursor: "pointer" }}
+              >
+                Approve
+              </button>
+            </div>
+          </div>
         )}
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto" }}>
-        <div style={{ padding: "14px", borderBottom: `1px solid ${border}` }}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 10,
-            }}
-          >
-            <span style={{ fontSize: 12, fontWeight: 800, color: title }}>
-              Pending Approvals
-            </span>
-            <span style={{ fontSize: 11, color: muted }}>{approvals.length}</span>
-          </div>
-          {approvals.length === 0 ? (
-            <div style={{ fontSize: 12, color: muted, lineHeight: 1.5 }}>
-              No approval gates are waiting right now.
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {approvals.map((approval) => {
-                const generatedText = summarizeApprovalPayload(approval.payload);
-                return (
-                  <div
-                    key={approval._id}
-                    style={{
-                      border: `1px solid ${border}`,
-                      borderRadius: 10,
-                      padding: "10px 12px",
-                      background: dark ? "#292524" : "#ffffff",
-                    }}
-                  >
-                    <div style={{ fontSize: 13, fontWeight: 700, color: title }}>
-                      {approval.title}
-                    </div>
-                    <div
-                      style={{
-                        marginTop: 4,
-                        fontSize: 12,
-                        lineHeight: 1.5,
-                        color: muted,
-                      }}
-                    >
-                      {approval.reason}
-                    </div>
-                    {generatedText ? (
-                      <div
-                        style={{
-                          marginTop: 8,
-                          fontSize: 12,
-                          lineHeight: 1.5,
-                          color: title,
-                          padding: "8px 10px",
-                          borderRadius: 8,
-                          background: dark ? "#0c0a09" : "#ffffff",
-                          border: `1px solid ${border}`,
-                        }}
-                      >
-                        {generatedText}
-                      </div>
-                    ) : null}
-                    <div
-                      style={{
-                        marginTop: 10,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: 8,
-                      }}
-                    >
-                      <span style={{ fontSize: 11, color: muted }}>
-                        {relativeTime(approval.createdAt)}
-                      </span>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <button
-                          type="button"
-                          onClick={() => onResolve(approval._id, "rejected")}
-                          disabled={actingApprovalId === approval._id}
-                          style={{
-                            borderRadius: 8,
-                            border: `1px solid ${border}`,
-                            background: "transparent",
-                            color: title,
-                            padding: "7px 10px",
-                            fontSize: 12,
-                            fontWeight: 700,
-                            cursor:
-                              actingApprovalId === approval._id ? "wait" : "pointer",
-                          }}
-                        >
-                          Reject
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onResolve(approval._id, "approved")}
-                          disabled={actingApprovalId === approval._id}
-                          style={{
-                            borderRadius: 8,
-                            border: "none",
-                            background: dark ? "#ffffff" : "#111827",
-                            color: dark ? "#000000" : "#ffffff",
-                            padding: "7px 10px",
-                            fontSize: 12,
-                            fontWeight: 700,
-                            cursor:
-                              actingApprovalId === approval._id ? "wait" : "pointer",
-                          }}
-                        >
-                          {actingApprovalId === approval._id ? "Saving…" : "Approve"}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <div style={{ padding: "14px" }}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 10,
-            }}
-          >
-            <span style={{ fontSize: 12, fontWeight: 800, color: title }}>
-              Recent Runs
-            </span>
-            <span style={{ fontSize: 11, color: muted }}>{runs.length}</span>
-          </div>
-          {runs.length === 0 ? (
-            <div style={{ fontSize: 12, color: muted, lineHeight: 1.5 }}>
-              No durable agent runs yet for this account.
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {runs.map((run) => {
-                const statusColors = getStatusColors(run.status, dark);
-                return (
-                  <div
-                    key={run._id}
-                    style={{
-                      border: `1px solid ${border}`,
-                      borderRadius: 10,
-                      padding: "10px 12px",
-                      background: dark ? "#292524" : "#ffffff",
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: 10,
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: 13,
-                          fontWeight: 700,
-                          color: title,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                        title={run.goal}
-                      >
-                        {run.goal}
-                      </div>
-                      <span
-                        style={{
-                          flexShrink: 0,
-                          padding: "3px 8px",
-                          borderRadius: 999,
-                          fontSize: 10,
-                          fontWeight: 800,
-                          background: statusColors.background,
-                          color: statusColors.color,
-                        }}
-                      >
-                        {formatAgentRunStatus(run.status)}
-                      </span>
-                    </div>
-                    <div
-                      style={{
-                        marginTop: 6,
-                        fontSize: 12,
-                        lineHeight: 1.5,
-                        color: muted,
-                      }}
-                    >
-                      {getAgentRunSummary(run)}
-                    </div>
-                    <div style={{ marginTop: 8, fontSize: 11, color: muted }}>
-                      Updated {relativeTime(run.updatedAt)}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
+      <style>{`
+        @keyframes tfa-modal-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes tfa-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes tfa-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.75); } }
+      `}</style>
+    </div>,
+    document.body
   );
 }
 
@@ -590,14 +393,19 @@ export function AgentFAB({
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [runtimeConnected, setRuntimeConnected] = useState(false);
+  const [runtimeError, setRuntimeError] = useState<string | undefined>();
   const [approvals, setApprovals] = useState<AgentApprovalListEntry[]>([]);
   const [runs, setRuns] = useState<AgentRunListEntry[]>([]);
   const [actingApprovalId, setActingApprovalId] = useState<string | null>(null);
-  const fabRef = useRef<HTMLButtonElement>(null);
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
   const placeholder = useMemo(
     () => buildDefaultAgentGoal(platform, location.href),
     [platform]
   );
+
+  const latestRun = runs[0] ?? null;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -607,6 +415,8 @@ export function AgentFAB({
         6
       );
       setAuthenticated(snapshot.authenticated);
+      setRuntimeConnected(snapshot.runtimeConnected);
+      setRuntimeError(snapshot.runtimeError);
       setRuns(snapshot.runs);
       setApprovals(snapshot.approvals);
     } catch (error: any) {
@@ -631,25 +441,130 @@ export function AgentFAB({
     };
   }, [panelOpen, refresh]);
 
+  useEffect(() => {
+    return () => {
+      try {
+        recognitionRef.current?.stop();
+      } catch {
+        // ignore teardown stop errors
+      }
+      recognitionRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (panelOpen || !isListening) return;
+    try {
+      recognitionRef.current?.stop();
+    } catch {
+      // ignore close-time stop errors
+    }
+    recognitionRef.current = null;
+    setIsListening(false);
+  }, [isListening, panelOpen]);
+
+  const toggleListening = useCallback(() => {
+    if (!SR) {
+      showToast("Speech recognition not supported in this browser", "error");
+      return;
+    }
+    if (isListening) {
+      setIsListening(false);
+      try {
+        recognitionRef.current?.stop();
+      } catch {
+        // ignore stop errors
+      }
+      recognitionRef.current = null;
+      return;
+    }
+
+    const recognition = createRecognition();
+    if (!recognition) {
+      showToast("Speech recognition not supported in this browser", "error");
+      return;
+    }
+
+    recognitionRef.current = recognition;
+    let committed = goal;
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const chunk = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          committed += `${committed ? " " : ""}${chunk}`;
+        } else {
+          interim = chunk;
+        }
+      }
+      setGoal(`${committed}${interim ? ` ${interim}` : ""}`.trim());
+    };
+
+    recognition.onend = () => {
+      setGoal(committed.trim());
+      setIsListening(false);
+      recognitionRef.current = null;
+    };
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      setIsListening(false);
+      recognitionRef.current = null;
+      if (event.error !== "no-speech") {
+        showToast(
+          event.error === "not-allowed"
+            ? "Microphone access denied"
+            : `Voice error: ${event.error}`,
+          "error"
+        );
+      }
+    };
+
+    try {
+      recognition.start();
+      setIsListening(true);
+    } catch {
+      recognitionRef.current = null;
+      setIsListening(false);
+      showToast("Could not start microphone", "error");
+    }
+  }, [goal, isListening, showToast]);
+
   const handleStart = useCallback(async () => {
+    if (!runtimeConnected) {
+      showToast(
+        runtimeError ??
+          "Start the local companion on your device before launching agent runs.",
+        "error"
+      );
+      return;
+    }
+
     setStarting(true);
     try {
+      const bootstrap = buildAgentRunBootstrapContext(platform);
       const result = await startAgentRun(
         (message) => chrome.runtime.sendMessage(message),
         currentField
           ? {
               goal,
               platformHint: platform,
+              pageUrl: bootstrap.pageUrl,
+              scannedCandidates: bootstrap.scannedCandidates,
+              nextPageUrl: bootstrap.nextPageUrl,
+              structured: bootstrap.structured,
               ...buildAgentRunStartContext(currentField, platform),
             }
           : {
               goal,
               platformHint: platform,
+              ...bootstrap,
             }
       );
 
       showToast("Agent run started", "success");
       setGoal("");
+      setPanelOpen(true);
       await refresh();
       if (!result.runId) {
         throw new Error("Agent run did not return an id");
@@ -659,7 +574,15 @@ export function AgentFAB({
     } finally {
       setStarting(false);
     }
-  }, [currentField, goal, platform, refresh, showToast]);
+  }, [
+    currentField,
+    goal,
+    platform,
+    refresh,
+    runtimeConnected,
+    runtimeError,
+    showToast,
+  ]);
 
   const handleResolve = useCallback(
     async (approvalId: string, decision: "approved" | "rejected") => {
@@ -696,10 +619,9 @@ export function AgentFAB({
   return (
     <>
       <button
-        ref={fabRef}
         type="button"
         data-tfa-ui="agent-fab"
-        title="Agent tasks — durable runs and approvals"
+        title="Agent Command Center"
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -710,13 +632,15 @@ export function AgentFAB({
         style={{
           position: "fixed",
           bottom: 20,
-          right: 60,
+          right: 48,
           zIndex: 2147483647,
-          width: 32,
+          width: 36,
           height: 32,
           padding: 0,
-          border: `1px solid ${dark ? "rgba(68, 64, 60, 0.5)" : "rgba(231, 229, 228, 0.5)"}`,
-          borderRadius: "50%",
+          border: `1px solid ${
+            dark ? "rgba(68, 64, 60, 0.5)" : "rgba(231, 229, 228, 0.5)"
+          }`,
+          borderRadius: "16px 0 0 16px",
           background: dark ? "rgba(28, 25, 23, 0.7)" : "rgba(252, 252, 251, 0.7)",
           backdropFilter: "blur(8px)",
           WebkitBackdropFilter: "blur(8px)",
@@ -729,6 +653,7 @@ export function AgentFAB({
             : "0 2px 10px rgba(0,0,0,0.1)",
           transition: "transform 0.15s ease, box-shadow 0.15s ease",
           pointerEvents: "auto",
+          overflow: "visible",
         }}
         onMouseEnter={(event) => {
           event.currentTarget.style.transform = "scale(1.1)";
@@ -743,17 +668,19 @@ export function AgentFAB({
             : "0 2px 10px rgba(0,0,0,0.1)";
         }}
       >
-        <span
-          style={{
-            fontSize: 11,
-            lineHeight: 1,
-            fontWeight: 800,
-            color: dark ? "#fcfcfb" : "#1c1917",
-            fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
-          }}
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke={dark ? "#fcfcfb" : "#1c1917"}
+          strokeWidth="2.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
-          AI
-        </span>
+          <path d="M5 12h12" />
+          <path d="m13 6 6 6-6 6" />
+        </svg>
         {approvals.length > 0 ? (
           <span
             style={{
@@ -762,7 +689,7 @@ export function AgentFAB({
               right: -4,
               minWidth: 16,
               height: 16,
-              background: dark ? "#fcfcfb" : "#7f1d1d",
+              background: dark ? "#fcfcfb" : "#000000",
               border: `2px solid ${dark ? "#44403c" : "#fcfcfb"}`,
               borderRadius: 8,
               fontSize: 9,
@@ -782,31 +709,30 @@ export function AgentFAB({
         ) : null}
       </button>
 
-      {panelOpen ? (
-        <AgentPanel
+      {panelOpen && (
+        <AgentComposer
           dark={dark}
           goal={goal}
-          runs={runs}
-          approvals={approvals}
           authenticated={authenticated}
+          runtimeConnected={runtimeConnected}
+          runtimeError={runtimeError}
           placeholder={placeholder}
           loading={loading}
           starting={starting}
+          latestRun={latestRun}
+          approvals={approvals}
           actingApprovalId={actingApprovalId}
           onGoalChange={setGoal}
-          onRefresh={() => {
-            void refresh();
-          }}
-          onStart={() => {
-            void handleStart();
-          }}
+          onRefresh={() => void refresh()}
+          onStart={() => void handleStart()}
           onResolve={(approvalId, decision) => {
             void handleResolve(approvalId, decision);
           }}
           onClose={() => setPanelOpen(false)}
-          fabRef={fabRef}
+          isListening={isListening}
+          onVoiceToggle={toggleListening}
         />
-      ) : null}
+      )}
     </>
   );
 }

@@ -123,6 +123,8 @@ describe("agent panel runtime helpers", () => {
       authenticated: true,
       approvals: [{ _id: "approval-1", title: "Approve this", status: "pending" }],
       runs: [{ _id: "run-1", goal: "Inspect", status: "planning" }],
+      runtime: "local_companion",
+      runtimeConnected: true,
     }));
 
     const state = await fetchAgentPanelState(sendMessage, 7);
@@ -134,23 +136,41 @@ describe("agent panel runtime helpers", () => {
     expect(state.authenticated).toBe(true);
     expect(state.approvals).toHaveLength(1);
     expect(state.runs).toHaveLength(1);
+    expect(state.runtime).toBe("local_companion");
+    expect(state.runtimeConnected).toBe(true);
   });
 
   test("startAgentRun forwards the current goal and validates the response", async () => {
     const sendMessage = vi.fn(async () => ({
       runId: "run-1",
-      workflowId: "workflow-1",
+      runtimeId: "companion-run-1",
     }));
 
     const result = await startAgentRun(sendMessage, {
       goal: "  Connect   with this recruiter  ",
       platformHint: "linkedin",
+      pageUrl: "https://www.linkedin.com/in/example-recruiter/",
       pageContext: "Audience: Carolyn Wilmes Orr",
       fieldTarget: {
         selector: "#composer",
         platform: "linkedin",
         fieldType: "[DM_MESSAGE]",
         charLimit: 300,
+      },
+      scannedCandidates: [
+        {
+          targetName: "Carolyn Wilmes Orr",
+          targetUrl: "https://www.linkedin.com/in/carolyn-wilmes-orr/",
+          headline: "Principal Engineering Recruiter",
+        },
+      ],
+      nextPageUrl:
+        "https://www.linkedin.com/search/results/people/?page=2&keywords=recruiter",
+      structured: {
+        data: {
+          title: "Carolyn Wilmes Orr",
+        },
+        headings: ["Carolyn Wilmes Orr"],
       },
     });
 
@@ -159,6 +179,7 @@ describe("agent panel runtime helpers", () => {
       payload: {
         goal: "Connect with this recruiter",
         platformHint: "linkedin",
+        pageUrl: "https://www.linkedin.com/in/example-recruiter/",
         pageContext: "Audience: Carolyn Wilmes Orr",
         fieldTarget: {
           selector: "#composer",
@@ -166,11 +187,26 @@ describe("agent panel runtime helpers", () => {
           fieldType: "[DM_MESSAGE]",
           charLimit: 300,
         },
+        scannedCandidates: [
+          {
+            targetName: "Carolyn Wilmes Orr",
+            targetUrl: "https://www.linkedin.com/in/carolyn-wilmes-orr/",
+            headline: "Principal Engineering Recruiter",
+          },
+        ],
+        nextPageUrl:
+          "https://www.linkedin.com/search/results/people/?page=2&keywords=recruiter",
+        structured: {
+          data: {
+            title: "Carolyn Wilmes Orr",
+          },
+          headings: ["Carolyn Wilmes Orr"],
+        },
       },
     });
     expect(result).toEqual({
       runId: "run-1",
-      workflowId: "workflow-1",
+      runtimeId: "companion-run-1",
     });
   });
 

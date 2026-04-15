@@ -84,6 +84,7 @@ export const createBatch = mutation({
       v.object({
         targetUrl: v.string(),
         targetName: v.optional(v.string()),
+        generatedText: v.optional(v.string()),
       })
     ),
   },

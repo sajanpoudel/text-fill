@@ -24,7 +24,7 @@ import { ChangeThreshold, scanForOpportunities } from "../../src/lib/scanner.ts"
 import { sessionObserver } from "../../src/lib/session-observer.ts";
 import { FieldButton } from "./FieldButton.tsx";
 import { AgentFAB } from "./AgentFAB.tsx";
-import { ContextFAB, VoiceFAB, loadContexts } from "./ContextFAB.tsx";
+import { ContextFAB, loadContexts } from "./ContextFAB.tsx";
 import { SuggestionChip } from "./SuggestionChip.tsx";
 import { QueuePreviewPanel } from "./QueuePreviewPanel.tsx";
 import { useAgentCommandRelay } from "./useAgentCommandRelay.ts";
@@ -1035,7 +1035,6 @@ export function ContentApp() {
           currentField={primaryField}
           showToast={showToast}
         />
-        <VoiceFAB visible={showFab} showToast={showToast} />
         <ContextFAB
           visible={showFab}
           contexts={contexts}

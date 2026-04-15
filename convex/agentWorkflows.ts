@@ -1645,13 +1645,18 @@ export const bootstrapObservationRun = workflow.define({
       return null;
     }
 
+    const terminalSummary =
+      terminalDecision.kind === "complete"
+        ? terminalDecision.summary
+        : terminalDecision.tacticalPlan;
+
     await step.runMutation(
       internal.agentRuns.appendStep,
       {
         runId: args.runId,
         role: "summary",
-        content: terminalDecision.summary,
-        summaryAfterStep: `${resultSummaries.join(" ")} ${terminalDecision.summary}`.trim(),
+        content: terminalSummary,
+        summaryAfterStep: `${resultSummaries.join(" ")} ${terminalSummary}`.trim(),
       },
       { inline: true, name: "append workflow summary" }
     );

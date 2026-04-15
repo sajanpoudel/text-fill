@@ -49,6 +49,21 @@ import {
   normalizeVoiceRuntimeState,
   type VoiceRuntimeState,
 } from "../src/lib/voice-runtime.ts";
+import {
+  DEFAULT_LOCAL_COMPANION_TIMEOUT_MS,
+  DEFAULT_LOCAL_COMPANION_URL,
+  requestLocalCompanion,
+} from "../src/lib/local-agent-bridge.ts";
+import type {
+  LocalCompanionAction,
+  LocalCompanionPanelState,
+  LocalCompanionProviderConfig,
+  LocalCompanionReportActionResult,
+  LocalCompanionResolveApprovalResult,
+  LocalCompanionStartRunResult,
+  LocalCompanionStructuredExtraction,
+} from "../src/lib/local-agent-protocol.ts";
+import { resolveApiKey } from "../convex/llmProvider.ts";
 
 // ── Client singleton ──────────────────────────────────────────────────────
 // ConvexHttpClient is stateless-friendly: safe to reuse across SW restarts.
@@ -57,6 +72,8 @@ const browserExecutor = new ChromeBrowserExecutor(chrome);
 let currentTaskQueueScope = DEFAULT_TASK_QUEUE_SCOPE;
 let voiceRuntimeState: VoiceRuntimeState = "idle";
 const PLATFORM_DOM_LEARNING_KEY = "platformDomLearning";
+const LOCAL_COMPANION_URL_KEY = "localCompanionUrl";
+const LOCAL_COMPANION_TIMEOUT_MS_KEY = "localCompanionTimeoutMs";
 
 // ── Auth sync + silent refresh ────────────────────────────────────────────
 // The popup stores the JWT (convexToken) and refresh token (convexRefreshToken)
@@ -156,6 +173,104 @@ async function loadToken() {
   convex.setAuth(convexToken);
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function normalizeStructuredExtraction(
+  value: unknown
+): LocalCompanionStructuredExtraction | null {
+  if (!isPlainObject(value)) return null;
+  const data =
+    isPlainObject(value.data) ? (value.data as Record<string, unknown>) : undefined;
+  const matchedFields = Array.isArray(value.matchedFields)
+    ? value.matchedFields.filter(
+        (item): item is string => typeof item === "string" && item.trim().length > 0
+      )
+    : undefined;
+  const unmatchedFields = Array.isArray(value.unmatchedFields)
+    ? value.unmatchedFields.filter(
+        (item): item is string => typeof item === "string" && item.trim().length > 0
+      )
+    : undefined;
+  const headings = Array.isArray(value.headings)
+    ? value.headings.filter(
+        (item): item is string => typeof item === "string" && item.trim().length > 0
+      )
+    : undefined;
+  const text =
+    typeof value.text === "string" && value.text.trim()
+      ? value.text.trim()
+      : undefined;
+
+  if (!data && !matchedFields && !unmatchedFields && !headings && !text) {
+    return null;
+  }
+
+  return {
+    ...(data ? { data } : {}),
+    ...(matchedFields ? { matchedFields } : {}),
+    ...(unmatchedFields ? { unmatchedFields } : {}),
+    ...(headings ? { headings } : {}),
+    ...(text ? { text } : {}),
+  };
+}
+
+async function loadLocalCompanionConfig(): Promise<{
+  url: string;
+  timeoutMs: number;
+}> {
+  const stored = await chrome.storage.local.get([
+    LOCAL_COMPANION_URL_KEY,
+    LOCAL_COMPANION_TIMEOUT_MS_KEY,
+  ]);
+  const url =
+    typeof stored[LOCAL_COMPANION_URL_KEY] === "string" &&
+    stored[LOCAL_COMPANION_URL_KEY].trim()
+      ? stored[LOCAL_COMPANION_URL_KEY].trim()
+      : DEFAULT_LOCAL_COMPANION_URL;
+  const timeoutMs =
+    typeof stored[LOCAL_COMPANION_TIMEOUT_MS_KEY] === "number" &&
+    Number.isFinite(stored[LOCAL_COMPANION_TIMEOUT_MS_KEY]) &&
+    stored[LOCAL_COMPANION_TIMEOUT_MS_KEY] > 0
+      ? Math.round(stored[LOCAL_COMPANION_TIMEOUT_MS_KEY])
+      : DEFAULT_LOCAL_COMPANION_TIMEOUT_MS;
+  return { url, timeoutMs };
+}
+
+async function callLocalCompanion<TResult>(
+  method:
+    | "get_panel_state"
+    | "start_run"
+    | "resolve_approval"
+    | "report_action_result",
+  params: Record<string, unknown>,
+  timeoutOverrideMs?: number
+): Promise<TResult> {
+  const config = await loadLocalCompanionConfig();
+  return requestLocalCompanion<TResult>(method, params, {
+    url: config.url,
+    timeoutMs:
+      typeof timeoutOverrideMs === "number" && timeoutOverrideMs > 0
+        ? timeoutOverrideMs
+        : config.timeoutMs,
+  });
+}
+
+async function loadCurrentProviderConfig(): Promise<LocalCompanionProviderConfig | null> {
+  const profile = await convex.query(api.users.getProfile, {});
+  if (!profile) return null;
+
+  const { provider, apiKey } = resolveApiKey(profile);
+  if (!apiKey) return null;
+
+  return {
+    provider,
+    apiKey,
+    model: profile.memoryModel ?? profile.model ?? "gpt-5-nano",
+  };
+}
+
 // ── Event listeners — MUST be synchronous top-level ──────────────────────
 
 chrome.runtime.onMessage.addListener(
@@ -245,7 +360,7 @@ async function handleMessage(
       return handleStartAgentRun(msg.payload, sender);
 
     case "RESOLVE_AGENT_APPROVAL":
-      return handleResolveAgentApproval(msg.payload);
+      return handleResolveAgentApproval(msg.payload, sender);
 
     case "GET_COMMAND_RELAY_CONTEXT":
       return {
@@ -696,7 +811,12 @@ async function handleVoiceCommand(text: string) {
 }
 
 async function handleEnqueueTasks(payload: {
-  tasks?: Array<{ type: string; targetUrl: string; targetName?: string }>;
+  tasks?: Array<{
+    type: string;
+    targetUrl: string;
+    targetName?: string;
+    generatedText?: string;
+  }>;
   dailyLimit?: number;
 }) {
   const tasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
@@ -712,6 +832,7 @@ async function handleEnqueueTasks(payload: {
     items: tasks.map((task) => ({
       targetUrl: task.targetUrl,
       targetName: task.targetName,
+      generatedText: task.generatedText,
     })),
   });
   await convex.mutation(api.tasks.approveBatch, { batchId });
@@ -721,23 +842,166 @@ async function handleEnqueueTasks(payload: {
     batchId,
     itemId: itemIds[index],
     dailyLimit,
+    generatedText: task.generatedText,
   }));
 
-  return taskQueue.enqueue(enrichedTasks);
+  const queued = await taskQueue.enqueue(enrichedTasks);
+  return {
+    ...queued,
+    batchId,
+    itemIds,
+  };
 }
 
 async function handleGetAgentPanelState(payload: { limit?: number } | undefined) {
   const limit = Math.max(1, Math.min(10, Math.round(Number(payload?.limit ?? 5))));
-  const [approvals, runs] = await Promise.all([
-    convex.query(api.agentRuns.listPendingApprovals, { limit }),
-    convex.query(api.agentRuns.listRuns, { limit }),
-  ]);
+  if (currentTaskQueueScope === DEFAULT_TASK_QUEUE_SCOPE) {
+    return {
+      authenticated: false,
+      approvals: [],
+      runs: [],
+      runtime: "local_companion" as const,
+      runtimeConnected: false,
+    };
+  }
 
-  return {
-    authenticated: currentTaskQueueScope !== DEFAULT_TASK_QUEUE_SCOPE,
-    approvals,
-    runs,
-  };
+  try {
+    const state = await callLocalCompanion<LocalCompanionPanelState>(
+      "get_panel_state",
+      {
+        userScope: currentTaskQueueScope,
+        limit,
+      },
+      12_000
+    );
+    return {
+      authenticated: true,
+      approvals: Array.isArray(state.approvals) ? state.approvals : [],
+      runs: Array.isArray(state.runs) ? state.runs : [],
+      runtime: "local_companion" as const,
+      runtimeConnected: state.runtimeConnected !== false,
+      runtimeError:
+        typeof state.runtimeError === "string" ? state.runtimeError : undefined,
+    };
+  } catch (error) {
+    return {
+      authenticated: true,
+      approvals: [],
+      runs: [],
+      runtime: "local_companion" as const,
+      runtimeConnected: false,
+      runtimeError: normalizeAgentCommandError(error),
+    };
+  }
+}
+
+async function executeLocalCompanionAction(
+  action: LocalCompanionAction,
+  sender: chrome.runtime.MessageSender
+): Promise<{
+  summary: string;
+  metadata?: Record<string, unknown>;
+}> {
+  switch (action.kind) {
+    case "insert_draft": {
+      const tabId = sender.tab?.id;
+      if (typeof tabId !== "number") {
+        throw new Error("Missing sender tab id for draft insertion");
+      }
+
+      const insertResult = await browserExecutor.execute({
+        kind: "insert_text",
+        tabId,
+        selector: action.fieldTarget.selector,
+        text: action.generatedText,
+        platform: action.fieldTarget.platform,
+        world: "ISOLATED",
+      });
+      if (!insertResult.inserted) {
+        throw new Error("Failed to insert the approved draft into the active field");
+      }
+
+      const verifyResult = await browserExecutor.execute({
+        kind: "verify_text",
+        tabId,
+        selector: action.fieldTarget.selector,
+        expectedText: action.verifyText,
+        world: "ISOLATED",
+        maxLength: Math.max(200, action.verifyText.length + 50),
+      });
+      if (!verifyResult.matched) {
+        throw new Error("Inserted draft could not be verified in the active field");
+      }
+
+      return {
+        summary: action.targetName
+          ? `Inserted the approved draft for ${action.targetName}.`
+          : "Inserted the approved draft into the active field.",
+        metadata: {
+          kind: action.kind,
+          selector: action.fieldTarget.selector,
+        },
+      };
+    }
+
+    case "enqueue_task_batch": {
+      const result = await handleEnqueueTasks({
+        dailyLimit: action.dailyLimit,
+        tasks: action.items.map((item) => ({
+          type: action.batchType,
+          targetUrl: item.targetUrl,
+          targetName: item.targetName,
+          generatedText: item.generatedText,
+        })),
+      });
+      if ("error" in result && typeof result.error === "string") {
+        throw new Error(result.error);
+      }
+
+      return {
+        summary:
+          action.items.length === 1
+            ? `Queued 1 approved ${action.batchType.replace(/_/g, " ")} task.`
+            : `Queued ${action.items.length} approved ${action.batchType.replace(/_/g, " ")} tasks.`,
+        metadata: {
+          kind: action.kind,
+          batchType: action.batchType,
+          dailyLimit: action.dailyLimit,
+          itemCount: action.items.length,
+          ...("batchId" in result ? { batchId: result.batchId } : {}),
+        },
+      };
+    }
+  }
+}
+
+async function reportLocalCompanionActionResult(payload: {
+  approvalId: string;
+  succeeded: boolean;
+  summary?: string;
+  errorMessage?: string;
+  metadata?: Record<string, unknown>;
+}): Promise<LocalCompanionReportActionResult | null> {
+  if (currentTaskQueueScope === DEFAULT_TASK_QUEUE_SCOPE) {
+    return null;
+  }
+
+  try {
+    return await callLocalCompanion<LocalCompanionReportActionResult>(
+      "report_action_result",
+      {
+        userScope: currentTaskQueueScope,
+        approvalId: payload.approvalId,
+        succeeded: payload.succeeded,
+        summary: payload.summary,
+        errorMessage: payload.errorMessage,
+        metadata: payload.metadata,
+      },
+      10_000
+    );
+  } catch {
+    return null;
+  }
 }
 
 async function handleStartAgentRun(
@@ -745,6 +1009,7 @@ async function handleStartAgentRun(
     | {
         goal?: string;
         platformHint?: string;
+        pageUrl?: string;
         pageContext?: string;
         fieldTarget?: {
           selector?: string;
@@ -752,51 +1017,100 @@ async function handleStartAgentRun(
           fieldType?: string;
           charLimit?: number;
         };
+        scannedCandidates?: Array<{
+          targetName?: string;
+          targetUrl?: string;
+          headline?: string;
+        }>;
+        nextPageUrl?: string | null;
+        structured?: unknown;
       }
     | undefined,
   sender: chrome.runtime.MessageSender
 ) {
+  if (currentTaskQueueScope === DEFAULT_TASK_QUEUE_SCOPE) {
+    return { error: "Sign in through the extension popup before starting agent runs" };
+  }
+
   const goal = typeof payload?.goal === "string" ? payload.goal.trim() : "";
   if (!goal) {
     return { error: "Goal is required" };
   }
-  if (typeof sender.tab?.id !== "number") {
-    return { error: "Missing sender tab id" };
-  }
 
-  return convex.mutation(api.agentOrchestration.startRun, {
-    goal,
-    platformHint:
-      typeof payload?.platformHint === "string"
-        ? payload.platformHint
-        : undefined,
-    targetTabId: sender.tab.id,
-    pageUrl: sender.tab.url,
-    pageContext:
-      typeof payload?.pageContext === "string" && payload.pageContext.trim()
-        ? payload.pageContext
-        : undefined,
-    fieldTarget:
-      payload?.fieldTarget &&
-      typeof payload.fieldTarget.selector === "string" &&
-      payload.fieldTarget.selector.trim()
-        ? {
-            selector: payload.fieldTarget.selector,
-            platform:
-              typeof payload.fieldTarget.platform === "string"
-                ? payload.fieldTarget.platform
-                : undefined,
-            fieldType:
-              typeof payload.fieldTarget.fieldType === "string"
-                ? payload.fieldTarget.fieldType
-                : undefined,
-            charLimit:
-              typeof payload.fieldTarget.charLimit === "number"
-                ? payload.fieldTarget.charLimit
-                : undefined,
-          }
-        : undefined,
-  });
+  const providerConfig = await loadCurrentProviderConfig();
+  const scannedCandidates = Array.isArray(payload?.scannedCandidates)
+    ? payload.scannedCandidates
+        .map((item) => ({
+          targetName:
+            typeof item?.targetName === "string" ? item.targetName.trim() : "",
+          targetUrl:
+            typeof item?.targetUrl === "string" ? item.targetUrl.trim() : "",
+          headline:
+            typeof item?.headline === "string" && item.headline.trim()
+              ? item.headline.trim()
+              : undefined,
+        }))
+        .filter((item) => item.targetName && item.targetUrl)
+    : undefined;
+
+  const structured = normalizeStructuredExtraction(payload?.structured);
+
+  try {
+    return await callLocalCompanion<LocalCompanionStartRunResult>(
+      "start_run",
+      {
+        userScope: currentTaskQueueScope,
+        goal,
+        platformHint:
+          typeof payload?.platformHint === "string"
+            ? payload.platformHint
+            : undefined,
+        pageUrl:
+          typeof sender.tab?.url === "string" && sender.tab.url.trim()
+            ? sender.tab.url
+            : typeof payload?.pageUrl === "string" && payload.pageUrl.trim()
+              ? payload.pageUrl.trim()
+              : undefined,
+        pageContext:
+          typeof payload?.pageContext === "string" && payload.pageContext.trim()
+            ? payload.pageContext.trim()
+            : undefined,
+        fieldTarget:
+          payload?.fieldTarget &&
+          typeof payload.fieldTarget.selector === "string" &&
+          payload.fieldTarget.selector.trim()
+            ? {
+                selector: payload.fieldTarget.selector.trim(),
+                platform:
+                  typeof payload.fieldTarget.platform === "string"
+                    ? payload.fieldTarget.platform
+                    : undefined,
+                fieldType:
+                  typeof payload.fieldTarget.fieldType === "string"
+                    ? payload.fieldTarget.fieldType
+                    : undefined,
+                charLimit:
+                  typeof payload.fieldTarget.charLimit === "number"
+                    ? payload.fieldTarget.charLimit
+                    : undefined,
+              }
+            : undefined,
+        scannedCandidates:
+          scannedCandidates && scannedCandidates.length > 0
+            ? scannedCandidates
+            : undefined,
+        nextPageUrl:
+          typeof payload?.nextPageUrl === "string" || payload?.nextPageUrl === null
+            ? payload.nextPageUrl
+            : undefined,
+        structured,
+        providerConfig,
+      },
+      60_000
+    );
+  } catch (error) {
+    return { error: normalizeAgentCommandError(error) };
+  }
 }
 
 async function handleResolveAgentApproval(
@@ -806,8 +1120,13 @@ async function handleResolveAgentApproval(
         decision?: "approved" | "rejected";
         decisionNote?: string;
       }
-    | undefined
+    | undefined,
+  sender: chrome.runtime.MessageSender
 ) {
+  if (currentTaskQueueScope === DEFAULT_TASK_QUEUE_SCOPE) {
+    return { error: "Sign in through the extension popup before resolving approvals" };
+  }
+
   const approvalId =
     typeof payload?.approvalId === "string" ? payload.approvalId : null;
   const decision = payload?.decision;
@@ -818,20 +1137,23 @@ async function handleResolveAgentApproval(
     return { error: "Approval decision must be approved or rejected" };
   }
 
-  const result = await convex.mutation(api.agentRuns.resolveApproval, {
-    approvalId: approvalId as any,
-    decision,
-    decisionNote:
-      typeof payload?.decisionNote === "string"
-        ? payload.decisionNote
-        : undefined,
-  });
-
-  if (decision === "approved") {
-    void taskQueue.process();
+  try {
+    return await callLocalCompanion<LocalCompanionResolveApprovalResult>(
+      "resolve_approval",
+      {
+        userScope: currentTaskQueueScope,
+        approvalId,
+        decision,
+        decisionNote:
+          typeof payload?.decisionNote === "string"
+            ? payload.decisionNote
+            : undefined,
+      },
+      20_000
+    );
+  } catch (error) {
+    return { error: normalizeAgentCommandError(error) };
   }
-
-  return result;
 }
 
 async function handleProcessTaskQueue() {
@@ -1084,6 +1406,14 @@ function isRetriableLinkedInConnectError(error: unknown): boolean {
     message.includes("Frame with ID 0 was removed") ||
     message.includes("No frame with id 0") ||
     message.includes("The frame was removed")
+  );
+}
+
+function shouldRetryLinkedInConnectWithCustomInvite(finalState: string): boolean {
+  return (
+    finalState === "dialog_not_found" ||
+    finalState === "no_connect_control" ||
+    finalState === "menu_connect_not_found"
   );
 }
 
@@ -1478,9 +1808,16 @@ class PersistentTaskQueue {
       let connectFlow = connectResult.result as unknown as Awaited<
         ReturnType<typeof executeLinkedInConnectWorkflowInPage>
       >;
-      if (String(connectFlow?.state ?? "") === "dialog_not_found") {
+      let finalState = String(connectFlow?.state ?? "dialog_not_found");
+      if (shouldRetryLinkedInConnectWithCustomInvite(finalState)) {
         const customInviteUrl = buildLinkedInCustomInviteUrl(task.targetUrl);
         if (customInviteUrl) {
+          console.warn("[TaskQueue] linkedin_connect custom_invite_retry", {
+            targetUrl: task.targetUrl,
+            targetName: task.targetName,
+            initialState: finalState,
+            customInviteUrl,
+          });
           await browserExecutor.execute({
             kind: "navigate",
             tabId,
@@ -1502,9 +1839,9 @@ class PersistentTaskQueue {
           connectFlow = retryResult.result as unknown as Awaited<
             ReturnType<typeof executeLinkedInConnectWorkflowInPage>
           >;
+          finalState = String(connectFlow?.state ?? "dialog_not_found");
         }
       }
-      const finalState = String(connectFlow?.state ?? "dialog_not_found");
       const debugSummary =
         summarizeLinkedInConnectDebug(connectFlow ?? {}) ||
         (preflightLabels.length > 0

@@ -1,5 +1,9 @@
 import type { PlatformKey } from "./platform.ts";
 import type { AgentFieldTarget } from "./agent-run-context.ts";
+import type {
+  LocalCompanionCandidateScanItem,
+  LocalCompanionStructuredExtraction,
+} from "./local-agent-protocol.ts";
 
 export type AgentRunStatus =
   | "created"
@@ -39,6 +43,9 @@ export interface AgentPanelState {
   authenticated: boolean;
   approvals: AgentPanelApproval[];
   runs: AgentPanelRun[];
+  runtime: "local_companion" | "legacy_convex";
+  runtimeConnected: boolean;
+  runtimeError?: string;
 }
 
 type RuntimeResponse = {
@@ -238,6 +245,14 @@ export async function fetchAgentPanelState(
         ? (response.approvals as AgentPanelApproval[])
         : [],
       runs: Array.isArray(response.runs) ? (response.runs as AgentPanelRun[]) : [],
+      runtime:
+        response.runtime === "legacy_convex" ? "legacy_convex" : "local_companion",
+      runtimeConnected:
+        response.runtimeConnected === false ? false : response.authenticated === true,
+      runtimeError:
+        typeof response.runtimeError === "string" && response.runtimeError.trim()
+          ? response.runtimeError
+          : undefined,
     })
   );
 }
@@ -247,10 +262,14 @@ export async function startAgentRun(
   args: {
     goal: string;
     platformHint?: PlatformKey;
+    pageUrl?: string;
     pageContext?: string;
     fieldTarget?: AgentFieldTarget;
+    scannedCandidates?: LocalCompanionCandidateScanItem[];
+    nextPageUrl?: string | null;
+    structured?: LocalCompanionStructuredExtraction | null;
   }
-): Promise<{ runId: string; workflowId: string }> {
+): Promise<{ runId: string; runtimeId?: string }> {
   const goal = normalizeAgentGoal(args.goal);
   if (!goal) {
     throw new Error("Goal is required");
@@ -263,22 +282,37 @@ export async function startAgentRun(
       payload: {
         goal,
         platformHint: args.platformHint,
+        pageUrl:
+          typeof args.pageUrl === "string" && args.pageUrl.trim()
+            ? args.pageUrl
+            : undefined,
         pageContext:
           typeof args.pageContext === "string" && args.pageContext.trim()
             ? args.pageContext
             : undefined,
         fieldTarget: args.fieldTarget,
+        scannedCandidates: Array.isArray(args.scannedCandidates)
+          ? args.scannedCandidates
+          : undefined,
+        nextPageUrl:
+          typeof args.nextPageUrl === "string" || args.nextPageUrl === null
+            ? args.nextPageUrl
+            : undefined,
+        structured:
+          args.structured && isPlainObject(args.structured)
+            ? args.structured
+            : undefined,
       },
     },
     (response) => {
-      if (
-        !isPlainObject(response) ||
-        typeof response.runId !== "string" ||
-        typeof response.workflowId !== "string"
-      ) {
+      if (!isPlainObject(response) || typeof response.runId !== "string") {
         throw new Error("Invalid agent run response");
       }
-      return { runId: response.runId, workflowId: response.workflowId };
+      return {
+        runId: response.runId,
+        runtimeId:
+          typeof response.runtimeId === "string" ? response.runtimeId : undefined,
+      };
     }
   );
 }

@@ -35,7 +35,7 @@ The end state is not a text box helper. It is a **personal browser-layer AI** th
 - **Listens**: responds to voice commands ("write an email to this person, look at the attached context"), dictates text, and optionally wakes on a trigger phrase.
 - **Learns over time**: every session is an episode. Episodes feed into procedural rules. Rules improve future generation prompts automatically.
 
-The core constraint: the extension must be **production-safe** — no `chrome.debugger` warning bar, no native messaging install friction for core features. All core functionality uses `chrome.scripting`, `chrome.tabs`, `chrome.webNavigation`, and an offscreen document for audio/voice.
+The core constraint: core writing features must stay **production-safe** and extension-native, but full agentic browser automation no longer needs to stay inside MV3 alone. The new default path is a **local companion runtime on the user's device** that handles long-running browser control, while the extension remains the UI, observer, and approval surface. We will not rely on `chrome.debugger` for production automation, and we will not assume Chrome allows transparent CDP attachment to the user's stock default profile: on modern Chrome, remote debugging requires a non-standard profile directory, so the companion must own the automation-capable browser/profile setup while keeping user data on-device.
 
 ---
 
@@ -54,7 +54,7 @@ The core constraint: the extension must be **production-safe** — no `chrome.de
 | Phase 6 — Voice | ✅ Implemented in code | Offscreen recognition + intent parsing + explicit runtime state sync are wired end to end |
 | Phase 7 — Proactive Scanning | ✅ Implemented in code | `ChangeThreshold`, LinkedIn scanning, suggestion chip, and queue preview are wired |
 | Phase 8 — Evaluation & Tracing | ⚠️ Core tracing implemented | Trace tables, queries, and review UI exist; dev-only CDP/DevTools tooling is still not built |
-| Phase 9 — Agentic Task Orchestration | ⚠️ Core runtime implemented | Convex workflow orchestration, durable run state, command bus, relay, approval resume flow, LinkedIn long-run planner slices, and approval-gated cross-platform draft insertion now exist; broader multi-platform long-running tactics are still pending |
+| Phase 9 — Agentic Task Orchestration | ⚠️ Legacy foundation implemented; architecture pivot approved | Convex workflow orchestration, durable run state, command bus, relay, approval resume flow, LinkedIn long-run planner slices, and approval-gated cross-platform draft insertion now exist, but the target architecture now pivots to a local companion on the user's device built around Chrome DevTools MCP instead of expanding the Convex-first executor |
 
 ### What already exists and is good
 
@@ -92,7 +92,7 @@ The core constraint: the extension must be **production-safe** — no `chrome.de
 |---|---|
 | Browser automation is implemented mainly for the LinkedIn connect flow | Other controlled actions still need shared helpers and live-site validation |
 | Dev-only tracing extras (`chrome.debugger`, DevTools panel, network replay tooling) are still absent | Deep local debugging remains limited to current trace tables and manual DevTools use |
-| Agentic runtime is still narrow and LinkedIn-heavy | Durable runs, approvals, relay execution, rolling summaries, deterministic queue handoff, provider-backed LinkedIn draft generation, and safe cross-platform draft insertion exist, but broader multi-platform long-running planner tactics are still pending |
+| Agentic runtime target architecture has changed | The current Convex-first runtime is usable as a transitional path, but the forward plan is a local companion with extension UI/observation plus Convex-backed memory, traces, and review state, using Chrome DevTools MCP as the browser-control backend |
 
 ---
 
@@ -150,33 +150,42 @@ The current architecture is enough for deterministic queued actions, but not for
 - "Go through these job applications, answer the short-answer questions, and stop for approval before submit"
 - "Review this Gmail thread, summarize the asks, draft replies, and queue follow-ups"
 
-To support those safely, the system needs one additional layer:
+To support those safely, the system now pivots to a **local browser-automation companion** instead of continuing to grow a Convex-first in-extension executor:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  NODE PLANNER RUNTIME (new)                                    │
-│  • OpenAI Agents SDK JS                                        │
-│  • Tool calling / handoffs / approvals                         │
-│  • Serialised run state for pause/resume                       │
-│  • Emits browser commands, consumes browser observations       │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ Convex + HTTPS
-┌────────────────────────────▼────────────────────────────────────┐
-│  CONVEX DURABLE STATE (expanded)                               │
-│  • agentRuns / agentSteps / agentApprovals / browserCommands   │
-│  • existing traces / tasks / memories reused, not replaced     │
-│  • event bridge between planner runtime and extension executor │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ chrome.runtime + storage + tabs
-┌────────────────────────────▼────────────────────────────────────┐
-│  EXTENSION EXECUTOR (existing, expanded)                       │
-│  • service worker schedules commands                           │
-│  • content scripts inspect DOM and execute actions             │
-│  • MAIN-world helpers for framework-sensitive interactions     │
+│  USER'S MACHINE                                                 │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  CHROME EXTENSION                                        │  │
+│  │  • Field/session observation                             │  │
+│  │  • Context extraction + lightweight compose helpers      │  │
+│  │  • Approval UI, queue review UI, run status UI           │  │
+│  │  • Voice + proactive suggestions                         │  │
+│  └────────────────┬─────────────────────────────────────────┘  │
+│                   │ localhost WebSocket / future native msg    │
+│  ┌────────────────▼─────────────────────────────────────────┐  │
+│  │  LOCAL COMPANION RUNTIME (new default)                   │  │
+│  │  • `mcp-agent` orchestration framework                   │  │
+│  │  • Chrome DevTools MCP backend for running Chrome mode   │  │
+│  │  • Chrome DevTools MCP launched-Chrome fallback mode     │  │
+│  │  • Long-running planner + browser execution bridge       │  │
+│  │  • Long-running task loop, retries, tab/session recovery │  │
+│  │  • Uses a companion-managed automation-capable profile   │  │
+│  └────────────────┬─────────────────────────────────────────┘  │
+│                   │ HTTPS                                       │
+└───────────────────┼─────────────────────────────────────────────┘
+                    │
+┌───────────────────▼─────────────────────────────────────────────┐
+│  CONVEX BACKEND                                                 │
+│  • memories / entities / procedural patterns                    │
+│  • traces / reviews / deterministic task batches                │
+│  • auth, settings, syncable run metadata                        │
+│  • retrieval + generation support                               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-This preserves the core production constraint: browser execution still happens inside the user's real Chrome session. The planner becomes a separate layer that decides *what* to do next; the extension remains the layer that actually clicks, types, navigates, waits, and reads.
+This keeps browser execution on the user's device and close to their real browsing data, but stops requiring the extension team to hand-build every browser automation primitive for every site. The extension remains the product surface. The local companion becomes the primary agent executor.
 
 ---
 
@@ -588,10 +597,10 @@ Gating pattern in `wxt.config.ts`:
 ...(process.env.NODE_ENV === 'development' ? ['debugger', 'nativeMessaging'] : [])
 ```
 
-#### Tier 5 — Native messaging sidecar (Playwright/Puppeteer, local power users)
+#### Tier 5 — Native messaging sidecar (local companion, advanced mode)
 
 For full agent-level browser control beyond what `chrome.scripting` can do:
-- Playwright (`chromium.connectOverCDP('http://localhost:9222')`) can connect to Chrome launched with `--remote-debugging-port`
+- a local companion can expose higher-level browser control through Chrome DevTools Protocol tooling
 - `chrome.runtime.connectNative('com.yourapp.sidecar')` opens a persistent pipe to a local Node/Python process
 
 **Requires OS-level install** (manifest JSON file placement in OS-specific location). This is appropriate for a "power mode" offered to developers and advanced users, not general distribution.
@@ -834,7 +843,7 @@ Service worker executes with rate limiting
 | Profile view time before connect | 2–5s | `setTimeout` before clicking Connect |
 | Daily profile visits | 100 max | Counter in storage |
 
-Your extension runs in the user's **real Chrome session** with their real cookies and residential IP. This is inherently less detectable than Puppeteer/Playwright (which uses a separate browser with detectable fingerprint). Still: respect LinkedIn's Terms of Service and communicate limits clearly to users.
+Your extension runs in the user's **real Chrome session** with their real cookies and residential IP. This is inherently less detectable than external owned-browser automation that launches a separate browser context. Still: respect LinkedIn's Terms of Service and communicate limits clearly to users.
 
 ---
 
@@ -931,7 +940,7 @@ host_permissions: [
 permissions: [
   ...productionPermissions,
   "debugger",         // CDP access — shows warning bar, dev only
-  "nativeMessaging",  // Playwright/Puppeteer sidecar — dev only
+  "nativeMessaging",  // local companion sidecar — dev/advanced mode only
 ],
 ```
 
@@ -1283,13 +1292,13 @@ taskItems: defineTable({
 3. Add planner/runtime state:
    - `agentRuns`, `agentRunSteps`, `browserCommands`, `browserCommandResults`, `agentApprovals`
 4. Run the planner outside MV3 service-worker memory:
-   - default path = Convex workflows + Convex actions
-   - future optional path = hosted Node planner using OpenAI Agents SDK JS
+   - default path = local companion using `mcp-agent`
+   - browser-control path = Chrome DevTools MCP
 5. Persist serialized agent state plus approval interruptions so runs can pause/resume across long jobs
 6. Keep human-in-the-loop gates before irreversible actions (`send`, `submit`, `connect`, `apply`, `delete`)
 7. Reuse existing `taskBatches` / `taskItems` for deterministic send queues generated by the planner
 8. Expand platform adapters so agent runs can act generically on any site, then add higher-confidence platform-specific skills on top
-9. Keep `chrome.debugger` / Playwright / Stagehand out of the production core path; use them only for dev tooling, CI, or optional power mode
+9. Keep `chrome.debugger` and any direct low-level CDP experimentation out of the production core path; use them only for dev tooling, CI, or isolated research work
 
 **Outcome target**: The extension can plan, inspect, and execute long-running multi-step browser tasks across platforms while keeping final execution inside the user's real Chrome session.
 **Important constraint**: this phase should absorb the remaining Phase 5 work instead of duplicating it. The browser-control generalization becomes part of the agentic executor.
@@ -1327,622 +1336,295 @@ A single power-user session with many identical sends must not immediately creat
 
 ## 15. Layer 8 — Agentic Task Orchestration
 
-> **Goal**: Add a true planner/runtime layer that can execute long-running browser jobs across platforms without replacing the extension-native executor that already works inside the user's real Chrome session.
+> **Goal**: Add a true planner/runtime layer that can execute long-running browser jobs across platforms while prioritizing the user's real browser state and reducing the amount of custom browser automation logic maintained in the extension codebase.
 
-### Current completion gate
+### Architecture pivot
 
-The current implementation plan is **not** 100% done yet. Two existing items remain real:
+The current Convex-first runtime is now a **transitional implementation**, not the long-term target.
 
-1. **Phase 5 shared browser control** still needs to expand beyond the current LinkedIn-heavy batch flow.
-2. **Phase 8 dev-only debugger tooling** is still absent.
+What changes:
 
-This does **not** mean Phase 9 must wait. It means Phase 9 should:
+- the **primary agent loop** moves to a **local companion process** on the user's device
+- the **extension** stays responsible for UI, observation, approvals, lightweight compose assistance, and product surface
+- **Convex** remains the backend of record for memories, traces, settings, deterministic task queues, and syncable run metadata
+- the current extension-native browser executor becomes a **fallback / bridge layer**, not the main place where new agentic browser capabilities are built
 
-- absorb the remaining shared browser-control generalization work instead of creating a second executor, and
-- leave the dev-only `chrome.debugger` / DevTools work as a parallel debugging track, not a blocker for production agentic features.
+What does **not** change:
 
-### External ecosystem review (official-source based)
+- browser execution still happens on the user's device
+- deterministic send queues and approval gates remain mandatory
+- memory, retrieval, traces, and review state remain on Convex
+
+### Official-source review for the new browser-control layer
 
 | Option | What it gives | Fit for this repo | Decision |
 |---|---|---|---|
-| [OpenAI Agents SDK JS](https://openai.github.io/openai-agents-js/) | Agent loop, tools, handoffs, guardrails, HITL, tracing, state resume | Strong fit for planner/runtime layer, but **not** for in-extension browser execution | **Future hosted mode** |
-| [OpenAI function tools + HITL](https://openai.github.io/openai-agents-js/guides/tools/) / [HITL guide](https://openai.github.io/openai-agents-js/guides/human-in-the-loop/) | Function tools, `needsApproval`, paused runs, `RunState` serialization | Ideal future mapping for hosted approval-gated browser actions like send/connect/submit | **Future hosted mode** |
-| [Convex Durable Workflows](https://github.com/get-convex/workflow) | Durable orchestration, `awaitEvent`, `sleep`, retry, restart, exactly-once completion | Strong fit for long-lived jobs, pause/resume, approval waits, service-worker restarts | **Current default** |
-| Existing `@convex-dev/agent` in [convex/agent.ts](convex/agent.ts) | Convex-native agent wrapper | Already present but dormant; introducing it as a second live agent loop would duplicate orchestration | **Do not expand for new work** |
-| [LangGraph.js](https://langchain-ai.github.io/langgraphjs/) | Durable graph workflows, interrupts, explicit state graphs | Good alternative, but adds a second orchestration model on top of Convex + OpenAI Agents | **Not primary** |
-| [Mastra](https://mastra.ai/reference/agents/agent) | Agents, workflows, evals, memory, infra layer | Strong framework, but overlaps too much with Convex + existing extension architecture | **Not primary** |
-| [Playwright](https://playwright.dev/docs/library) / [Puppeteer](https://pptr.dev/) | Full browser automation in Node | Excellent for CI, local replay, and power-mode sidecars; wrong core path for real-user Chrome-session execution | **Dev / optional power mode only** |
-| [Stagehand](https://docs.stagehand.dev/v3/configuration/browser) | LLM-friendly browser layer with local/cloud environments | Useful for experiments and hostile-site fallback, but it launches/owns its own browser environment | **Research fallback, not core** |
-| [Browser Use](https://docs.browser-use.com/cloud/browser/playwright-puppeteer-selenium) | Managed stealth browser infra via CDP, TS SDK, long sessions | Useful if we ever need cloud-run browsing, but not aligned with "act in the user's real browser" | **Optional future mode, not core** |
+| [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) | Official Chrome DevTools MCP server, live browser inspection, Puppeteer-backed automation, screenshots, console/network/perf access | Strongest official option for connecting an agent to a **running Chrome instance**; Chrome 144+ adds `--autoConnect` to a user-started Chrome profile with a permission dialog | **Preferred backend for "use the user's current Chrome profile" mode** |
+| Direct Playwright / Browser Use / Stagehand integration | Alternative browser-agent stacks | Useful only as comparative research, but no longer part of the endorsed product plan | **Dropped from the recommended architecture** |
+| [Convex Durable Workflows](https://github.com/get-convex/workflow) | Durable orchestration, events, retries, long-lived state | Still useful for backend state and review workflows, but no longer the default place to run the browser agent loop itself | **Backend durability only** |
 
-### Why this path wins for this codebase
+### Official-source review for the orchestration layer
 
-The repo already has the hard part that external browser-agent frameworks usually need to recreate:
+| Option | What it gives | Fit for this repo | Decision |
+|---|---|---|---|
+| [`mcp-agent`](https://docs.mcp-agent.com/index) | MCP-native agent framework with persistent MCP connections, workflow patterns, human input/signals, and a [Temporal execution engine](https://docs.mcp-agent.com/mcp-agent-sdk/core-components/execution-engine) for durable long-running runs | Best fit for a **local Chrome DevTools MCP companion** that needs approvals, retries, resumable runs, and MCP-first tool composition | **Preferred orchestration framework** |
+| [OpenAI Agents SDK JS](https://openai.github.io/openai-agents-js/) | Strong agent loop, MCP integration, sessions, and HITL approvals | Good TypeScript fallback if we later decide Python is too costly operationally, but less directly durable than `mcp-agent` + Temporal | **Fallback if we reject Python** |
+| LangGraph | Durable graph orchestration and checkpoints | Powerful but heavier than necessary for the first local companion rollout | **Not primary** |
 
-- live field and session observation
-- platform detection and compose-boundary extraction
-- DOM semantic walking
-- extension-native tab control and MAIN-world DOM execution
-- durable user memory, traces, tasks, and approvals on Convex
+### Orchestration framework decision
 
-So the correct design is:
+The local companion should use **`mcp-agent`** as the default orchestration framework on top of Chrome DevTools MCP.
 
-- **do not** replace the extension executor with Playwright/Stagehand/browser-use
-- **do not** create a second browser-control stack in Node
-- **do** add a planner/runtime that emits commands to the browser executor already in this repo
+Why this is the best fit:
+
+- Chrome DevTools MCP gives us the **browser tool surface**
+- `mcp-agent` gives us the **long-running execution model**
+- it is already MCP-native, so we do not need to invent our own MCP connection lifecycle, server registry, or workflow wiring
+- it has built-in workflow patterns that match this product: routing, orchestration, evaluator loops, map-reduce, and human input
+- when runs must survive process restarts or long approval delays, `mcp-agent` can use **Temporal** for durable workflow execution
+
+What this means architecturally:
+
+- **Chrome DevTools MCP** = browser-control backend
+- **`mcp-agent`** = local planner/orchestrator
+- **extension** = UI, observation, approvals
+- **Convex** = backend memory, traces, settings, queues, and audit state
+
+What is explicitly **not** the selected path:
+
+- putting the long-running planner loop back into Convex workflows
+- building a second orchestration layer around raw MCP without a framework
+- adopting OpenAI Agents SDK JS as the primary orchestrator unless we later choose a TS-only companion
+
+### Key finding that changes the plan
+
+The biggest new input is **Chrome DevTools MCP**:
+
+- it can **connect to a running Chrome instance**
+- in **Chrome 144+**, it supports `--autoConnect` after the user enables remote debugging in `chrome://inspect/#remote-debugging`
+- that path explicitly targets the user's **running Chrome profile** and shows a permission dialog
+- the repo also documents manual `--browser-url` / `--ws-endpoint` connections when needed
+
+This matters because earlier CDP-based plans were constrained by Chrome's remote-debugging hardening around default profiles. Chrome DevTools MCP does **not** remove all constraints, but it gives the cleanest official path I found for "use the user's already-running Chrome with real state" without making the extension itself own every CDP and browser-automation detail.
+
+Important caveats from the official docs:
+
+- Chrome DevTools MCP exposes browser contents to the MCP client; the local companion must be treated as highly trusted
+- it officially supports **Google Chrome** and **Chrome for Testing**; other Chromium browsers are not guaranteed
+- Google usage statistics are enabled by default and must be explicitly disabled if we do not want them
+- when not using Chrome 144+ auto-connect, manual remote debugging still requires a **non-default user data directory**
 
 ### Architecture decision
 
-#### Planner/runtime placement
+#### Default release shape
 
-Do **not** put the planner loop in the MV3 extension. The extension service worker should remain a deterministic executor plus UI bridge.
+The product should move to a **local companion with one endorsed browser-control stack: Chrome DevTools MCP**.
 
-There are two viable planner placements:
+Supported modes:
 
-1. **Hosted Node planner using OpenAI Agents SDK JS**
-2. **Convex-native planner steps inside actions/workflows using direct model calls**
-3. **Local companion planner on the user's device** using a native app or localhost bridge
+1. **Chrome DevTools MCP running-Chrome mode**
+   - preferred when the user wants the agent to operate on their current running Chrome/profile state
+   - requires Chrome 144+ for the best official auto-connect path
+2. **Chrome DevTools MCP launched-Chrome mode**
+   - fallback when running-Chrome mode is unavailable or unstable
+   - the companion launches or attaches to an automation-capable Chrome instance under the MCP server's supported model
 
-Use the first option when we want the full Agents SDK feature set: built-in tool semantics, handoffs, guardrails, session handling, and tracing. Use the second when minimizing deployment complexity matters more than SDK-native orchestration features.
+This gives the product one stable runtime boundary:
 
-For this repo, the durable source of truth should be **Convex workflows either way**. The main decision is whether each planning step is executed by:
+- **extension** = UI, context capture, approvals, lightweight compose helpers
+- **local companion** = `mcp-agent` planning/orchestration + Chrome DevTools MCP browsing/execution
+- **Convex** = durable backend state and product memory
 
-- a hosted Node planner using Agents SDK, or
-- a Convex action using direct model calls and repo-owned orchestration logic.
+#### Real-browser-data requirement
 
-Current preference:
+The requirement is not merely "automate a browser." It is:
 
-- **near-term durable implementation**: Convex Durable Workflows as the outer orchestrator, with planner steps allowed to start in Convex actions if we want the lowest-ops rollout
-- **Phase 9 implementation default**: Convex-first orchestration and planning
-- **full featured hosted mode**: Node planner with OpenAI Agents SDK JS once we are ready to operate that runtime
-- **future local mode**: optional companion planner on the user's device if we want local-only orchestration outside MV3
+- use the **user's browser state**
+- preserve relevant logins, cookies, and open-tab context
+- keep execution on the **user's device**
 
-Why this nuance matters:
+The plan therefore must distinguish between two supported modes:
 
-- official OpenAI Agents SDK JS support is strongest on server runtimes such as **Node.js 22+, Deno, and Bun**
-- Convex Durable Workflows already solve sleep, event waiting, retries, cancellation, and long-lived state
-- requiring a separate self-hosted Node service too early adds avoidable deployment friction
-- a local companion planner is viable, but it adds install/update/startup complexity and should be treated as a future mode, not the first release path
+1. **Running-Chrome mode**
+   - first choice when available
+   - uses Chrome DevTools MCP `--autoConnect` on Chrome 144+ to attach to the user's running Chrome after explicit user permission
+2. **Companion-managed Chrome mode**
+   - fallback when running-Chrome mode is unavailable or unstable
+   - uses Chrome DevTools MCP to manage the automation-capable Chrome instance/profile under the companion
 
-So the architecture should be **workflow-first, planner-runtime-pluggable**, not "self-hosted Node planner required on day one".
+The implementation plan must **not** promise seamless attachment to the already-running default Chrome profile on every Chrome version and every machine. That is not a safe product assumption.
 
-Use **OpenAI Agents SDK JS** in a **Node runtime** when we explicitly choose the hosted planner path:
+### Proposed runtime split
 
-- official OpenAI Agents SDK JS currently supports **Node.js 22+, Deno, and Bun**, with experimental Cloudflare Workers support
-- the browser extension service worker should stay thin and deterministic
-- the planner should own agent loop state, handoffs, approvals, and resumability
+#### Extension responsibilities
 
-Practical placement options:
+- field/session observation
+- captured page/thread context
+- send interception
+- user approvals
+- queue preview and review UI
+- voice entry and proactive suggestion surfaces
+- light fallback helpers such as inserting approved drafts into the active field
 
-1. **Preferred release path**: planner steps executed from Convex actions under a Convex workflow
-2. **Preferred hosted mode**: a small dedicated Node planner service in this repo
-3. **Optional future local mode**: a companion process on the user's device using native messaging or localhost bridge
-4. **Optional later**: a dedicated Node-side Convex-adjacent service if we want private networking and separate scaling
-5. **Not recommended**: trying to force the planner into MV3 service worker code
+#### Local companion responsibilities
 
-#### Durable orchestration placement
+- own the long-running planner loop through `mcp-agent`
+- connect to Chrome DevTools MCP
+- execute browser actions, waits, extraction, and retries
+- keep transient run-local state that does not belong in Convex
+- stream status updates back to the extension
 
-Use **Convex Durable Workflows** for wall-clock durability:
+#### Convex responsibilities
 
-- sleeping between steps
-- waiting for browser command results
-- waiting for user approvals
-- cancel/restart/retry behavior
-- observable live status in the extension UI
+- memory, traces, entities, procedural patterns
+- deterministic send queues and approval records
+- user settings, auth, and syncable run metadata
+- optional durable run summaries and audit trails
 
-The split of responsibility should be:
+### Transport and trust boundary
 
-- **Planner step** = agent reasoning, tool selection, and replanning
-- **Convex workflows** = durable outer job orchestration, event waiting, retries, cancellation, state checkpoints, and status streaming
-- **extension** = actual browser control and DOM observation
+Initial transport:
 
-This avoids duplicating agent and workflow concerns in one layer and keeps the workflow state durable even if the planner implementation changes later.
+- **extension ↔ local companion**: localhost WebSocket
+- **local companion ↔ Convex**: HTTPS
+- **local companion ↔ browser**: Chrome DevTools MCP
 
-### Cross-review improvements to incorporate
+Hardening path:
 
-The external research review surfaced several changes that should be treated as required for long-range tasks rather than optional nice-to-haves:
+- add **native messaging** later if localhost process management or packaging becomes fragile
 
-1. **Rolling context compression**
-   - After every N tactical steps, summarize completed work into a compact run summary and trim raw observation history from the live planner context.
-   - Keep raw logs in `agentRunSteps` / `browserCommandResults`, but only feed summaries plus the active sub-task back into the planner.
-   - Concrete first implementation:
-     - add `summaryAfterStep?: string` to `agentRunSteps`
-     - after every 5 tactical steps, call a `summarize_progress` action
-     - each next planning step loads:
-       - original goal
-       - latest strategic plan / sub-task
-       - latest `summaryAfterStep`
-       - only the last 5 raw tool/result pairs
+The extension should not be responsible for speaking MCP directly. The local companion should own that integration and present the extension with a narrow application-specific protocol.
 
-2. **Hierarchical planning**
-   - Split planning into:
-     - a **strategic planner** that produces sub-tasks such as `scan_candidates`, `extract_profiles`, `generate_messages`, `await_approval`, `execute_batch`
-     - a **tactical executor** that turns one sub-task into browser commands
-   - The strategic planner should never need the full DOM transcript for the whole run.
+### Reuse plan
 
-3. **Verification after irreversible actions**
-   - A successful `click` means only that the event sequence fired.
-   - For `send`, `submit`, `connect`, and `apply`, the executor must verify the expected post-condition before the workflow proceeds.
-   - Verification can use DOM-state checks first and screenshot/vision fallback second.
+#### Keep and continue investing in
 
-4. **Explicit run-owned tab registry**
-   - Persist `runId -> [tabId]` ownership so service-worker restarts can recover or clean up open tabs.
-   - Deterministic cleanup should happen on cancel, fail, and complete states.
+- [src/lib/session-observer.ts](src/lib/session-observer.ts)
+- [entrypoints/send-interceptor.content.ts](entrypoints/send-interceptor.content.ts)
+- [src/lib/context.ts](src/lib/context.ts)
+- [src/lib/platform.ts](src/lib/platform.ts) and [src/lib/platforms](src/lib/platforms)
+- [convex/generate.ts](convex/generate.ts), [convex/memories.ts](convex/memories.ts), [convex/entities.ts](convex/entities.ts)
+- [convex/traces.ts](convex/traces.ts)
+- [convex/tasks.ts](convex/tasks.ts)
 
-5. **Approval expiry semantics**
-   - `agentApprovals` should include `expiresAt` and an expiry action such as `pause_run` or `reject`.
-   - Approval waits should be modeled as workflow events with explicit timeout behavior, not indefinite hanging UI state.
+#### Keep only as transitional / fallback path
 
-6. **Retry and compensation**
-   - Browser-command execution needs transient retry rules with bounded backoff.
-   - Long-running runs need compensation/cleanup rules such as closing run-owned tabs or marking partially-completed work safely.
+- the current Convex-first `agentRuns` + `browserCommands` runtime
+- the extension-native generic browser command bus
+- site-specific extension-side browser automation beyond deterministic reviewed sends
 
-7. **Keep local queue narrow**
-   - `chrome.storage.local` queue state should remain for the deterministic final send queue and rate limits.
-   - The full agent run state should live in Convex, not in the extension.
+#### Stop treating as the main investment path
 
-### Can Convex workflows handle the targeted agentic tasks?
-
-Yes, for the tasks this repo is actually targeting:
-
-- recruiter / people search and review
-- profile / listing extraction
-- draft generation
-- approval-gated outreach
-- bounded multi-step browser tasks that may span minutes or hours
-
-The execution model is:
-
-1. workflow loads durable run state
-2. one planning action decides the next tactical step
-3. workflow issues one or more browser commands
-4. extension executes them and writes normalized results
-5. workflow resumes, updates state, and either:
-   - continues
-   - waits for approval
-   - pauses
-   - completes
-
-This is sufficient for bounded, step-sequential agentic work.
-
-What it is **not** trying to optimize for yet:
-
-- highly interactive real-time conversational agents
-- many tool calls inside a single sub-second reasoning turn
-- browser progress while Chrome is closed
-
-Those are valid future reasons to add a hosted planner or local companion runtime, but they are not blockers for the current product scope.
-
-### Tooling model: function tools first, computer-use fallback second
-
-The first production version should **not** start with screenshot-only "computer use" behavior.
-
-Use **function tools** backed by structured browser commands first:
-
-- `get_active_tab_context`
-- `snapshot_interactives`
-- `navigate`
-- `open_tab`
-- `close_tab`
-- `wait_for_url`
-- `wait_for_element`
-- `take_screenshot`
-- `get_accessibility_tree`
-- `set_field_value`
-- `click_element`
-- `type_into_field`
-- `press_key`
-- `scroll_region`
-- `extract_text`
-- `extract_structured_data`
-- `verify_text`
-- `scan_candidates`
-- `enqueue_reviewable_batch`
-- `request_user_approval`
-
-Why:
-
-- the extension already has semantic DOM access that is more reliable than screenshot-only planning
-- approvals map cleanly to `needsApproval`
-- platform adapters can add site-specific confidence without changing the planner contract
-
-Only after that should we add an optional **computer-use fallback** for hostile pages:
-
-- canvas-heavy apps
-- unusual nested iframes
-- pages where semantic extraction fails
-
-That fallback can still use OpenAI Agents SDK JS, but it should be a secondary tool path, not the core execution mode.
-
-### Reuse plan: what stays and what changes
-
-#### Reuse directly
-
-- [entrypoints/background.ts](entrypoints/background.ts): tab lifecycle, alarms, auth sync, queue processing
-- [src/lib/browser-control.ts](src/lib/browser-control.ts): low-level click/type primitives and MAIN-world helpers
-- [src/lib/platform.ts](src/lib/platform.ts) + [src/lib/platforms](src/lib/platforms): field detection, compose boundaries, platform-specific extraction
-- [src/lib/context.ts](src/lib/context.ts): prompt-ready foreground/thread/background context
-- [src/lib/session-observer.ts](src/lib/session-observer.ts): behavioral feedback and outcome classification
-- [convex/tasks.ts](convex/tasks.ts): deterministic batch item state
-- [convex/traces.ts](convex/traces.ts): trace storage and review UI
-- [convex/entities.ts](convex/entities.ts), [convex/memories.ts](convex/memories.ts), [convex/generate.ts](convex/generate.ts): long-term memory and writing context
-
-#### Generalize, do not duplicate
-
-- Keep extending the now-generic `BrowserExecutor` instead of reintroducing platform-specific background execution paths
-- Keep platform-specific logic in adapters, not in the planner prompt
-- Keep generated copy in current generation/retrieval flows unless the task explicitly needs agent planning
-
-#### Avoid for core production path
-
-- external owned-browser execution for normal user flows
-- a second live agent loop built on `@convex-dev/agent`
-- direct planner-to-DOM logic that bypasses the extension executor
-
-### Proposed runtime contracts
-
-#### New generic browser command interface
-
-```typescript
-type BrowserCommand =
-  | { kind: "open_tab"; url: string; active?: boolean }
-  | { kind: "close_tab"; tabId: number }
-  | { kind: "navigate"; tabId: number; url: string }
-  | { kind: "wait_for_url"; tabId: number; urlIncludes: string; timeoutMs?: number }
-  | { kind: "wait_for_element"; tabId: number; selector?: string; semanticLabel?: string; timeoutMs?: number }
-  | { kind: "take_screenshot"; tabId: number; fullPage?: boolean }
-  | { kind: "get_accessibility_tree"; tabId: number; scope?: "viewport" | "main" | "dialog" }
-  | { kind: "snapshot_interactives"; tabId: number; scope?: "viewport" | "main" | "dialog" }
-  | { kind: "click"; tabId: number; targetId?: string; selector?: string; semanticLabel?: string; approvalRequired?: boolean }
-  | { kind: "type"; tabId: number; targetId?: string; selector?: string; text: string; approvalRequired?: boolean }
-  | { kind: "set_field_value"; tabId: number; targetId?: string; selector?: string; value: string | boolean | string[] }
-  | { kind: "press_key"; tabId: number; key: string; modifiers?: string[] }
-  | { kind: "scroll"; tabId: number; direction: "up" | "down"; amount?: number }
-  | { kind: "extract_text"; tabId: number; selector?: string; scope?: "viewport" | "main" | "dialog"; maxLength?: number }
-  | { kind: "extract_structured"; tabId: number; schema: string; promptHint?: string }
-  | { kind: "verify_text"; tabId: number; expectedText: string; selector?: string; scope?: "viewport" | "main" | "dialog"; caseSensitive?: boolean; maxLength?: number }
-  | { kind: "scan_candidates"; tabId: number; strategy: string };
-```
-
-**Important clarification**: this `BrowserCommand` type is the **executor-local payload** used by [src/lib/browser-executor.ts](src/lib/browser-executor.ts). It should stay focused on browser behavior and should **not** be overloaded with Convex workflow metadata.
-
-For agent runs, the Convex command bus should wrap it in a separate envelope:
-
-```typescript
-type BrowserCommandEnvelope =
-  | {
-      runId: Id<"agentRuns">;
-      stepId: Id<"agentRunSteps">;
-      commandId: Id<"browserCommands">;
-      deliveryScope: "specific_tab";
-      targetTabId: number;
-      completionEventId: string;
-      command: BrowserCommand;
-    }
-  | {
-      runId: Id<"agentRuns">;
-      stepId: Id<"agentRunSteps">;
-      commandId: Id<"browserCommands">;
-      deliveryScope: "any_attached_tab";
-      targetUrl?: string;
-      completionEventId: string;
-      command: BrowserCommand;
-    };
-```
-
-This separation resolves the 9A/9B dependency issue:
-
-- **Phase 9A** extends the executor-local `BrowserCommand`
-- **Phase 9B** introduces the Convex envelope and bus tables
-
-So the phases can stay conceptually separate, even if they are implemented in the same milestone.
-
-#### New run-state tables
-
-Add minimal new tables instead of reinventing everything:
-
-- `agentRuns`: one row per long-running agent task
-- `agentRunSteps`: planner/tool/approval events, summaries, and command/approval links
-- `browserCommands`: commands awaiting extension execution
-- `browserCommandResults`: normalized outputs, errors, screenshots, or structured extracts
-- `agentApprovals`: approval items and decisions for irreversible actions
-- `agentRunTabs`: run-owned tab registry and recovery metadata
-
-Reuse existing tables where they already fit:
-
-- `taskBatches` / `taskItems` for reviewable outbound queues
-- `traces` / `traceArtifacts` for prompt/debug review
-
-#### Concrete Phase 9B schemas
-
-The first Convex-first implementation should use concrete fields, not placeholders:
-
-```typescript
-agentRuns: {
-  userId: Id<"users">;
-  goal: string;
-  platformHint?: string;
-  status: "created" | "planning" | "executing" | "awaiting_approval" | "paused" | "completed" | "failed" | "cancelled";
-  currentStepIndex: number;
-  latestSummary?: string;
-  lastSummarizedAtStep: number;
-  activeWorkflowId?: string;
-  createdAt: number;
-  updatedAt: number;
-  completedAt?: number;
-  lastError?: string;
-}
-
-agentRunSteps: {
-  runId: Id<"agentRuns">;
-  stepIndex: number;
-  role: "system" | "planner" | "browser_command" | "browser_result" | "approval" | "summary";
-  content: string;
-  toolCall?: any;
-  commandId?: Id<"browserCommands">;
-  approvalId?: Id<"agentApprovals">;
-  summaryAfterStep?: string;
-  createdAt: number;
-}
-
-browserCommands: {
-  userId: Id<"users">;
-  runId: Id<"agentRuns">;
-  stepId: Id<"agentRunSteps">;
-  targetTabId?: number;
-  targetUrl?: string;
-  deliveryScope: "specific_tab" | "any_attached_tab";
-  completionEventId: string;
-  status: "queued" | "claimed" | "completed" | "failed" | "cancelled";
-  claimedBy?: string;
-  attemptCount: number;
-  command: BrowserCommand;
-  createdAt: number;
-  claimedAt?: number;
-  completedAt?: number;
-  lastError?: string;
-}
-
-browserCommandResults: {
-  userId: Id<"users">;
-  runId: Id<"agentRuns">;
-  commandId: Id<"browserCommands">;
-  status: "completed" | "failed";
-  result?: any;
-  errorMessage?: string;
-  createdAt: number;
-}
-
-agentApprovals: {
-  userId: Id<"users">;
-  runId: Id<"agentRuns">;
-  stepId: Id<"agentRunSteps">;
-  approvalKind: string;
-  title: string;
-  reason?: string;
-  payload?: any;
-  status: "pending" | "approved" | "rejected" | "expired" | "cancelled";
-  completionEventId: string;
-  expiresAt?: number;
-  createdAt: number;
-  decidedAt?: number;
-  decisionNote?: string;
-}
-
-agentRunTabs: {
-  userId: Id<"users">;
-  runId: Id<"agentRuns">;
-  tabId: number;
-  url: string;
-  status: "open" | "closed" | "orphaned";
-  openedAt: number;
-  updatedAt: number;
-  closedAt?: number;
-}
-```
-
-Notes:
-
-- `agentRunSteps` should **not** talk about a "serialized planner state pointer" in the Convex-first implementation. The durable state lives in the workflow plus persisted summaries and step records.
-- If a hosted Node planner mode is added later, it may add an optional planner-session key, but that is not required for the Convex-first rollout.
-- In the actual Convex schema, `browserCommands.command` should be stored as a serializable Convex value such as `v.any()` or a normalized JSON-safe object shape. The TypeScript `BrowserCommand` union is the application-level type contract, not a literal Convex validator.
-
-#### Command delivery protocol
-
-The extension-side delivery path must be explicit before implementation:
-
-1. Every tab with the content app registers a lightweight **command relay**.
-2. The relay knows its live Chrome tab id and page URL.
-3. The relay subscribes to pending `browserCommands` for:
-   - its exact `targetTabId`, or
-   - `deliveryScope === "any_attached_tab"` when appropriate.
-4. When a matching command appears, the relay sends `EXECUTE_BROWSER_COMMAND` to the service worker via `chrome.runtime.sendMessage`.
-5. The service worker claims the command via a Convex mutation before executing it.
-6. The service worker executes the command through `BrowserExecutor`.
-7. The service worker writes the result through a Convex mutation.
-
-This repo should use the **content-script relay** approach rather than service-worker polling because:
-
-- MV3 service workers do not have a durable real-time subscription model
-- the content script already has a live React tree and an always-on page context
-- relay messages wake the service worker only when needed
-
-If no relay is currently attached for a command's target tab, the run remains pending until the tab loads or Chrome is reopened. That is acceptable for the bounded local-session tasks this project targets.
-
-#### Workflow resume protocol
-
-The workflow resume path must also be explicit:
-
-1. When the workflow creates a `browserCommands` row, it also generates a `completionEventId`.
-2. The workflow waits on that command's completion event.
-3. The mutation that writes `browserCommandResults` must, in the same logical path, also signal the matching workflow event using `completionEventId`.
-4. The workflow wakes, reads the normalized result, updates `agentRunSteps` / summaries, and decides the next action.
-
-The same pattern applies to approvals:
-
-- `agentApprovals` rows carry a `completionEventId`
-- the approval-decision mutation updates the row and signals the workflow event
-- expired approvals resolve through a scheduled expiry mutation that also signals the workflow
-
-#### Phase 9B prerequisite
-
-Completed in the current repo:
-
-1. `@convex-dev/workflow` is installed
-2. the workflow component is registered in the Convex app config
-3. codegen, typecheck, tests, and production build all pass with workflow support enabled
-
-### Capability ladder for "any platform"
-
-We should not promise the same confidence level on every site on day one. The execution model should explicitly support four levels:
-
-| Level | Description | Examples |
-|---|---|---|
-| L1 | Generic DOM executor | click/type/navigate/extract on ordinary forms and threads |
-| L2 | Generic semantic adapter | main region, dialogs, visible fields, candidate interactive elements |
-| L3 | Platform adapter | LinkedIn, Gmail, job boards, Slack-style threads, etc. |
-| L4 | Fallback computer-use mode | screenshot-guided execution when DOM semantics are insufficient |
-
-This is how we support "any platform" without pretending every site is equally solved.
-
-### Example run: "find 20 recruiters and send connection requests"
-
-1. User starts an agentic task from popup, command box, or voice.
-2. Service worker captures active tab, current page context, and browser session metadata.
-3. Convex creates `agentRun`.
-4. Convex workflow starts the first planner step with tools for:
-   - reading the current page
-   - scanning candidates
-   - opening profiles
-   - extracting profile context
-   - generating connection notes
-   - asking for approval
-   - enqueueing sendable tasks
-5. Planner step issues browser commands through Convex.
-6. Extension executes them in the user's Chrome session and writes back results.
-7. Workflow resumes, updates summaries and run state, and either continues or waits.
-8. User approves the queue or individual sends.
-9. Deterministic executor path reuses `taskBatches` / `taskItems` and daily-rate limits to actually send.
-
-The planner decides *what should happen*. The extension still decides *how to click/type safely on the real page*.
+- building every new multi-step browser capability directly inside MV3
+- expanding Convex actions/workflows into the main browser executor
+- building a parallel non-MCP browser-control stack before exhausting the Chrome DevTools MCP route
+
+### Example execution model
+
+1. User starts an agentic task from the extension.
+2. Extension captures active-tab context, field context, and any selected text.
+3. Extension sends a run request to the local companion.
+4. Local companion chooses a browser backend:
+   - Chrome DevTools MCP running-Chrome mode if available and appropriate
+   - otherwise Chrome DevTools MCP launched-Chrome mode
+5. Local companion performs the browser work and streams intermediate status back.
+6. When an irreversible action is reached, the companion emits an approval request.
+7. Extension shows the approval UI.
+8. On approval, the companion either:
+   - completes the action itself, or
+   - hands off to the deterministic reviewed-send path on Convex where appropriate
+9. Extension and Convex store the final trace and user outcome.
 
 ### Approval policy
 
-Every irreversible action must require explicit approval:
+Every irreversible action still requires explicit approval:
 
 - `send`
 - `submit`
 - `connect`
 - `apply`
 - `delete`
-- any tool that leaves the current site or opens many tabs
+- any multi-recipient batch handoff
 
-For the Convex-first planner path, enforce these through `agentApprovals` rows plus workflow wait/resume events. If a hosted OpenAI Agents SDK mode is added later, map the same policy to SDK `needsApproval` rules in that mode.
-
-The planner can auto-approve only:
+Auto-approved actions can include:
 
 - observation
-- scanning
-- non-destructive extraction
-- navigation within the same run
-- draft generation
+- reading page state
+- scanning candidates
+- generating drafts
+- non-destructive navigation within the active run
 
-### Recommended phased rollout inside Phase 9
+### Recommended phased rollout
 
-#### Phase 9A — Generic executor foundation
+#### Phase 9A — Companion foundation
 
-- Create `BrowserExecutor` interface
-- Convert current LinkedIn MAIN-world helpers into generic command implementations
-- Add `snapshot_interactives`, `extract_structured`, and `get_accessibility_tree` commands
+- create the local companion process
+- embed `mcp-agent` as the orchestration framework
+- define the extension ↔ companion localhost protocol
+- move planner-loop ownership out of Convex and out of the extension
 
-**Status**: core foundation is implemented. `BrowserExecutor` and normalized command routing now cover `open_tab`, `close_tab`, `navigate`, `wait`, `wait_for_tab_complete`, `wait_for_url`, `wait_for_element`, `click`, `type`, `press_key`, `scroll`, `extract_text`, `verify_text`, `take_screenshot`, `snapshot_interactives`, `get_accessibility_tree`, `set_field_value`, `extract_structured`, `scan_candidates`, and `run_script`. Remaining 9A work is adding stronger action-specific verification routines where they materially improve safety and broadening platform-independent semantics beyond the current LinkedIn-oriented candidate scan.
+**Target outcome**: one local process owns long-running agent runs.
 
-#### Phase 9B — Durable run state
+#### Phase 9B — Chrome DevTools MCP backend
 
-Prerequisite:
-- `@convex-dev/workflow` is installed and wired into the Convex app config
+- add a browser backend that wraps Chrome DevTools MCP
+- implement running-Chrome mode for Chrome 144+ `--autoConnect`
+- add explicit opt-out for Chrome DevTools MCP usage statistics
+- validate live-profile tasks on real Gmail, LinkedIn, and job-application flows
 
-- Add `agentRuns`, `agentRunSteps`, `browserCommands`, `browserCommandResults`, `agentApprovals`
-- Add `agentRunTabs` for tab recovery and cleanup
-- Add Convex workflow wrapper for long-running browser jobs
-- Persist planner run state, approval state, and rolling run summaries
-- Implement approval expiry and workflow event resume semantics
-- Add bounded retry / compensation policies per browser step
-- Add `summaryAfterStep` compression checkpoints and "load last 5 raw steps + latest summary" planner context rules
+**Target outcome**: the agent can operate on a user-started Chrome session when supported.
 
-**Status**: implemented for the current Convex-first runtime. The workflow package/config, durable tables, content-script relay, claim/complete/timeout flow, approval expiry/resume path, rolling summaries, run-tab registry, and cancellation guards are all in code. Remaining 9B work is operational hardening such as true browser-level E2E harness coverage and any future schema changes needed by broader planner tactics.
+#### Phase 9C — Chrome DevTools MCP launched-Chrome fallback
 
-#### Phase 9C — Convex-first planner runtime
+- implement the companion-managed Chrome fallback mode
+- define how persistent profile data is stored, migrated, and upgraded safely on-device
+- validate that the same task contracts work in both running-Chrome and launched-Chrome modes
 
-- Add strategic planner / tactical executor split
-- Implement planner steps as Convex actions under the durable workflow
-- Implement function tools that translate into browser commands
-- Add rolling context compression and first HITL resume loop
-- Verify irreversible actions before the workflow advances
+**Target outcome**: the agent still works when running-Chrome mode is unavailable, without introducing a second browser-control framework.
 
-**Status**: partially complete. The current planner/runtime can:
-- safely summarize arbitrary pages after a bootstrap observation pass
-- queue approval-gated LinkedIn profile connection handoffs
-- run multi-page LinkedIn people-search collection with candidate filtering, relevance ranking, single best-profile enrichment, approval gating, and deterministic batch handoff
-- upgrade LinkedIn connection-note drafts with provider-backed planner generation when the user has an API key configured, while retaining heuristic fallback when they do not
-- use captured compose/thread context to generate approval-gated model-backed drafts for Gmail, Outlook, Slack, Discord, Messenger, Facebook, X/Twitter, Threads, Instagram, YouTube, Reddit, Canvas, and non-connect LinkedIn compose surfaces
-- insert approved drafts back into the captured field through the browser command bus and verify the inserted text before completing the run
+#### Phase 9D — Product boundary simplification
 
-Remaining 9C work is broader and deeper planner behavior:
-- richer multi-platform tactics beyond single-field draft insertion and LinkedIn connect/search
-- more than one profile-enrichment pass when that improves outcome quality
-- deeper model-backed personalization for profile/message sequences across multiple recipients, not just one compose field at a time
-- more generic iterative replanning after arbitrary browser-command outcomes
-- stronger verification for irreversible actions before deterministic handoff
+- demote the current Convex-first browser command bus to fallback status
+- keep the extension focused on UI, observation, approvals, and compose insertion
+- keep Convex focused on backend state, not primary browser execution
 
-#### Phase 9D — Multi-platform adapter expansion
+**Target outcome**: responsibilities are clean and the product is easier to maintain.
 
-- Lift reusable semantics from [src/lib/platforms/linkedin.ts](src/lib/platforms/linkedin.ts), [src/lib/platforms/jobboard.ts](src/lib/platforms/jobboard.ts), and [src/lib/platforms/conversation.ts](src/lib/platforms/conversation.ts)
-- Add generic form/thread/page adapters
-- Add first non-LinkedIn agentic flows:
-  - Gmail/Outlook thread drafting
-  - generic application form answering
-  - recruiter / people search review queues
+#### Phase 9E — Multi-platform tactics
 
-**Status**: partially complete. The field/context adapter layer already spans multiple platforms, and the planner can now execute safe approval-gated draft insertion on many conversation/email surfaces. Still pending are true multi-step per-platform tactics such as inbox/thread traversal, multi-recipient message campaigns, generalized search/research loops, and non-LinkedIn deterministic long-running execution paths.
+- LinkedIn recruiter search and connection review
+- Gmail / Outlook thread summarization and draft review
+- generic application-form assistance
+- safe multi-recipient outreach queues
 
-#### Phase 9E — Hosted / local planner future modes
+**Target outcome**: real product flows work through the local companion, not through hand-built MV3 automation.
 
-- Add hosted Node planner mode using OpenAI Agents SDK JS when we want SDK-native sessions, guardrails, or handoffs
-- Add optional local companion planner mode for on-device orchestration outside MV3
-- Keep both modes behind the same Convex workflow / browser-command contracts
+#### Phase 9F — Fallback and dev tooling
 
-**Status**: not started.
-
-#### Phase 9F — Optional fallback and dev tooling
-
-- Add screenshot-guided fallback tool path
-- Keep Playwright / Puppeteer / Stagehand / Browser Use limited to:
-  - local replay
-  - CI
-  - optional power mode
-- Keep `chrome.debugger` confined to dev tooling
-
-**Status**: not started.
+- retain dev-only `chrome.debugger` tooling where it helps local debugging
+- keep screenshot/vision fallback as an escalation path, not the default execution path
 
 ### Implementation rules for this phase
 
-1. Do not move core browser execution out of the extension.
-2. Do not replace existing deterministic queue execution for sends.
-3. Do not introduce more than one active production agent loop at a time. Start with the Convex-first planner; add a hosted Node planner only as a pluggable upgrade path in Phase 9E.
-4. Do not rebuild memory/retrieval logic in the planner; call existing Convex capabilities where possible.
-5. Do not let platform-specific prompt text substitute for real executor capabilities.
+1. The **primary production agent loop** must run in the **local companion**, not in Convex and not in the extension.
+2. The extension must remain the **product UI, observer, and approval surface**.
+3. Convex remains the **backend of record**, but not the main browser executor.
+4. Keep only **one active production agent loop** at a time; do not run the legacy Convex-first planner in parallel with the local companion for the same run.
+5. Use **Chrome DevTools MCP** as the only endorsed browser-control backend in the plan unless new evidence forces a change.
+6. Use **`mcp-agent`** as the default orchestration framework unless we explicitly decide to move to a TS-only local companion.
+7. Keep all browser execution on the **user's device**.
+8. Do not let platform-specific prompt text replace real browser-control capability.
 
 ### Success criteria
 
 Phase 9 is successful when all of the following are true:
 
-- a long-running run survives service-worker restarts
-- the planner can pause for approval and resume later
-- the same planner can operate on more than one platform
-- browser execution still happens in the user's real Chrome session
-- current retrieval, memory, tracing, and task queues are reused rather than duplicated
+- the user can start a run from the extension and have it continue through a local companion
+- the agent can operate on more than one platform
+- the product has a credible path to using the user's real Chrome state when available
+- browser execution no longer depends on expanding bespoke MV3 automation for every site
+- current memory, traces, approvals, and task queues are reused rather than rebuilt
 
 ---
 
-*Last updated: 2026-04-05. Research basis: multiple passes covering Chrome MV3 APIs, OpenAI Agents SDK JS, Convex Durable Workflows, LangGraph.js, Mastra, browser-use, Stagehand, Playwright/Puppeteer, Web Speech API in MV3, LinkedIn automation safety, and ActivityWatch heartbeat architecture. This document now reflects code that was verified against the current repository, plus a new Phase 9 architecture recommendation grounded in current official docs and the existing codebase.*
+*Last updated: 2026-04-11. Research basis: official Chrome DevTools MCP README, official Chrome remote debugging guidance, official `mcp-agent` documentation, official OpenAI Agents SDK documentation, and the current repository architecture.*
