@@ -1,157 +1,232 @@
-# Text Fill
+# CheatResume — Browser AI Companion
 
-**Your browser companion that learns who you are and helps you write, everywhere.**
+**A Chrome agent that lives in your browser, learns who you are, and gets things done for you.**
 
-Text Fill lives in your browser and watches your back. It learns your voice, remembers what matters to you, and helps you write better responses across every site you use: emails, job applications, LinkedIn messages, tweets, comments, documents, forms, and more.
+This started as a text-fill tool. It is now a full agentic browser companion. It watches what you do, builds a durable model of who you are, writes in your voice across every site, and can operate the browser autonomously to execute tasks on your behalf — outreach campaigns, profile enrichment, form automation, and more.
 
-The longer you use it, the better it knows you.
-
-The current extension ships in Chrome as **CheatResume - Text Fill**, but the core idea is still the same: one writing layer that follows you across the web and gets sharper over time.
+The longer you use it, the more capable it becomes.
 
 ![Text Fill Demo](public/cheatresume-extension-text-fill.gif)
 
 ---
 
-## What It Does
+## What It Actually Is
 
-Most writing tools make you repeat yourself. You paste your resume every time, re-explain your background, switch tabs for context, and keep re-teaching the model who you are.
+Most AI tools are stateless. You give context, get output, start over. Every session is a blank slate.
 
-Text Fill does the opposite.
+This extension is the opposite. It is a persistent intelligence layer running inside your browser that:
 
-It drops a floating action button next to supported text fields across the web. From there you can:
+- **Observes** every writing session — what you asked for, what the AI produced, what you actually sent
+- **Learns** behavioral patterns from those sessions and encodes them as procedural rules
+- **Remembers** durable facts about you across three memory tiers
+- **Proactively scans** pages for actionable signals and surfaces them as suggestions
+- **Executes** multi-step browser tasks autonomously with your approval
+- **Writes** in your voice, shaped by full context retrieval, on any text field across 15+ platforms
 
-- **Generate** a fresh response
-- **Rewrite** what is already in the field
-- **Shorten** it
-- **Expand** it
-- Adjust **tone** from casual to formal
-- Apply a **domain lens** like general, sales, legal, technical, or academic
-
-**Single-click** opens the action menu.  
-**Double-click** generates instantly.  
-**Alt+Shift+G** quick-generates on the active field.
-
-The system uses the page you are on, the field you are writing in, your saved personal context, and your memory bank to produce something that sounds like it came from you, not from a generic assistant.
+It is a Chrome companion, not a writing plugin.
 
 ---
 
-## Memory - The Core
+## Core Capabilities
 
-Text Fill learns from your usage over time. After longer generations, it can extract durable facts worth remembering and store them as memory:
+### Writing — Anywhere, In Your Voice
 
-- **Work**: roles, skills, projects, career direction, durable professional facts
-- **Social**: communities, recurring interests, relationship context that actually matters
-- **Personal**: stable background, preferences, values, long-term goals
-- **Persona**: your writing identity, but only when the signal is unusually strong
+A floating action button appears next to every supported text field. From it you can:
 
-Memory is conservative by design. It tries to save durable truths, not temporary noise. One-off outreach attempts, old application events, and other fragile context are supposed to stay out of the long-term memory bank.
+- **Generate** a fresh response using your full context
+- **Rewrite** what is already typed
+- **Shorten** or **Expand** text
+- Adjust **tone** — casual to formal
+- Apply a **domain lens** — general, sales, legal, technical, academic
 
-### Semantic Search
+**Single-click** opens the action menu.
+**Double-click** generates instantly.
+**Alt+Shift+G** quick-generates on the active focused field.
 
-When embeddings are configured, Text Fill uses vector search in Convex to surface the memories most relevant to the exact writing situation in front of you. It is not just keyword matching. The memory system tries to find the facts that actually fit the context.
+---
 
-OpenAI and Gemini can be used for embeddings. Anthropic works for writing, but it still needs OpenAI or Gemini alongside it if you want semantic memory retrieval.
+### Agentic Task Execution
 
-### Forgetting Curve
+The extension includes a full agent runtime for autonomous multi-step browser tasks.
 
-Memories are not meant to live forever unchanged. The current system tracks reinforcement, last access, importance, confidence, and forget risk. A weekly maintenance job handles archiving and cleanup so the memory bank stays useful instead of turning into a pile of stale facts.
+**How it works:**
 
-**Caps:** 500 active memories, 200 archived.
+1. You trigger a task — e.g., "connect with all recruiters on this page"
+2. The extension scans the page, identifies candidates, drafts personalized messages using your memory
+3. An approval panel shows you the full queue with generated messages before anything is sent
+4. You approve, and the agent executes: navigates tabs, fills forms, clicks send, respects daily limits
 
-### Memory Bank
+**What it can do today:**
 
-The memory page is now a full React + Convex interface where you can:
+- Scan LinkedIn search results for candidate profiles (detects 20+ per page)
+- Draft personalized connect messages using your memory and the recipient's visible context
+- Queue and execute batched outreach with configurable daily limits
+- Navigate tabs, extract structured data, click elements, fill fields
+- Run multi-step workflows with state machine orchestration
 
-- Browse active and archived memories
-- Filter by category
-- Sort by recency, importance, confidence, mentions, last used, forget risk, or semantic match
+**Human-in-the-loop by design.** The agent always queues tasks for your review before executing. You see the full batch, edit any message, and confirm before the agent touches anything.
+
+---
+
+### Local Companion Runtime
+
+Long-running agentic tasks run through a **local Node.js companion** (`companion/`), not through a cloud service. This companion:
+
+- Runs a WebSocket server on `localhost:4315`
+- Connects to Chrome via Chrome DevTools Protocol (MCP)
+- Manages run lifecycle, approval state, and action results locally
+- Means your browser automation tasks stay on your machine
+
+To start the companion:
+
+```bash
+npm run companion:dev
+```
+
+The extension automatically connects to it when available. Without the companion, the extension still handles all writing features.
+
+---
+
+### Three-Tier Memory System
+
+**Semantic memory** — durable facts, stored indefinitely, retrieved by vector similarity:
+- Work: roles, skills, projects, career direction
+- Social: communities, interests, relationships
+- Personal: background, values, long-term goals
+- Persona: writing identity, only when the signal is strong
+
+**Procedural memory** — behavioral rules learned from repeated session patterns. When you consistently write a certain way in a certain context, the system encodes a rule. Rules gain confidence over time and decay if the pattern disappears.
+
+**Episodic memory** — recent session summaries injected as few-shot examples. The most recent relevant generations, anonymized and condensed, give the model concrete examples of your voice before it writes.
+
+All three tiers are injected as labeled sections into every generation prompt. You get durable facts, behavioral rules, and concrete examples working together.
+
+#### Memory Maintenance
+
+- Weekly cron job handles confidence decay, archival, and cleanup
+- **Caps:** 500 active memories, 200 archived
+- Memory extraction is conservative — one-off events and stale context stay out
+- Bi-temporal validity tracks when facts were true, not just when they were saved
+
+#### Memory Bank UI
+
+The memory page is a full React + Convex interface where you can:
+
+- Browse active and archived memories, filter by category
+- Sort by recency, importance, confidence, mentions, last used, forget risk, or semantic similarity
 - Run semantic search across saved memories
-- Edit, archive, restore, or delete entries
+- Edit, archive, restore, or delete individual entries
 
 ---
 
-## Context Library
+### Session Observation
 
-Sometimes the context you need is on another page entirely.
+The extension watches every compose session and learns from it.
 
-The floating **Context Library** button lets you capture pages and keep them active while you write somewhere else. You can add multiple pages, toggle them on or off, and include them in the next generation run without copying anything manually.
+After you close a field, it computes:
+- How much you edited the generated text (Levenshtein + trigram diff)
+- Whether you actually sent it (three-signal send detection: form submit, Enter/Ctrl+Enter, and mousedown+XHR interception)
+- The outcome: accepted, lightly edited, heavily edited, rewritten, abandoned, or sent
 
-This is useful for things like:
-
-- job descriptions
-- company about pages
-- LinkedIn profiles
-- assignment prompts
-- reference material you want the model to actually use
+This data feeds pattern promotion. When the same platform + context type combination produces a consistent editing pattern across multiple sessions, the system extracts a procedural rule.
 
 ---
 
-## Platform Awareness
+### Entity Graph
 
-Text Fill detects where you are writing and changes how it behaves.
+The extension builds and maintains a graph of entities — people, companies, platforms — extracted from your sessions.
 
-The current codebase includes first-class handling for:
-
-- Gmail and Outlook
-- LinkedIn
-- Messenger and Facebook
-- Twitter/X, Threads, Instagram, YouTube, and Reddit
-- Slack and Discord
-- Google Docs
-- Canvas
-- Greenhouse, Ashby, Workday, and Lever
-- generic text fields on the rest of the web
-
-It also includes platform-specific field detection and page-context extraction so the generated text is shaped by the environment you are actually in, not by a one-size-fits-all prompt.
-
-On job boards and LinkedIn, the system is especially opinionated about using the visible foreground context correctly and not leaking irrelevant memory into high-stakes messages.
+- Entities are resolved by lexical match + vector similarity + LLM disambiguation
+- Relationships (works\_at, knows, reports\_to) are stored with temporal validity
+- The graph is used to surface recipient context during generation (e.g., "you've messaged this person 3 times, you both worked at the same company")
 
 ---
 
-## Accounts, Providers, and Settings
+### Proactive Scanning
 
-The new version is backed by **Convex** and uses **Convex Auth** instead of a purely local extension state model.
+The extension scans pages in the background and surfaces actionable signals.
 
-You can sign in with:
+On LinkedIn search results, it detects candidate profiles, counts connectable targets, and shows a suggestion chip: "20 profiles found — start outreach batch." One click opens the approval queue.
 
-- email + password
-- magic code over email
+The scanner is extensible. The same architecture supports detecting job listings, recruiter profiles, and other opportunity signals across any page.
 
-Bring your own model keys in Settings. The current UI supports:
+---
 
-| Provider | Writing models | Memory / extraction models | Embeddings |
-|----------|----------------|----------------------------|------------|
+### Voice Commands
+
+An offscreen document runs continuous Web Speech API recognition. Say the wake word and issue a command:
+
+- "Write a follow-up to Sarah about the contract"
+- "Search my memory for Python experience"
+- "Connect with all engineers on this page"
+
+The extension parses intent (compose, search, connect) and routes to the right action.
+
+---
+
+### Context Library
+
+Sometimes the context you need is on another page.
+
+The floating Context Library button lets you capture pages and keep them active while writing elsewhere. Toggle multiple contexts on or off per session — job descriptions, company about pages, LinkedIn profiles, reference material.
+
+---
+
+### Platform Awareness
+
+The extension detects where you are and adapts.
+
+First-class platform handling for:
+
+- **Email:** Gmail, Outlook
+- **Social / Messaging:** LinkedIn, Messenger, Facebook, Twitter/X, Threads, Instagram, YouTube, Reddit, Discord
+- **Work:** Slack, Google Docs
+- **Job boards:** Greenhouse, Ashby, Workday, Lever, Canvas
+- **Generic:** any text field on the rest of the web
+
+Each platform has custom field detection, page-context extraction, and generation behavior. On job boards and LinkedIn, the system is especially careful not to leak irrelevant memory into high-stakes messages.
+
+---
+
+## Accounts and Settings
+
+Backed by **Convex** with **Convex Auth**.
+
+Sign in with:
+- Email + password
+- Magic code over email
+
+### Provider Support
+
+Bring your own API keys. Keys are stored on the Convex backend — not in `chrome.storage`.
+
+| Provider | Writing | Memory extraction | Embeddings |
+|---|---|---|---|
 | **OpenAI** | `gpt-5-nano`, `gpt-5-mini` | `gpt-5-nano` | `text-embedding-3-small`, `text-embedding-3-large` |
-| **Anthropic** | `claude-sonnet-4-5`, `claude-haiku-3-5` | `claude-haiku-3-5` | Use OpenAI or Gemini for embeddings |
-| **Google** | `gemini-3-pro-preview`, `gemini-3-flash-preview` | `gemini-2.5-flash-lite`, `gemini-3-flash-preview` | `gemini-embedding-001` |
+| **Anthropic** | `claude-sonnet-4-5`, `claude-haiku-3-5` | `claude-haiku-3-5` | Pair with OpenAI or Gemini for embeddings |
+| **Google** | `gemini-3-pro-preview`, `gemini-3-flash-preview` | `gemini-2.5-flash-lite` | `gemini-embedding-001` |
 
-Your saved settings include:
+### Settings
 
-- provider and model selection
-- memory model selection
-- embedding provider/model selection
-- custom system prompt
-- **Career & Work**, **Social & Personal**, and **Always Active** context blocks
-
-You can paste context directly or upload a text/Markdown file. The current uploader is built for text-based files, not PDF parsing.
-
-API keys are stored in the user profile on the Convex backend, not in `chrome.storage`.
+- Provider, model, embedding provider/model
+- Custom system prompt
+- **Career & Work**, **Social & Personal**, and **Always Active** context blocks (paste or upload `.txt`/`.md`)
+- Memory caps and pattern confidence (advanced)
 
 ---
 
 ## Stack
 
-This is no longer the old single-file Chrome extension layout.
-
-The current app is built with:
-
-- **WXT** for the Chrome MV3 extension build/runtime
-- **React 18** for popup, options, memory bank, and injected UI
-- **Convex** for auth, persistence, actions, vector search, and scheduled maintenance
-- **Tailwind CSS v4** for the larger app surfaces
-- **Radix UI** and **Lucide** for UI primitives/icons
-
-The background service worker is now a thin bridge between the extension runtime and Convex actions. Most of the real logic lives in the backend modules under `convex/`.
+| Layer | Tech |
+|---|---|
+| Extension build | WXT (Chrome MV3) |
+| UI | React 18, Tailwind CSS v4, Radix UI, Lucide |
+| Backend | Convex (auth, database, vector search, actions, crons) |
+| Agent orchestration | Convex Workflows + local companion |
+| Browser control | Chrome DevTools Protocol via MCP |
+| Voice | Web Speech API (offscreen document), Porcupine wake word |
+| LLM | Vercel AI SDK (`@ai-sdk/openai`) |
+| Local companion | Node.js, WebSocket (`ws`), `tsx` |
 
 ---
 
@@ -160,28 +235,73 @@ The background service worker is now a thin bridge between the extension runtime
 ```text
 text-fill-v2/
 ├── entrypoints/
-│   ├── background.ts          # Service worker: generation bridge, auth refresh, alarms
-│   ├── content/               # Injected field button, modal, context library, DOM UI
-│   ├── popup/                 # Popup dashboard
-│   ├── options/               # Settings page
-│   └── memory/                # Memory Bank page
+│   ├── background.ts              # Service worker: auth, message routing, task queue
+│   ├── content/
+│   │   ├── App.tsx                # Main content script: field detection, session lifecycle
+│   │   ├── FieldButton.tsx        # Floating button on text fields
+│   │   ├── GenerateModal.tsx      # Generation UI (tone, domain, preview, insert)
+│   │   ├── ContextFAB.tsx         # Context Library floating button
+│   │   ├── AgentFAB.tsx           # Agent task trigger button
+│   │   ├── SuggestionChip.tsx     # Proactive scan result chip
+│   │   ├── QueuePreviewPanel.tsx  # Batch task approval panel
+│   │   └── useAgentCommandRelay.ts # Polls and executes agent browser commands
+│   ├── popup/                     # Extension popup (memory stats, recent writings)
+│   ├── options/                   # Settings page
+│   ├── memory/                    # Memory Bank page
+│   └── offscreen/main.ts          # Voice runtime (Web Speech API, wake word)
 ├── src/
-│   ├── components/            # Auth screen, providers, shared UI wiring
-│   ├── hooks/                 # Convex-backed hooks for memories, user, generation
-│   ├── lib/                   # Platform detection, DOM walking, context extraction, insertion
-│   └── styles/                # Global styles
+│   ├── lib/
+│   │   ├── platform.ts            # Platform detection, field finding, DOM queries
+│   │   ├── platforms/             # Per-platform field detection (LinkedIn, Gmail, etc.)
+│   │   ├── session-observer.ts    # Compose session lifecycle, diff, send detection
+│   │   ├── candidate-scan.ts      # LinkedIn candidate scanning
+│   │   ├── scanner.ts             # Opportunity signal detection
+│   │   ├── browser-control.ts     # LinkedIn browser automation (state machine)
+│   │   ├── browser-executor.ts    # BrowserExecutor interface + Chrome implementation
+│   │   ├── browser-command-spec.ts# Serializable browser command types
+│   │   ├── browser-observation.ts # Page snapshot types
+│   │   ├── local-agent-bridge.ts  # WebSocket bridge to local companion
+│   │   ├── local-agent-protocol.ts# Companion protocol types
+│   │   ├── agent-planner.ts       # Planner state and decision types
+│   │   ├── agent-run-context.ts   # Agent run start context
+│   │   ├── agent-panel-runtime.ts # Agent panel state types
+│   │   ├── task-queue-storage.ts  # chrome.storage task queue persistence
+│   │   ├── task-batch-handoff.ts  # Task batch + Convex sync types
+│   │   ├── voice-runtime.ts       # Voice runtime state enum
+│   │   ├── captured-contexts.ts   # Context library storage
+│   │   ├── context.ts             # Page context extraction orchestrator
+│   │   └── dom/                   # ARIA DOM walker, theme detection
+│   ├── components/                # Auth screen, shared UI wiring
+│   ├── hooks/                     # Convex-backed hooks
+│   └── styles/
 ├── convex/
-│   ├── schema.ts              # Tables for profiles, memories, embeddings, auth
-│   ├── auth.ts                # Password + magic-code auth
-│   ├── generate.ts            # Main generation / rewrite / shorten / expand actions
-│   ├── memoryExtract.ts       # Durable memory extraction pipeline
-│   ├── memories.ts            # Memory lifecycle, dedupe, search, maintenance
-│   ├── embeddings.ts          # Embedding generation and vector search
-│   └── context.ts             # Captured context persistence helpers
+│   ├── schema.ts                  # All tables: memories, sessions, entities, agent runs
+│   ├── auth.ts / auth.config.ts   # Password + magic code auth
+│   ├── generate.ts                # Generation action (3-tier retrieval, prompt assembly)
+│   ├── memoryExtract.ts           # Memory extraction pipeline
+│   ├── memories.ts                # Memory lifecycle, search, maintenance
+│   ├── embeddings.ts              # Embedding generation + vector search
+│   ├── retrieval.ts               # Episodic + procedural retrieval
+│   ├── interactions.ts            # Session recording + pattern promotion trigger
+│   ├── patterns.ts                # Procedural pattern promotion and decay
+│   ├── entities.ts                # Entity graph lifecycle and resolution
+│   ├── agentRuns.ts               # Agent run state machine + browser command routing
+│   ├── agentWorkflows.ts          # Long-running agent workflow orchestration
+│   ├── taskBatches.ts             # Task batch management
+│   ├── voice.ts                   # Voice intent parsing
+│   ├── traces.ts                  # Generation trace recording
+│   ├── crons.ts                   # Scheduled: pattern decay, memory archival
+│   └── llmProvider.ts             # Provider resolution by user config
+├── companion/
+│   ├── server.ts                  # WebSocket server (localhost:4315)
+│   ├── service.ts                 # LocalAgentCompanionService
+│   ├── chrome-devtools-mcp-runtime.ts # Chrome DevTools MCP runtime
+│   ├── mcp-agent-bridge.ts        # Companion ↔ MCP orchestration bridge
+│   ├── state-store.ts             # Local approval + run state persistence
+│   └── live-logger.ts             # Companion logging
+├── test/                          # Vitest unit + integration tests
 ├── public/
-│   ├── logo.png
-│   └── cheatresume-extension-text-fill.gif
-├── wxt.config.ts              # Extension manifest + build config
+├── wxt.config.ts
 └── package.json
 ```
 
@@ -189,56 +309,71 @@ text-fill-v2/
 
 ## Local Development
 
-1. Install dependencies:
+### 1. Install dependencies
 
-   ```bash
-   npm install
-   ```
+```bash
+npm install
+```
 
-2. Start or connect your Convex backend:
+### 2. Start the Convex backend
 
-   ```bash
-   npx convex dev
-   ```
+```bash
+npx convex dev
+```
 
-3. Create `.env.local` with your client URL:
+### 3. Create `.env.local`
 
-   ```bash
-   VITE_CONVEX_URL=your_convex_deployment_url
-   ```
+```bash
+VITE_CONVEX_URL=your_convex_deployment_url
+```
 
-4. Configure any needed Convex environment variables for auth and email delivery.
-   `AUTH_RESEND_KEY` is required if you want magic-code sign-in.
+Set `AUTH_RESEND_KEY` in your Convex environment variables if you want magic-code sign-in.
 
-5. Start the extension dev build:
+### 4. Start the extension dev build
 
-   ```bash
-   npm run dev
-   ```
+```bash
+npm run dev
+```
 
-6. Open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select:
+### 5. Load the extension in Chrome
 
-   ```text
-   .output/chrome-mv3-dev
-   ```
+Go to `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select:
 
-When you want a production build:
+```text
+.output/chrome-mv3-dev
+```
+
+### 6. (Optional) Start the local companion
+
+For agentic task execution, start the companion in a separate terminal:
+
+```bash
+npm run companion:dev
+```
+
+The companion runs on `ws://localhost:4315` and the extension connects automatically.
+
+---
+
+### Production Build
 
 ```bash
 npm run build
+# outputs to .output/chrome-mv3
+
+npm run zip
+# creates distributable zip
 ```
 
-That outputs the unpacked extension to:
+---
 
-```text
-.output/chrome-mv3
-```
-
-To create a distributable zip:
+### Tests
 
 ```bash
-npm run zip
+npm test
 ```
+
+Tests cover: session observation, platform detection, candidate scanning, agent run lifecycle, memory retrieval, pattern promotion, entity graph, task batching, companion service, and browser command execution.
 
 ---
 

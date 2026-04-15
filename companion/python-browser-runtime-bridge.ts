@@ -163,6 +163,7 @@ export async function createPythonBrowserRuntimeConnection(
   let stdoutBuffer = "";
   let stderrBuffer = "";
   let closed = false;
+  let shuttingDown = false;
 
   const rejectPending = (message: string) => {
     for (const request of pending.values()) {
@@ -226,6 +227,11 @@ export async function createPythonBrowserRuntimeConnection(
   });
 
   child.on("error", (error) => {
+    if (shuttingDown) {
+      closed = true;
+      pending.clear();
+      return;
+    }
     rejectPending(
       `Failed to start the python browser runtime: ${
         error instanceof Error ? error.message : String(error)
@@ -235,6 +241,10 @@ export async function createPythonBrowserRuntimeConnection(
 
   child.on("exit", (code, signal) => {
     closed = true;
+    if (shuttingDown) {
+      pending.clear();
+      return;
+    }
     const trailingStderr = stderrBuffer.trim();
     const suffix = trailingStderr ? ` ${trailingStderr}` : "";
     rejectPending(
@@ -304,9 +314,10 @@ export async function createPythonBrowserRuntimeConnection(
       }>("execute_agent_task", args as unknown as Record<string, unknown>);
     },
     async close() {
-      if (closed) {
+      if (closed || shuttingDown) {
         return;
       }
+      shuttingDown = true;
       try {
         await Promise.race([
           request("shutdown"),

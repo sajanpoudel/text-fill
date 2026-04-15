@@ -8,6 +8,7 @@ show_help() {
   cat <<'EOF'
 Usage:
   ./cheat-resume-backend
+  ./cheat-resume-backend exit
   ./cheat-resume-backend doctor
   ./cheat-resume-backend logs
   ./cheat-resume-backend --help
@@ -21,7 +22,123 @@ Optional environment variables:
   LOCAL_COMPANION_HOST   Host to bind the backend to. Default: 127.0.0.1
   LOCAL_COMPANION_PORT   Port to bind the backend to. Default: 4315
   LOCAL_COMPANION_LOG_FILE  Live log file path. Default: companion/.data/live.log
+  LOCAL_COMPANION_PID_FILE  PID file path. Default: companion/.data/local-companion.pid
 EOF
+}
+
+DATA_DIR="${ROOT_DIR}/companion/.data"
+DEFAULT_PID_FILE="${DATA_DIR}/local-companion.pid"
+TARGET_PIDS=()
+
+append_unique_pid() {
+  local candidate="${1:-}"
+  [[ "$candidate" =~ ^[0-9]+$ ]] || return 0
+  local existing
+  for existing in "${TARGET_PIDS[@]:-}"; do
+    [[ "$existing" == "$candidate" ]] && return 0
+  done
+  TARGET_PIDS+=("$candidate")
+}
+
+collect_descendant_pids() {
+  local parent_pid="${1:-}"
+  local child_pid
+  while IFS= read -r child_pid; do
+    [[ -n "$child_pid" ]] || continue
+    append_unique_pid "$child_pid"
+    collect_descendant_pids "$child_pid"
+  done < <(pgrep -P "$parent_pid" 2>/dev/null || true)
+}
+
+run_exit() {
+  local port="${LOCAL_COMPANION_PORT:-4315}"
+  local pid_file="${LOCAL_COMPANION_PID_FILE:-$DEFAULT_PID_FILE}"
+  TARGET_PIDS=()
+  local ROOT_PIDS=()
+
+  if [[ -f "$pid_file" ]]; then
+    local recorded_pid=""
+    recorded_pid="$(tr -dc '0-9' < "$pid_file" | head -c 32)"
+    append_unique_pid "$recorded_pid"
+    ROOT_PIDS=("${TARGET_PIDS[@]}")
+  fi
+
+  if command -v lsof >/dev/null 2>&1; then
+    local listener_pid=""
+    while IFS= read -r listener_pid; do
+      [[ -n "$listener_pid" ]] || continue
+      append_unique_pid "$listener_pid"
+    done < <(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+    ROOT_PIDS=("${TARGET_PIDS[@]}")
+  fi
+
+  local root_pids=("${ROOT_PIDS[@]:-}")
+  local root_pid=""
+  for root_pid in "${root_pids[@]:-}"; do
+    collect_descendant_pids "$root_pid"
+  done
+
+  if [[ "${#TARGET_PIDS[@]}" -eq 0 ]]; then
+    rm -f "$pid_file"
+    echo "No running CheatResume backend was found."
+    return 0
+  fi
+
+  echo "Stopping CheatResume backend: ${root_pids[*]}"
+
+  local pid=""
+  for pid in "${root_pids[@]}"; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+
+  local remaining=()
+  local attempts=0
+  while [[ "$attempts" -lt 20 ]]; do
+    remaining=()
+    for pid in "${root_pids[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        remaining+=("$pid")
+      fi
+    done
+    if [[ "${#remaining[@]}" -eq 0 ]]; then
+      rm -f "$pid_file"
+      echo "CheatResume backend stopped."
+      return 0
+    fi
+    sleep 0.1
+    attempts=$((attempts + 1))
+  done
+
+  if [[ "${#TARGET_PIDS[@]}" -gt 0 ]]; then
+    for pid in "${TARGET_PIDS[@]}"; do
+      kill -TERM "$pid" 2>/dev/null || true
+    done
+  fi
+
+  attempts=0
+  while [[ "$attempts" -lt 10 ]]; do
+    remaining=()
+    for pid in "${TARGET_PIDS[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        remaining+=("$pid")
+      fi
+    done
+    if [[ "${#remaining[@]}" -eq 0 ]]; then
+      rm -f "$pid_file"
+      echo "CheatResume backend stopped."
+      return 0
+    fi
+    sleep 0.1
+    attempts=$((attempts + 1))
+  done
+
+  echo "Force killing remaining backend processes: ${remaining[*]}"
+  for pid in "${remaining[@]}"; do
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+
+  rm -f "$pid_file"
+  echo "CheatResume backend force stopped."
 }
 
 run_doctor() {
@@ -105,6 +222,11 @@ if [[ "${1:-}" == "doctor" ]]; then
   exit 0
 fi
 
+if [[ "${1:-}" == "exit" ]]; then
+  run_exit
+  exit 0
+fi
+
 if [[ "${1:-}" == "logs" ]]; then
   LOG_FILE="${LOCAL_COMPANION_LOG_FILE:-companion/.data/live.log}"
   mkdir -p "$(dirname "$LOG_FILE")"
@@ -142,6 +264,13 @@ fi
 
 HOST="${LOCAL_COMPANION_HOST:-127.0.0.1}"
 PORT="${LOCAL_COMPANION_PORT:-4315}"
+PID_FILE="${LOCAL_COMPANION_PID_FILE:-$DEFAULT_PID_FILE}"
+
+mkdir -p "$DATA_DIR"
 
 echo "Starting CheatResume backend on ws://${HOST}:${PORT}/ws"
-exec env LOCAL_COMPANION_HOST="$HOST" LOCAL_COMPANION_PORT="$PORT" npm run companion:dev
+exec env \
+  LOCAL_COMPANION_HOST="$HOST" \
+  LOCAL_COMPANION_PORT="$PORT" \
+  LOCAL_COMPANION_PID_FILE="$PID_FILE" \
+  npm run companion:dev

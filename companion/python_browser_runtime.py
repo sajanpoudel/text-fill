@@ -290,6 +290,45 @@ def extract_json_payload(text: str) -> dict[str, Any]:
     )
 
 
+def build_json_finalization_prompt(
+    *,
+    task_label: str,
+    original_response: str,
+    page_url: str | None,
+    page_title: str | None,
+    page_snapshot: str | None,
+) -> str:
+    parts = [
+        "The browser task already ran, but the agent did not return valid final JSON.",
+        "Your only job now is to produce the final JSON result.",
+        "",
+        "Constraints:",
+        "- Do not call tools.",
+        "- Do not continue browsing.",
+        "- Return JSON only.",
+        "- Use the live page state included below to infer the final status as accurately as possible.",
+        "- If the task appears incomplete or blocked, set status to failed and say why.",
+        "",
+        f"Task label: {task_label}",
+        f"Original agent response: {json.dumps(original_response or '', ensure_ascii=True)}",
+    ]
+
+    if page_url:
+        parts.append(f"Current page URL: {page_url}")
+    if page_title:
+        parts.append(f"Current page title: {page_title}")
+    if page_snapshot:
+        parts.extend(["", "Current page snapshot:", truncate_text(page_snapshot, 6000)])
+
+    parts.extend(
+        [
+            "",
+            'Return JSON: {"summary":"...", "status":"completed|failed", "finalUrl":"optional", "notes":["optional"]}',
+        ]
+    )
+    return "\n".join(parts)
+
+
 def normalize_provider_name(provider: str) -> str:
     normalized = provider.strip().lower()
     if normalized in {"google", "gemini"}:
@@ -463,6 +502,58 @@ class PythonBrowserRuntime:
             await asyncio.sleep(0.2)
         raise RuntimeError("Timed out waiting for the page to finish loading")
 
+    async def capture_selected_page_state(self) -> dict[str, Any]:
+        pages = await self.list_pages()
+        page = next((candidate for candidate in pages if candidate.get("selected")), None)
+        if page is None and pages:
+            page = pages[0]
+        if page is None:
+            return {}
+
+        page_id = int(page["pageId"])
+        state: dict[str, Any] = {
+            "pageId": page_id,
+            "pageUrl": str(page.get("url") or "").strip() or None,
+        }
+
+        try:
+            await self.select_page(page_id, True)
+        except Exception:
+            return state
+
+        try:
+            page_title = await self.evaluate_on_page(
+                page_id=page_id,
+                function_source="() => document.title || ''",
+            )
+            if isinstance(page_title, str) and page_title.strip():
+                state["pageTitle"] = page_title.strip()
+        except Exception:
+            pass
+
+        try:
+            snapshot_result = await self.call_tool("take_snapshot")
+            snapshot_text = tool_result_text(snapshot_result).strip()
+            if snapshot_text:
+                state["pageSnapshot"] = snapshot_text
+        except Exception:
+            pass
+
+        if "pageSnapshot" not in state:
+            try:
+                visible_text = await self.evaluate_on_page(
+                    page_id=page_id,
+                    function_source=(
+                        "() => (document.body?.innerText || document.documentElement?.innerText || '').slice(0, 4000)"
+                    ),
+                )
+                if isinstance(visible_text, str) and visible_text.strip():
+                    state["pageSnapshot"] = visible_text.strip()
+            except Exception:
+                pass
+
+        return state
+
     async def find_page_by_url(self, page_url: str) -> dict[str, Any] | None:
         pages = await self.list_pages()
         for page in pages:
@@ -592,7 +683,42 @@ class PythonBrowserRuntime:
         log_runtime(
             f"[agent-task] complete label={task_label} response={truncate_text(response_text, 400)}"
         )
-        parsed = extract_json_payload(response_text)
+        try:
+            parsed = extract_json_payload(response_text)
+        except RuntimeError:
+            page_state = await self.capture_selected_page_state()
+            log_runtime(
+                f"[agent-task] finalize_json label={task_label} page_url={page_state.get('pageUrl') or ''}"
+            )
+            repair_prompt = build_json_finalization_prompt(
+                task_label=task_label,
+                original_response=response_text,
+                page_url=(
+                    str(page_state.get("pageUrl") or "").strip() or None
+                ),
+                page_title=(
+                    str(page_state.get("pageTitle") or "").strip() or None
+                ),
+                page_snapshot=(
+                    str(page_state.get("pageSnapshot") or "").strip() or None
+                ),
+            )
+            repair_text = await llm.generate_str(
+                repair_prompt,
+                RequestParams(
+                    model=model or None,
+                    max_iterations=2,
+                    maxTokens=min(900, max_tokens),
+                    temperature=0,
+                    use_history=False,
+                    reasoning_effort="low" if provider == "openai" else None,
+                ),
+            )
+            log_runtime(
+                f"[agent-task] finalize_json_complete label={task_label} response={truncate_text(repair_text, 400)}"
+            )
+            parsed = extract_json_payload(repair_text)
+            response_text = repair_text
         parsed["_rawResponse"] = response_text
         return parsed
 

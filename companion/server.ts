@@ -1,5 +1,7 @@
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import { fileURLToPath } from "node:url";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type {
   LocalCompanionRequestEnvelope,
   LocalCompanionResponseEnvelope,
@@ -15,6 +17,21 @@ type RequestPayload = LocalCompanionRequestEnvelope<Record<string, unknown>>;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function writePidFile(pidFilePath: string | undefined): void {
+  if (!pidFilePath) {
+    return;
+  }
+  mkdirSync(dirname(pidFilePath), { recursive: true });
+  writeFileSync(pidFilePath, `${process.pid}\n`, "utf8");
+}
+
+function removePidFile(pidFilePath: string | undefined): void {
+  if (!pidFilePath) {
+    return;
+  }
+  rmSync(pidFilePath, { force: true });
 }
 
 async function dispatchRequest(
@@ -98,9 +115,13 @@ async function dispatchRequest(
 export function startLocalCompanionServer(options?: {
   port?: number;
   host?: string;
-}): WebSocketServer {
+}): {
+  server: WebSocketServer;
+  dispose: () => Promise<void>;
+} {
   const port = options?.port ?? Number(process.env.LOCAL_COMPANION_PORT ?? 4315);
   const host = options?.host ?? process.env.LOCAL_COMPANION_HOST ?? "127.0.0.1";
+  const pidFilePath = process.env.LOCAL_COMPANION_PID_FILE?.trim() || undefined;
   const logger = createCompanionLogger(getDefaultCompanionLogFilePath());
   const service = new LocalAgentCompanionService(
     undefined,
@@ -180,20 +201,65 @@ export function startLocalCompanionServer(options?: {
   logger.event("info", "server", "listening", {
     wsUrl: `ws://${host}:${port}/ws`,
     logFilePath: logger.filePath,
+    pid: process.pid,
+    ...(pidFilePath ? { pidFilePath } : {}),
   });
+  writePidFile(pidFilePath);
 
+  let closed = false;
+  let disposed = false;
+  const dispose = async () => {
+    if (disposed) {
+      return;
+    }
+    disposed = true;
+    removePidFile(pidFilePath);
+    await service.dispose();
+  };
   server.on("close", () => {
+    if (closed) {
+      return;
+    }
+    closed = true;
     logger.event("info", "server", "closing");
-    void service.dispose();
+    void dispose();
   });
 
-  return server;
+  return {
+    server,
+    dispose,
+  };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const server = startLocalCompanionServer();
+  const { server, dispose } = startLocalCompanionServer();
+  let shuttingDownPromise: Promise<void> | null = null;
   const shutdown = () => {
-    server.close();
+    if (shuttingDownPromise) {
+      return;
+    }
+    shuttingDownPromise = new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    })
+      .catch(() => {
+        // Ignore close errors during shutdown and still dispose the runtime.
+      })
+      .then(async () => {
+        await dispose();
+      })
+      .then(() => {
+        process.exit(0);
+      })
+      .catch((error) => {
+        console.error("[local-companion] shutdown failed", error);
+        process.exit(1);
+      });
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
