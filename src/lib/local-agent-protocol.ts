@@ -112,6 +112,7 @@ export interface LocalCompanionResolveApprovalParams {
   approvalId: string;
   decision: "approved" | "rejected";
   decisionNote?: string;
+  providerConfig?: LocalCompanionProviderConfig | null;
 }
 
 export interface LocalCompanionResolveApprovalResult {
@@ -167,4 +168,3 @@ export interface LocalCompanionResponseEnvelope<TResult = unknown> {
   result?: TResult;
   error?: LocalCompanionErrorBody;
 }
-

@@ -18,18 +18,18 @@ describe("agent panel runtime helpers", () => {
         "linkedin",
         "https://www.linkedin.com/search/results/people/?keywords=recruiter"
       )
-    ).toContain("visible LinkedIn profiles");
+    ).toContain("LinkedIn profiles");
 
     expect(
       buildDefaultAgentGoal(
         "linkedin",
         "https://www.linkedin.com/in/example-person/"
       )
-    ).toContain("connection request");
+    ).toContain("LinkedIn action");
 
     expect(
       buildDefaultAgentGoal("general", "https://example.com")
-    ).toContain("Inspect this page");
+    ).toContain("complete the requested browser task");
 
     expect(
       buildDefaultAgentGoal("gmail", "https://mail.google.com/mail/u/0/#inbox")

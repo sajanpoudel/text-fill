@@ -1,14 +1,10 @@
-import {
-  executeInsertTextBySelectorInPage,
-  executeLinkedInConnectWorkflowInPage,
-  executeWaitForLinkedInPrimaryActionsInPage,
-  isLinkedInAddNoteText,
-  isLinkedInFinalSendText,
-  isLinkedInSendText,
-} from "../src/lib/browser-control.ts";
 import { urlsMatchForCommandRouting } from "../src/lib/browser-command-spec.ts";
-import { buildLinkedInCustomInviteUrl } from "../src/lib/linkedin-recipient-profile.ts";
-import type { LocalCompanionFieldTarget } from "../src/lib/local-agent-protocol.ts";
+import type {
+  LocalCompanionCandidateScanItem,
+  LocalCompanionFieldTarget,
+  LocalCompanionProviderConfig,
+  LocalCompanionStructuredExtraction,
+} from "../src/lib/local-agent-protocol.ts";
 import {
   createMcpAgentBridgeConnection,
   type ChromeDevtoolsMcpConnection,
@@ -41,20 +37,6 @@ type LinkedInBatchItem = {
   targetUrl: string;
   targetName?: string;
   generatedText?: string;
-};
-
-type LinkedInDomHints = {
-  preferredLabels?: string[];
-  avoidedLabels?: string[];
-};
-
-type LinkedInConnectExecutionOutcome = "sent" | "failed" | "skipped";
-
-type LinkedInConnectExecutionResult = {
-  outcome: LinkedInConnectExecutionOutcome;
-  finalState: string;
-  debugSummary?: string;
-  preservedPage: boolean;
 };
 
 function normalizeErrorMessage(error: unknown): string {
@@ -191,63 +173,6 @@ function parseChromeMcpEvaluateResult<T>(result: ChromeMcpToolResult): T {
   throw new Error("Chrome DevTools MCP returned an unreadable script result");
 }
 
-function buildFunctionSource(
-  func: (...args: any[]) => unknown,
-  dependencies: Array<(...args: any[]) => unknown> = []
-): string {
-  const dependencySource = dependencies
-    .map((dependency) => `const ${dependency.name} = ${dependency.toString()};`)
-    .join("\n");
-
-  return `(...args) => {
-${dependencySource}
-return (${func.toString()})(...args);
-}`;
-}
-
-function summarizeLinkedInConnectDebug(result: {
-  debug?: {
-    primaryButtons?: string[];
-    menuOptions?: string[];
-    dialogButtons?: string[];
-    resolutionPath?: string[];
-  };
-}): string {
-  const parts: string[] = [];
-  const primary = result.debug?.primaryButtons?.slice(0, 5).join(", ");
-  const menu = result.debug?.menuOptions?.slice(0, 5).join(", ");
-  const dialog = result.debug?.dialogButtons?.slice(0, 5).join(", ");
-  const path = result.debug?.resolutionPath?.slice(0, 8).join(" -> ");
-  if (primary) parts.push(`primary=${primary}`);
-  if (menu) parts.push(`menu=${menu}`);
-  if (dialog) parts.push(`dialog=${dialog}`);
-  if (path) parts.push(`path=${path}`);
-  return parts.join(" | ");
-}
-
-function shouldRetryLinkedInConnectWithCustomInvite(finalState: string): boolean {
-  return (
-    finalState === "dialog_not_found" ||
-    finalState === "no_connect_control" ||
-    finalState === "menu_connect_not_found"
-  );
-}
-
-function humanDelay(baseMs: number): number {
-  const u1 = Math.random();
-  const u2 = Math.random();
-  const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-  return Math.max(1_000, Math.round(baseMs + z * baseMs * 0.3));
-}
-
-function isBackgroundTabLayoutUnavailable(): boolean {
-  return (
-    document.visibilityState === "hidden" ||
-    window.innerWidth === 0 ||
-    window.innerHeight === 0
-  );
-}
-
 export class ChromeDevtoolsMcpRuntime {
   private readonly logger: ConsoleLike;
   private readonly command: string;
@@ -354,75 +279,13 @@ export class ChromeDevtoolsMcpRuntime {
     generatedText: string;
     verifyText: string;
     targetName?: string;
+    providerConfig: LocalCompanionProviderConfig;
   }): Promise<{
     summary: string;
     metadata: Record<string, unknown>;
   }> {
-    const pythonBridge = await this.getPythonBridge().catch(() => null);
-    if (pythonBridge) {
-      return pythonBridge.insertDraft(args);
-    }
-
-    const page = await this.findPageByUrl(args.pageUrl);
-    if (!page) {
-      throw new Error(
-        "The approved page is not open in Chrome DevTools MCP. Keep the target page open and try again."
-      );
-    }
-
-    const inserted = await this.evaluateOnPage<boolean>({
-      pageId: page.pageId,
-      func: executeInsertTextBySelectorInPage,
-      args: [
-        args.fieldTarget.selector,
-        args.generatedText,
-        args.fieldTarget.platform,
-      ],
-      bringToFront: true,
-    });
-
-    if (!inserted) {
-      throw new Error("Failed to insert the approved draft into the target field");
-    }
-
-    const verified = await this.evaluateOnPage<boolean>({
-      pageId: page.pageId,
-      func: (
-        selector: string,
-        expectedText: string
-      ) => {
-        const element = document.querySelector<HTMLElement>(selector);
-        if (!element) return false;
-        const text =
-          element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
-            ? element.value
-            : element.isContentEditable
-              ? element.innerText || element.textContent || ""
-              : element.innerText || element.textContent || "";
-        const normalize = (value: string) =>
-          value.replace(/\s+/g, " ").trim().toLowerCase();
-        const haystack = normalize(text);
-        const needle = normalize(expectedText);
-        return needle.length > 0 && haystack.includes(needle);
-      },
-      args: [args.fieldTarget.selector, args.verifyText],
-      bringToFront: true,
-    });
-
-    if (!verified) {
-      throw new Error("Inserted draft could not be verified in the target field");
-    }
-
-    return {
-      summary: args.targetName
-        ? `Inserted the approved draft for ${args.targetName}.`
-        : "Inserted the approved draft into the active field.",
-      metadata: {
-        kind: "insert_draft",
-        selector: args.fieldTarget.selector,
-        pageUrl: args.pageUrl,
-      },
-    };
+    const pythonBridge = await this.getRequiredPythonBridge();
+    return pythonBridge.insertDraft(args);
   }
 
   async navigateToUrl(args: {
@@ -493,59 +356,30 @@ export class ChromeDevtoolsMcpRuntime {
   async executeLinkedInConnectBatch(args: {
     items: LinkedInBatchItem[];
     dailyLimit: number;
+    providerConfig: LocalCompanionProviderConfig;
   }): Promise<{
     summary: string;
     metadata: Record<string, unknown>;
   }> {
-    const pythonBridge = await this.getPythonBridge().catch(() => null);
-    if (pythonBridge) {
-      return pythonBridge.executeLinkedInConnectBatch(args);
-    }
+    const pythonBridge = await this.getRequiredPythonBridge();
+    return pythonBridge.executeLinkedInConnectBatch(args);
+  }
 
-    const maxItems = Math.max(
-      1,
-      Math.min(args.items.length, Math.round(args.dailyLimit || args.items.length))
-    );
-    const items = args.items.slice(0, maxItems);
-    let sent = 0;
-    let skipped = 0;
-    let failed = 0;
-    const finalStates: string[] = [];
-
-    for (const item of items) {
-      const result = await this.executeLinkedInConnectItem(item, {});
-      finalStates.push(result.finalState);
-      if (result.outcome === "sent") {
-        sent += 1;
-      } else if (result.outcome === "skipped") {
-        skipped += 1;
-      } else {
-        failed += 1;
-      }
-      await this.delay(humanDelay(2_200));
-    }
-
-    const summary = [
-      `LinkedIn connect batch finished for ${items.length} target${items.length === 1 ? "" : "s"}.`,
-      `Sent: ${sent}.`,
-      skipped > 0 ? `Skipped: ${skipped}.` : null,
-      failed > 0 ? `Failed: ${failed}.` : null,
-    ]
-      .filter(Boolean)
-      .join(" ");
-
-    return {
-      summary,
-      metadata: {
-        kind: "execute_task_batch",
-        batchType: "linkedin_connect",
-        itemCount: items.length,
-        sent,
-        skipped,
-        failed,
-        finalStates,
-      },
-    };
+  async executeAgentTask(args: {
+    providerConfig: LocalCompanionProviderConfig;
+    goal: string;
+    pageUrl?: string;
+    platformHint?: string;
+    pageContext?: string;
+    fieldTarget?: LocalCompanionFieldTarget;
+    structured?: LocalCompanionStructuredExtraction | null;
+    scannedCandidates?: LocalCompanionCandidateScanItem[];
+  }): Promise<{
+    summary: string;
+    metadata: Record<string, unknown>;
+  }> {
+    const pythonBridge = await this.getRequiredPythonBridge();
+    return pythonBridge.executeAgentTask(args);
   }
 
   async dispose(): Promise<void> {
@@ -604,6 +438,16 @@ export class ChromeDevtoolsMcpRuntime {
       });
     }
     return this.pythonBridgePromise;
+  }
+
+  private async getRequiredPythonBridge(): Promise<PythonBrowserRuntimeConnection> {
+    const pythonBridge = await this.getPythonBridge();
+    if (!pythonBridge) {
+      throw new Error(
+        "The Python mcp-agent browser runtime is required for Chrome control, but it is not available."
+      );
+    }
+    return pythonBridge;
   }
 
   private async callTool(
@@ -677,12 +521,28 @@ export class ChromeDevtoolsMcpRuntime {
     await this.callTool("close_page", { pageId });
   }
 
+  private async evaluateOnPage<TResult>(args: {
+    pageId: number;
+    functionSource: string;
+    runtimeArgs?: unknown[];
+    bringToFront?: boolean;
+  }): Promise<TResult> {
+    await this.selectPage(args.pageId, args.bringToFront ?? false);
+    const result = await this.callTool("evaluate_script", {
+      function: args.functionSource,
+      ...(args.runtimeArgs && args.runtimeArgs.length > 0
+        ? { args: args.runtimeArgs }
+        : {}),
+    });
+    return parseChromeMcpEvaluateResult<TResult>(result);
+  }
+
   private async waitForPageReady(pageId: number, timeoutMs = 15_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const readyState = await this.evaluateOnPage<string>({
         pageId,
-        func: () => document.readyState,
+        functionSource: "() => document.readyState",
       });
       if (readyState === "complete" || readyState === "interactive") {
         return;
@@ -691,156 +551,6 @@ export class ChromeDevtoolsMcpRuntime {
     }
     throw new Error("Timed out waiting for the page to finish loading");
   }
-
-  private async evaluateOnPage<TResult>(args: {
-    pageId: number;
-    func: (...values: any[]) => unknown;
-    dependencies?: Array<(...values: any[]) => unknown>;
-    args?: unknown[];
-    bringToFront?: boolean;
-  }): Promise<TResult> {
-    await this.selectPage(args.pageId, args.bringToFront ?? false);
-    const result = await this.callTool("evaluate_script", {
-      function: buildFunctionSource(args.func, args.dependencies),
-      ...(args.args && args.args.length > 0 ? { args: args.args } : {}),
-    });
-    return parseChromeMcpEvaluateResult<TResult>(result);
-  }
-
-  private async executeLinkedInConnectItem(
-    item: LinkedInBatchItem,
-    domHints: LinkedInDomHints
-  ): Promise<LinkedInConnectExecutionResult> {
-    const page = await this.openPage({ url: item.targetUrl });
-    let preservePage = false;
-
-    try {
-      await this.waitForPageReady(page.pageId, 15_000);
-      await this.delay(humanDelay(1_200));
-
-      const actionProbe = await this.evaluateOnPage<Awaited<
-        ReturnType<typeof executeWaitForLinkedInPrimaryActionsInPage>
-      >>({
-        pageId: page.pageId,
-        func: executeWaitForLinkedInPrimaryActionsInPage,
-        args: [9_000, domHints],
-      });
-
-      const preflightLabels = Array.isArray(actionProbe?.labels)
-        ? actionProbe.labels
-        : [];
-      if (!actionProbe?.ready) {
-        this.logger.warn("[chrome-mcp] linkedin_connect preflight", {
-          targetUrl: item.targetUrl,
-          targetName: item.targetName,
-          labels: preflightLabels.join(", "),
-        });
-      }
-
-      const message = (item.generatedText ?? "").trim();
-      let connectFlow = await this.evaluateOnPage<Awaited<
-        ReturnType<typeof executeLinkedInConnectWorkflowInPage>
-      >>({
-        pageId: page.pageId,
-        func: executeLinkedInConnectWorkflowInPage,
-        dependencies: [
-          isBackgroundTabLayoutUnavailable,
-          isLinkedInAddNoteText,
-          isLinkedInSendText,
-          isLinkedInFinalSendText,
-        ],
-        args: [message, domHints],
-      });
-
-      let finalState = String(connectFlow?.state ?? "dialog_not_found");
-      if (shouldRetryLinkedInConnectWithCustomInvite(finalState)) {
-        const customInviteUrl = buildLinkedInCustomInviteUrl(item.targetUrl);
-        if (customInviteUrl) {
-          this.logger.warn("[chrome-mcp] linkedin_connect custom_invite_retry", {
-            targetUrl: item.targetUrl,
-            targetName: item.targetName,
-            initialState: finalState,
-            customInviteUrl,
-          });
-          await this.navigatePage(page.pageId, customInviteUrl);
-          await this.delay(humanDelay(900));
-          connectFlow = await this.evaluateOnPage<Awaited<
-            ReturnType<typeof executeLinkedInConnectWorkflowInPage>
-          >>({
-            pageId: page.pageId,
-            func: executeLinkedInConnectWorkflowInPage,
-            dependencies: [
-              isBackgroundTabLayoutUnavailable,
-              isLinkedInAddNoteText,
-              isLinkedInSendText,
-              isLinkedInFinalSendText,
-            ],
-            args: [message, domHints],
-          });
-          finalState = String(connectFlow?.state ?? "dialog_not_found");
-        }
-      }
-
-      const debugSummary =
-        summarizeLinkedInConnectDebug(connectFlow ?? {}) ||
-        (preflightLabels.length > 0
-          ? `preflight=${preflightLabels.slice(0, 8).join(", ")}`
-          : undefined);
-
-      this.logger.warn("[chrome-mcp] linkedin_connect", {
-        targetUrl: item.targetUrl,
-        targetName: item.targetName,
-        finalState,
-        debugSummary,
-      });
-
-      if (finalState === "already_connected" || finalState === "already_pending") {
-        return {
-          outcome: "skipped",
-          finalState,
-          debugSummary,
-          preservedPage: false,
-        };
-      }
-
-      if (finalState === "sent") {
-        return {
-          outcome: "sent",
-          finalState,
-          debugSummary,
-          preservedPage: false,
-        };
-      }
-
-      preservePage =
-        finalState === "dialog_not_found" ||
-        finalState === "note_editor_not_found" ||
-        finalState === "send_not_found";
-      if (preservePage) {
-        this.logger.warn("[chrome-mcp] linkedin_connect preserved_page", {
-          targetUrl: item.targetUrl,
-          targetName: item.targetName,
-          finalState,
-        });
-      }
-
-      return {
-        outcome:
-          finalState === "no_connect_control" ||
-          finalState === "menu_connect_not_found"
-            ? "skipped"
-            : "failed",
-        finalState,
-        debugSummary,
-        preservedPage: preservePage,
-      };
-    } finally {
-      if (!preservePage) {
-        await this.closePage(page.pageId).catch(() => {});
-      }
-    }
-  }
-
   private async delay(durationMs: number): Promise<void> {
     await this.sleep(durationMs);
   }
@@ -848,7 +558,6 @@ export class ChromeDevtoolsMcpRuntime {
 
 export {
   buildChromeDevtoolsMcpArgs,
-  buildFunctionSource,
   getChromeMcpText,
   parseChromeMcpEvaluateResult,
   parseChromeMcpPageList,

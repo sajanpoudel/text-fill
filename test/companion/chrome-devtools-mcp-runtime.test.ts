@@ -114,6 +114,12 @@ describe("ChromeDevtoolsMcpRuntime", () => {
       "run",
       "--with",
       "mcp-agent",
+      "--with",
+      "openai",
+      "--with",
+      "anthropic",
+      "--with",
+      "google-genai",
       "python",
       "/tmp/text-fill-v2/companion/python_browser_runtime.py",
     ]);
@@ -155,6 +161,9 @@ describe("ChromeDevtoolsMcpRuntime", () => {
         async executeLinkedInConnectBatch() {
           throw new Error("not used");
         },
+        async executeAgentTask() {
+          throw new Error("not used");
+        },
         async close() {
           return;
         },
@@ -172,6 +181,11 @@ describe("ChromeDevtoolsMcpRuntime", () => {
         generatedText: "Hi Taylor,\n\nThanks for following up here.",
         verifyText: "Thanks for following up here.",
         targetName: "Taylor Recruiter",
+        providerConfig: {
+          provider: "openai",
+          apiKey: "test-key",
+          model: "gpt-5-nano",
+        },
       })
     ).resolves.toMatchObject({
       summary: "Inserted the approved draft for Taylor Recruiter.",
@@ -213,6 +227,9 @@ describe("ChromeDevtoolsMcpRuntime", () => {
           throw new Error("not used");
         },
         async executeLinkedInConnectBatch() {
+          throw new Error("not used");
+        },
+        async executeAgentTask() {
           throw new Error("not used");
         },
         async close() {
@@ -291,6 +308,9 @@ describe("ChromeDevtoolsMcpRuntime", () => {
         async executeLinkedInConnectBatch() {
           throw new Error("not used");
         },
+        async executeAgentTask() {
+          throw new Error("not used");
+        },
         async close() {
           return;
         },
@@ -309,6 +329,11 @@ describe("ChromeDevtoolsMcpRuntime", () => {
     const batchCalls: Array<{
       items: Array<{ targetUrl: string; targetName?: string; generatedText?: string }>;
       dailyLimit: number;
+      providerConfig: {
+        provider: string;
+        apiKey: string;
+        model: string;
+      };
     }> = [];
 
     const runtime = new ChromeDevtoolsMcpRuntime({
@@ -339,6 +364,9 @@ describe("ChromeDevtoolsMcpRuntime", () => {
             },
           };
         },
+        async executeAgentTask() {
+          throw new Error("not used");
+        },
         async close() {
           return;
         },
@@ -355,6 +383,11 @@ describe("ChromeDevtoolsMcpRuntime", () => {
           },
         ],
         dailyLimit: 1,
+        providerConfig: {
+          provider: "openai",
+          apiKey: "test-key",
+          model: "gpt-5-nano",
+        },
       })
     ).resolves.toMatchObject({
       summary: "LinkedIn connect batch finished for 1 target. Sent: 1.",
@@ -365,135 +398,84 @@ describe("ChromeDevtoolsMcpRuntime", () => {
       "https://www.linkedin.com/in/example/"
     );
     expect(batchCalls[0]?.dailyLimit).toBe(1);
+    expect(batchCalls[0]?.providerConfig.model).toBe("gpt-5-nano");
 
     await runtime.dispose();
   });
 
-  test("inserts an approved draft into an existing page through MCP", async () => {
-    const mock = createConnectionMock([
-      {
-        name: "list_pages",
-        run: () =>
-          textToolResult(
-            "## Pages\n1: https://mail.google.com/mail/u/0/#inbox/FMfcgzQabcd [selected]"
-          ),
-      },
-      {
-        name: "select_page",
-        run: () => textToolResult("Selected page 1"),
-      },
-      {
-        name: "evaluate_script",
-        run: () => jsonToolResult(true),
-      },
-      {
-        name: "select_page",
-        run: () => textToolResult("Selected page 1"),
-      },
-      {
-        name: "evaluate_script",
-        run: () => jsonToolResult(true),
-      },
-    ]);
-
+  test("delegates generic browser tasks to the python mcp-agent runtime", async () => {
     const runtime = new ChromeDevtoolsMcpRuntime({
-      connectionFactory: async () => mock.connection,
-      sleep: async () => {},
+      connectionFactory: async () => {
+        throw new Error("raw MCP connection should not be used");
+      },
+      pythonBridgeFactory: async () => ({
+        async health() {
+          return { connected: true };
+        },
+        async navigateToUrl() {
+          throw new Error("not used");
+        },
+        async insertDraft() {
+          throw new Error("not used");
+        },
+        async executeLinkedInConnectBatch() {
+          throw new Error("not used");
+        },
+        async executeAgentTask(args) {
+          expect(args.providerConfig.model).toBe("gpt-5-nano");
+          expect(args.goal).toBe("Search software engineering jobs in LinkedIn");
+          return {
+            summary: "Opened LinkedIn jobs search for software engineering.",
+            metadata: {
+              kind: "execute_agent_task",
+            },
+          };
+        },
+        async close() {
+          return;
+        },
+      }),
     });
 
-    const result = await runtime.insertDraft({
-      pageUrl: "https://mail.google.com/mail/u/0/#inbox/FMfcgzQabcd",
-      fieldTarget: {
-        selector: "#composer",
-        platform: "gmail",
-      },
-      generatedText: "Hi Taylor,\n\nThanks for following up here.",
-      verifyText: "Thanks for following up here.",
-      targetName: "Taylor Recruiter",
+    await expect(
+      runtime.executeAgentTask({
+        providerConfig: {
+          provider: "openai",
+          apiKey: "test-key",
+          model: "gpt-5-nano",
+        },
+        goal: "Search software engineering jobs in LinkedIn",
+        pageUrl: "https://www.linkedin.com/feed/",
+        platformHint: "linkedin",
+      })
+    ).resolves.toMatchObject({
+      summary: "Opened LinkedIn jobs search for software engineering.",
     });
 
-    expect(result.summary).toContain("Taylor Recruiter");
-    expect(mock.calls).toHaveLength(5);
-    expect(mock.calls[1]).toEqual({
-      name: "select_page",
-      args: {
-        pageId: 1,
-        bringToFront: true,
-      },
-    });
+    await runtime.dispose();
   });
 
-  test("executes a LinkedIn connect batch through MCP tools", async () => {
-    const mock = createConnectionMock([
-      {
-        name: "list_pages",
-        run: () => textToolResult("## Pages\n1: about:blank [selected]"),
-      },
-      {
-        name: "new_page",
-        run: () =>
-          textToolResult(
-            "## Pages\n1: about:blank\n2: https://www.linkedin.com/in/example/ [selected]"
-          ),
-      },
-      {
-        name: "select_page",
-        run: () => textToolResult("Selected page 2"),
-      },
-      {
-        name: "evaluate_script",
-        run: () => jsonToolResult("complete"),
-      },
-      {
-        name: "select_page",
-        run: () => textToolResult("Selected page 2"),
-      },
-      {
-        name: "evaluate_script",
-        run: () => jsonToolResult({ ready: true, labels: ["connect"] }),
-      },
-      {
-        name: "select_page",
-        run: () => textToolResult("Selected page 2"),
-      },
-      {
-        name: "evaluate_script",
-        run: () =>
-          jsonToolResult({
-            state: "sent",
-            debug: {
-              primaryButtons: ["connect"],
-            },
-          }),
-      },
-      {
-        name: "close_page",
-        run: () => textToolResult("Closed page 2"),
-      },
-    ]);
-
+  test("requires the python mcp-agent runtime for approved browser actions", async () => {
     const runtime = new ChromeDevtoolsMcpRuntime({
-      connectionFactory: async () => mock.connection,
-      sleep: async () => {},
+      pythonBridgeFactory: null,
+      connectionFactory: async () => createConnectionMock([]).connection,
     });
 
-    const result = await runtime.executeLinkedInConnectBatch({
-      items: [
-        {
-          targetUrl: "https://www.linkedin.com/in/example/",
-          targetName: "Example Recruiter",
-          generatedText: "Hi Example, I’d love to connect.",
+    await expect(
+      runtime.insertDraft({
+        pageUrl: "https://mail.google.com/mail/u/0/#inbox/FMfcgzQabcd",
+        fieldTarget: {
+          selector: "#composer",
+          platform: "gmail",
         },
-      ],
-      dailyLimit: 1,
-    });
-
-    expect(result.summary).toContain("Sent: 1.");
-    expect(mock.calls.at(-1)).toEqual({
-      name: "close_page",
-      args: {
-        pageId: 2,
-      },
-    });
+        generatedText: "Hello",
+        verifyText: "Hello",
+        providerConfig: {
+          provider: "openai",
+          apiKey: "test-key",
+          model: "gpt-5-nano",
+        },
+      })
+    ).rejects.toThrow(/Python mcp-agent browser runtime is required/);
   });
 });

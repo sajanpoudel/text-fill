@@ -1137,6 +1137,8 @@ async function handleResolveAgentApproval(
     return { error: "Approval decision must be approved or rejected" };
   }
 
+  const providerConfig = await loadCurrentProviderConfig();
+
   try {
     return await callLocalCompanion<LocalCompanionResolveApprovalResult>(
       "resolve_approval",
@@ -1148,6 +1150,7 @@ async function handleResolveAgentApproval(
           typeof payload?.decisionNote === "string"
             ? payload.decisionNote
             : undefined,
+        providerConfig,
       },
       20_000
     );

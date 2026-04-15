@@ -71,15 +71,15 @@ export function buildDefaultAgentGoal(
   pageUrl: string
 ): string {
   if (platform === "linkedin" && /linkedin\.com\/search\/results\/people/i.test(pageUrl)) {
-    return "Find up to 10 visible LinkedIn profiles on this page, prepare connection requests, and wait for approval.";
+    return "Find relevant LinkedIn profiles on this page and execute the requested outreach workflow directly in the browser.";
   }
 
   if (platform === "linkedin" && /linkedin\.com\/in\//i.test(pageUrl)) {
-    return "Queue a connection request for this LinkedIn profile after approval.";
+    return "Handle the requested LinkedIn action for this profile directly in the browser.";
   }
 
   if (platform === "gmail" || platform === "outlook") {
-    return "Draft a reply for this email thread and wait for approval before inserting it into the compose field.";
+    return "Draft and place a reply for this email thread directly in the compose field.";
   }
 
   if (
@@ -96,10 +96,10 @@ export function buildDefaultAgentGoal(
       "canvas",
     ].includes(platform)
   ) {
-    return "Draft a context-aware reply for this conversation and wait for approval before inserting it into the compose field.";
+    return "Draft and place a context-aware reply for this conversation directly in the compose field.";
   }
 
-  return "Inspect this page, gather context, and summarize the next safe agentic action.";
+  return "Inspect this page and complete the requested browser task directly using the local Chrome agent.";
 }
 
 export function formatAgentRunStatus(status: AgentRunStatus): string {
@@ -136,9 +136,9 @@ export function getAgentRunSummary(run: AgentPanelRun): string {
 
   switch (run.status) {
     case "planning":
-      return "Planning the next safe browser action.";
+      return "Preparing the local Chrome agent.";
     case "executing":
-      return "Executing browser steps.";
+      return "Executing browser steps through the local Chrome agent.";
     case "awaiting_approval":
       return "Waiting for explicit approval before continuing.";
     case "paused":

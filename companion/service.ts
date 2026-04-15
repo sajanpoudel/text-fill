@@ -1,19 +1,3 @@
-import { callProvider } from "../convex/llmProvider.ts";
-import {
-  applyLinkedInConnectDrafts,
-  buildConversationDraftPrompt,
-  buildDraftVerificationText,
-  buildLinkedInConnectDraftPrompt,
-  deriveBootstrapPlannerDecision,
-  deriveConversationDraftDecision,
-  isLinkedInConnectIntent,
-  isLinkedInSearchResultsContext,
-  normalizeConversationDraft,
-  planLinkedInSearchCollectionPass,
-  shouldUseConversationDraftFlow,
-  type PlannerBatchItem,
-  type PlannerDecision,
-} from "../src/lib/agent-planner.ts";
 import type {
   LocalCompanionAction,
   LocalCompanionPanelState,
@@ -26,7 +10,6 @@ import type {
 import {
   CompanionStateStore,
   type StoredApprovalRecord,
-  type StoredRunRecord,
 } from "./state-store.ts";
 import { ChromeDevtoolsMcpRuntime } from "./chrome-devtools-mcp-runtime.ts";
 import {
@@ -36,37 +19,6 @@ import {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function buildSearchApprovalDecision(args: {
-  items: PlannerBatchItem[];
-  requestedCount: number;
-  partial: boolean;
-}): PlannerDecision {
-  const countLabel = args.partial
-    ? `${args.items.length} visible`
-    : `${Math.min(args.items.length, args.requestedCount)}`;
-  return {
-    kind: "request_approval",
-    strategicPlan:
-      "Use the visible LinkedIn people-search observations to hand off a reviewed deterministic batch instead of attempting an irreversible browser action directly.",
-    tacticalPlan: args.partial
-      ? `Queue the ${countLabel} candidate${args.items.length === 1 ? "" : "s"} already collected on this LinkedIn search page and leave deeper pagination for a later browser-backed slice.`
-      : `Queue ${countLabel} LinkedIn connection request${args.items.length === 1 ? "" : "s"} from the current search pass and wait for approval before handoff.`,
-    approvalKind: "connect",
-    title:
-      args.items.length === 1
-        ? `Queue LinkedIn connection request for ${args.items[0]?.targetName ?? "this profile"}`
-        : `Queue ${countLabel} LinkedIn connection requests`,
-    reason:
-      "Connection requests are irreversible platform actions and must be approved before deterministic queue handoff.",
-    payload: {
-      actionType: "create_task_batch",
-      batchType: "linkedin_connect",
-      dailyLimit: args.items.length,
-      items: args.items,
-    },
-  };
 }
 
 function coerceActionFromApproval(
@@ -104,7 +56,7 @@ function coerceActionFromApproval(
       verifyText:
         typeof payload.verifyText === "string" && payload.verifyText.trim()
           ? payload.verifyText
-          : buildDraftVerificationText(payload.generatedText),
+          : payload.generatedText,
       ...(typeof payload.targetName === "string"
         ? { targetName: payload.targetName }
         : {}),
@@ -176,7 +128,6 @@ export class LocalAgentCompanionService {
 
   constructor(
     private readonly store = new CompanionStateStore(),
-    private readonly llmCaller = callProvider,
     runtime?: ChromeDevtoolsMcpRuntime,
     logger: CompanionLogger = createNoopCompanionLogger()
   ) {
@@ -218,6 +169,12 @@ export class LocalAgentCompanionService {
   async startRun(
     params: LocalCompanionStartRunParams
   ): Promise<LocalCompanionStartRunResult> {
+    if (!params.providerConfig?.apiKey) {
+      throw new Error(
+        "Missing API key for the configured provider. Add it in Settings to run Chrome MCP agent tasks."
+      );
+    }
+
     const run = await this.store.createRun({
       userScope: params.userScope,
       goal: params.goal,
@@ -233,22 +190,21 @@ export class LocalAgentCompanionService {
         goal: params.goal,
         platformHint: params.platformHint,
         pageUrl: params.pageUrl,
-        hasProviderConfig: Boolean(params.providerConfig?.apiKey),
-        provider: params.providerConfig?.provider,
-        model: params.providerConfig?.model,
+        provider: params.providerConfig.provider,
+        model: params.providerConfig.model,
       });
       await this.store.updateRun(params.userScope, run._id, {
-        status: "planning",
-        latestSummary: "Planning the next safe action in the local companion.",
+        status: "executing",
+        latestSummary:
+          "Handing the task to the local Chrome MCP agent for tool-driven execution.",
       });
-      await this.planRun(run, params);
+      this.startAgentTaskExecution(params.userScope, run._id, params);
       return {
         runId: run._id,
         runtimeId: run._id,
       };
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
       this.logger.event("error", "service", "start_run_failed", {
         runId: run._id,
         message,
@@ -268,6 +224,7 @@ export class LocalAgentCompanionService {
     approvalId: string;
     decision: "approved" | "rejected";
     decisionNote?: string;
+    providerConfig?: LocalCompanionProviderConfig | null;
   }): Promise<LocalCompanionResolveApprovalResult> {
     const approval = await this.store.getApproval(args.userScope, args.approvalId);
     if (!approval) {
@@ -275,30 +232,23 @@ export class LocalAgentCompanionService {
     }
 
     if (approval.status === "approved") {
-      this.logger.event("info", "service", "resolve_approval_resume", {
-        approvalId: approval._id,
-        runId: approval.runId,
-      });
       const approvedAction = coerceActionFromApproval(approval);
-      if (approvedAction) {
-        if (!this.activeExecutions.has(approval._id)) {
-          await this.store.updateRun(args.userScope, approval.runId, {
-            status: "executing",
-            latestSummary:
-              "Resuming the previously approved action through the local Chrome MCP runtime.",
-          });
-          this.startApprovedExecution(args.userScope, approval, approvedAction);
-        }
-        return {
-          ok: true,
+      if (approvedAction && !this.activeExecutions.has(approval._id)) {
+        await this.store.updateRun(args.userScope, approval.runId, {
           status: "executing",
-          runId: approval.runId,
-        };
+          latestSummary:
+            "Resuming the previously approved action through the local Chrome MCP runtime.",
+        });
+        this.startApprovedExecution(
+          args.userScope,
+          approval,
+          approvedAction,
+          args.providerConfig ?? null
+        );
       }
-
       return {
         ok: true,
-        status: "approved",
+        status: approvedAction ? "executing" : "approved",
         runId: approval.runId,
       };
     }
@@ -352,7 +302,12 @@ export class LocalAgentCompanionService {
         "Approval granted. Executing the reviewed action through the local Chrome MCP runtime.",
     });
 
-    this.startApprovedExecution(args.userScope, approval, action);
+    this.startApprovedExecution(
+      args.userScope,
+      approval,
+      action,
+      args.providerConfig ?? null
+    );
 
     return {
       ok: true,
@@ -376,7 +331,9 @@ export class LocalAgentCompanionService {
 
     await this.store.updateApproval(args.userScope, approval._id, {
       status: args.succeeded ? "completed" : "failed",
-      ...(args.metadata ? { payload: { ...(approval.payload ?? {}), actionResult: args.metadata } } : {}),
+      ...(args.metadata
+        ? { payload: { ...(approval.payload ?? {}), actionResult: args.metadata } }
+        : {}),
     });
 
     if (args.succeeded) {
@@ -472,8 +429,7 @@ export class LocalAgentCompanionService {
         return health;
       })
       .catch((error) => {
-        const message =
-          error instanceof Error ? error.message : String(error);
+        const message = error instanceof Error ? error.message : String(error);
         this.logger.event("error", "runtime", "health_failed", {
           message,
         });
@@ -494,328 +450,24 @@ export class LocalAgentCompanionService {
     return this.runtimeHealthRefreshPromise;
   }
 
-  private async planRun(
-    run: StoredRunRecord,
-    params: LocalCompanionStartRunParams
-  ): Promise<void> {
-    if (
-      shouldUseConversationDraftFlow({
-        goal: params.goal,
-        platformHint: params.platformHint,
-        pageUrl: params.pageUrl,
-        pageContext: params.pageContext,
-        fieldTarget: params.fieldTarget,
-      })
-    ) {
-      await this.planConversationDraft(run, params);
-      return;
-    }
-
-    if (
-      isLinkedInConnectIntent(params.goal) &&
-      isLinkedInSearchResultsContext(params.platformHint, params.pageUrl)
-    ) {
-      await this.planLinkedInSearch(run, params);
-      return;
-    }
-
-    let decision = deriveBootstrapPlannerDecision({
-      goal: params.goal,
-      platformHint: params.platformHint,
-      pageUrl: params.pageUrl,
-      structured: params.structured ?? null,
-    });
-
-    if (
-      decision.kind === "request_approval" &&
-      decision.approvalKind === "connect" &&
-      decision.payload.actionType === "create_task_batch" &&
-      params.providerConfig
-    ) {
-      decision = {
-        ...decision,
-        payload: {
-          ...decision.payload,
-          items: await this.maybeRefineLinkedInItems(
-            params.goal,
-            decision.payload.items,
-            params.providerConfig
-          ),
-        },
-      };
-    }
-
-    await this.applyPlannerDecision(run, params.userScope, decision);
-  }
-
-  private async planConversationDraft(
-    run: StoredRunRecord,
-    params: LocalCompanionStartRunParams
-  ): Promise<void> {
-    if (!params.pageContext || !params.fieldTarget?.selector) {
-      throw new Error("Conversation draft flow requires page context and a field target");
-    }
-    if (!params.providerConfig) {
-      throw new Error("Missing API key for the configured provider. Add it in Settings.");
-    }
-
-    const charLimit =
-      typeof params.fieldTarget.charLimit === "number"
-        ? Math.max(1, Math.min(3000, Math.round(params.fieldTarget.charLimit)))
-        : 800;
-    const prompt = buildConversationDraftPrompt({
-      goal: params.goal,
-      platformHint: params.platformHint,
-      pageContext: params.pageContext,
-      charLimit,
-    });
-    this.logger.event("info", "llm", "conversation_draft_start", {
-      runId: run._id,
-      provider: params.providerConfig.provider,
-      model: params.providerConfig.model,
-      charLimit,
-      userChars: prompt.user.length,
-      systemChars: prompt.system.length,
-    });
-    const rawDraft = await this.llmCaller({
-      provider: params.providerConfig.provider,
-      model: params.providerConfig.model,
-      apiKey: params.providerConfig.apiKey,
-      system: prompt.system,
-      user: prompt.user,
-      maxOutputTokens: Math.max(256, Math.min(2_000, charLimit * 2)),
-      temperature: 0.4,
-    });
-    const generatedText = normalizeConversationDraft(rawDraft, charLimit);
-    if (!generatedText) {
-      throw new Error("The local companion could not produce a usable draft");
-    }
-    this.logger.event("info", "llm", "conversation_draft_success", {
-      runId: run._id,
-      outputChars: generatedText.length,
-    });
-
-    const decision = deriveConversationDraftDecision({
-      goal: params.goal,
-      platformHint: params.platformHint,
-      pageUrl: params.pageUrl,
-      pageContext: params.pageContext,
-      fieldTarget: params.fieldTarget,
-      generatedText,
-    });
-    await this.applyPlannerDecision(run, params.userScope, decision);
-  }
-
-  private async planLinkedInSearch(
-    run: StoredRunRecord,
-    params: LocalCompanionStartRunParams
-  ): Promise<void> {
-    const searchDecision = planLinkedInSearchCollectionPass({
-      goal: params.goal,
-      pageUrl: params.pageUrl,
-      scannedCandidates: params.scannedCandidates,
-      nextPageUrl: params.nextPageUrl,
-    });
-    this.logger.event("info", "planner", "linkedin_search_pass", {
-      runId: run._id,
-      resultKind: searchDecision.kind,
-      scannedCandidateCount: params.scannedCandidates?.length ?? 0,
-      hasNextPageUrl: Boolean(params.nextPageUrl),
-    });
-
-    if (searchDecision.kind === "collect_more") {
-      if (searchDecision.accumulatedItems.length === 0) {
-        await this.store.updateRun(params.userScope, run._id, {
-          status: "completed",
-          latestSummary:
-            "The current LinkedIn search page did not expose enough high-confidence candidates to queue safely.",
-          completedAt: Date.now(),
-        });
-        return;
-      }
-
-      let items = searchDecision.accumulatedItems;
-      if (params.providerConfig) {
-        items = await this.maybeRefineLinkedInItems(
-          params.goal,
-          items,
-          params.providerConfig
-        );
-      }
-      await this.applyPlannerDecision(
-        run,
-        params.userScope,
-        buildSearchApprovalDecision({
-          items,
-          requestedCount: searchDecision.requestedCount,
-          partial: true,
-        })
-      );
-      return;
-    }
-
-    let decision: PlannerDecision = searchDecision;
-    if (
-      decision.kind === "request_approval" &&
-      decision.approvalKind === "connect" &&
-      decision.payload.actionType === "create_task_batch" &&
-      params.providerConfig
-    ) {
-      decision = {
-        ...decision,
-        payload: {
-          ...decision.payload,
-          items: await this.maybeRefineLinkedInItems(
-            params.goal,
-            decision.payload.items,
-            params.providerConfig
-          ),
-        },
-      };
-    }
-
-    await this.applyPlannerDecision(run, params.userScope, decision);
-  }
-
-  private async maybeRefineLinkedInItems(
-    goal: string,
-    items: PlannerBatchItem[],
-    providerConfig: LocalCompanionProviderConfig
-  ): Promise<PlannerBatchItem[]> {
-    if (items.length === 0) {
-      return items;
-    }
-
-    try {
-      const prompt = buildLinkedInConnectDraftPrompt({
-        goal,
-        items,
-      });
-      this.logger.event("info", "llm", "linkedin_refine_start", {
-        provider: providerConfig.provider,
-        model: providerConfig.model,
-        itemCount: items.length,
-        userChars: prompt.user.length,
-        systemChars: prompt.system.length,
-      });
-      const responseText = await this.llmCaller({
-        provider: providerConfig.provider,
-        model: providerConfig.model,
-        apiKey: providerConfig.apiKey,
-        system: prompt.system,
-        user: prompt.user,
-        maxOutputTokens: Math.max(512, Math.min(2_000, items.length * 220)),
-        temperature: 0.4,
-      });
-      const applied = applyLinkedInConnectDrafts({
-        items,
-        responseText,
-      });
-      this.logger.event("info", "llm", "linkedin_refine_success", {
-        itemCount: items.length,
-        source: applied.source,
-      });
-      return applied.items;
-    } catch {
-      this.logger.event("warn", "llm", "linkedin_refine_failed", {
-        itemCount: items.length,
-      });
-      return items;
-    }
-  }
-
-  private async applyPlannerDecision(
-    run: StoredRunRecord,
-    userScope: string,
-    decision: PlannerDecision
-  ): Promise<void> {
-    if (decision.kind === "complete") {
-      this.logger.event("info", "planner", "decision_complete", {
-        runId: run._id,
-        summary: decision.summary,
-      });
-      await this.store.updateRun(userScope, run._id, {
-        status: "completed",
-        latestSummary: decision.summary,
-        completedAt: Date.now(),
-      });
-      return;
-    }
-
-    if (decision.kind === "execute") {
-      this.logger.event("info", "planner", "decision_execute", {
-        runId: run._id,
-        actionType: decision.payload.actionType,
-        targetUrl: decision.payload.targetUrl,
-      });
-      await this.store.updateRun(userScope, run._id, {
-        status: "executing",
-        latestSummary: decision.tacticalPlan,
-      });
-      this.startDirectExecution(userScope, run._id, decision.payload);
-      return;
-    }
-
-    this.logger.event("info", "planner", "decision_request_approval", {
-      runId: run._id,
-      approvalKind: decision.approvalKind,
-      title: decision.title,
-    });
-    await this.store.createApproval({
-      userScope,
-      runId: run._id,
-      approvalKind: decision.approvalKind,
-      title: decision.title,
-      reason: decision.reason,
-      payload: decision.payload,
-    });
-    await this.store.updateRun(userScope, run._id, {
-      status: "awaiting_approval",
-      latestSummary: decision.tacticalPlan,
-    });
-  }
-
-  private startDirectExecution(
-    userScope: string,
-    runId: string,
-    payload: Extract<PlannerDecision, { kind: "execute" }>["payload"]
-  ): void {
-    const executionKey = `run:${runId}`;
-    if (this.activeExecutions.has(executionKey)) {
-      return;
-    }
-
-    const execution = this.executeDirectAction(userScope, runId, payload)
-      .catch(async (error) => {
-        const message =
-          error instanceof Error ? error.message : String(error);
-        await this.store.updateRun(userScope, runId, {
-          status: "failed",
-          latestSummary: message,
-          lastError: message,
-          completedAt: Date.now(),
-        });
-      })
-      .finally(() => {
-        this.activeExecutions.delete(executionKey);
-      });
-
-    this.activeExecutions.set(executionKey, execution);
-  }
-
   private startApprovedExecution(
     userScope: string,
     approval: StoredApprovalRecord,
-    action: LocalCompanionAction
+    action: LocalCompanionAction,
+    providerConfig: LocalCompanionProviderConfig | null
   ): void {
     if (this.activeExecutions.has(approval._id)) {
       return;
     }
 
-    const execution = this.executeApprovedAction(userScope, approval, action)
+    const execution = this.executeApprovedAction(
+      userScope,
+      approval,
+      action,
+      providerConfig
+    )
       .catch(async (error) => {
-        const message =
-          error instanceof Error ? error.message : String(error);
+        const message = error instanceof Error ? error.message : String(error);
         this.logger.event("error", "service", "approved_execution_failed", {
           approvalId: approval._id,
           runId: approval.runId,
@@ -848,8 +500,15 @@ export class LocalAgentCompanionService {
   private async executeApprovedAction(
     userScope: string,
     approval: StoredApprovalRecord,
-    action: LocalCompanionAction
+    action: LocalCompanionAction,
+    providerConfig: LocalCompanionProviderConfig | null
   ): Promise<void> {
+    if (!providerConfig?.apiKey) {
+      throw new Error(
+        "Missing API key for the configured provider. Add it in Settings before approving browser actions."
+      );
+    }
+
     const run = await this.store.getRun(userScope, approval.runId);
     if (!run) {
       throw new Error("Run not found for approval execution");
@@ -868,8 +527,7 @@ export class LocalAgentCompanionService {
       | undefined;
 
     if (action.kind === "insert_draft") {
-      const pageUrl =
-        action.pageUrl?.trim() || run.pageUrl?.trim();
+      const pageUrl = action.pageUrl?.trim() || run.pageUrl?.trim();
       if (!pageUrl) {
         throw new Error(
           "The run does not have a page URL, so the approved draft cannot be inserted."
@@ -880,6 +538,7 @@ export class LocalAgentCompanionService {
         fieldTarget: action.fieldTarget,
         generatedText: action.generatedText,
         verifyText: action.verifyText,
+        providerConfig,
         ...(action.targetName ? { targetName: action.targetName } : {}),
       });
     } else if (action.kind === "enqueue_task_batch") {
@@ -889,6 +548,7 @@ export class LocalAgentCompanionService {
       outcome = await this.runtime.executeLinkedInConnectBatch({
         items: action.items,
         dailyLimit: action.dailyLimit,
+        providerConfig,
       });
       const sentCount =
         typeof outcome.metadata?.sent === "number" ? outcome.metadata.sent : 0;
@@ -923,27 +583,70 @@ export class LocalAgentCompanionService {
     });
   }
 
-  private async executeDirectAction(
+  private startAgentTaskExecution(
     userScope: string,
     runId: string,
-    payload: Extract<PlannerDecision, { kind: "execute" }>["payload"]
-  ): Promise<void> {
-    if (payload.actionType !== "navigate_url") {
-      throw new Error(`Unsupported direct companion action: ${payload.actionType}`);
+    params: LocalCompanionStartRunParams
+  ): void {
+    const executionKey = `agent:${runId}`;
+    if (this.activeExecutions.has(executionKey)) {
+      return;
     }
-    this.logger.event("info", "service", "direct_execution_start", {
+
+    const execution = this.executeAgentTask(userScope, runId, params)
+      .catch(async (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.event("error", "service", "agent_task_failed", {
+          runId,
+          message,
+        });
+        await this.store.updateRun(userScope, runId, {
+          status: "failed",
+          latestSummary: message,
+          lastError: message,
+          completedAt: Date.now(),
+        });
+      })
+      .finally(() => {
+        this.activeExecutions.delete(executionKey);
+      });
+
+    this.activeExecutions.set(executionKey, execution);
+  }
+
+  private async executeAgentTask(
+    userScope: string,
+    runId: string,
+    params: LocalCompanionStartRunParams
+  ): Promise<void> {
+    if (!params.providerConfig?.apiKey) {
+      throw new Error(
+        "Missing API key for the configured provider. Add it in Settings to run Chrome MCP agent tasks."
+      );
+    }
+
+    this.logger.event("info", "service", "agent_task_start", {
       runId,
-      actionType: payload.actionType,
-      targetUrl: payload.targetUrl,
+      provider: params.providerConfig.provider,
+      model: params.providerConfig.model,
+      goal: params.goal,
+      pageUrl: params.pageUrl,
     });
 
-    const outcome = await this.runtime.navigateToUrl({
-      targetUrl: payload.targetUrl,
-      ...(typeof payload.currentPageUrl === "string"
-        ? { currentPageUrl: payload.currentPageUrl }
+    const outcome = await this.runtime.executeAgentTask({
+      providerConfig: params.providerConfig,
+      goal: params.goal,
+      ...(typeof params.pageUrl === "string" ? { pageUrl: params.pageUrl } : {}),
+      ...(typeof params.platformHint === "string"
+        ? { platformHint: params.platformHint }
         : {}),
-      ...(typeof payload.targetLabel === "string"
-        ? { targetLabel: payload.targetLabel }
+      ...(typeof params.pageContext === "string"
+        ? { pageContext: params.pageContext }
+        : {}),
+      ...(params.fieldTarget ? { fieldTarget: params.fieldTarget } : {}),
+      ...(params.structured ? { structured: params.structured } : {}),
+      ...(params.scannedCandidates && params.scannedCandidates.length > 0
+        ? { scannedCandidates: params.scannedCandidates }
         : {}),
     });
 
@@ -953,9 +656,8 @@ export class LocalAgentCompanionService {
       completedAt: Date.now(),
       lastError: undefined,
     });
-    this.logger.event("info", "service", "direct_execution_complete", {
+    this.logger.event("info", "service", "agent_task_complete", {
       runId,
-      actionType: payload.actionType,
       summary: outcome.summary,
     });
   }

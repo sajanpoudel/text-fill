@@ -54,7 +54,7 @@ The core constraint: core writing features must stay **production-safe** and ext
 | Phase 6 — Voice | ✅ Implemented in code | Offscreen recognition + intent parsing + explicit runtime state sync are wired end to end |
 | Phase 7 — Proactive Scanning | ✅ Implemented in code | `ChangeThreshold`, LinkedIn scanning, suggestion chip, and queue preview are wired |
 | Phase 8 — Evaluation & Tracing | ⚠️ Core tracing implemented | Trace tables, queries, and review UI exist; dev-only CDP/DevTools tooling is still not built |
-| Phase 9 — Agentic Task Orchestration | ⚠️ Legacy foundation implemented; architecture pivot approved | Convex workflow orchestration, durable run state, command bus, relay, approval resume flow, LinkedIn long-run planner slices, and approval-gated cross-platform draft insertion now exist, but the target architecture now pivots to a local companion on the user's device built around Chrome DevTools MCP instead of expanding the Convex-first executor |
+| Phase 9 — Agentic Task Orchestration | ⚠️ Local companion path implemented; legacy compatibility still being reduced | The production companion run path now uses a local companion on the user's device, with `mcp-agent` orchestrating Chrome DevTools MCP browser control. Convex durable state, legacy command-bus pieces, and approval resume compatibility still exist, but the TypeScript planner is no longer the primary run loop for new companion tasks |
 
 ### What already exists and is good
 
@@ -90,7 +90,7 @@ The core constraint: core writing features must stay **production-safe** and ext
 
 | Gap | Impact |
 |---|---|
-| Browser automation is implemented mainly for the LinkedIn connect flow | Other controlled actions still need shared helpers and live-site validation |
+| Legacy extension-native automation is still implemented mainly for the LinkedIn connect flow | The new companion path is generic through Chrome DevTools MCP, but older extension-side queue code is still LinkedIn-heavy and should continue to be demoted |
 | Dev-only tracing extras (`chrome.debugger`, DevTools panel, network replay tooling) are still absent | Deep local debugging remains limited to current trace tables and manual DevTools use |
 | Agentic runtime target architecture has changed | The current Convex-first runtime is usable as a transitional path, but the forward plan is a local companion with extension UI/observation plus Convex-backed memory, traces, and review state, using Chrome DevTools MCP as the browser-control backend |
 
@@ -1302,7 +1302,7 @@ taskItems: defineTable({
 
 **Outcome target**: The extension can plan, inspect, and execute long-running multi-step browser tasks across platforms while keeping final execution inside the user's real Chrome session.
 **Important constraint**: this phase should absorb the remaining Phase 5 work instead of duplicating it. The browser-control generalization becomes part of the agentic executor.
-**Current progress**: the reusable executor foundation, Convex workflow orchestration, durable run state, command bus, content-script relay, approval resume flow, rolling summaries, Agent FAB UI surface, deterministic batch handoff, and approval-gated draft insertion are now implemented. The current planner can safely summarize arbitrary pages, execute approval-gated LinkedIn profile/search connection flows, and use live compose/thread context to draft and insert reviewed replies on conversation/email platforms. Remaining work is broader multi-platform long-running tactics, richer candidate enrichment/generation, and optional hosted/local planner modes.
+**Current progress**: the local companion path now owns the primary run loop for new companion tasks. The extension forwards goal, observed page context, and provider settings to the companion; the companion routes the task into the Python `mcp-agent` runtime; and Chrome DevTools MCP is the primary browser-control backend. Durable run state, panel state, live logs, approval resume compatibility, reviewed draft insertion, and reviewed LinkedIn batch execution are all wired. Remaining work is broader platform-specific tactics, continued retirement of legacy extension-side executor paths, and deeper live-site validation across more task types.
 
 ---
 

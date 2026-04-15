@@ -1,6 +1,11 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import type { LocalCompanionFieldTarget } from "../src/lib/local-agent-protocol.ts";
+import type {
+  LocalCompanionCandidateScanItem,
+  LocalCompanionFieldTarget,
+  LocalCompanionProviderConfig,
+  LocalCompanionStructuredExtraction,
+} from "../src/lib/local-agent-protocol.ts";
 
 type ConsoleLike = Pick<typeof console, "log" | "warn" | "error">;
 
@@ -9,6 +14,7 @@ type BridgeMethod =
   | "navigate_to_url"
   | "insert_draft"
   | "execute_linkedin_connect_batch"
+  | "execute_agent_task"
   | "shutdown";
 
 type BridgeRequest = {
@@ -53,6 +59,7 @@ export interface PythonBrowserRuntimeConnection {
     generatedText: string;
     verifyText: string;
     targetName?: string;
+    providerConfig: LocalCompanionProviderConfig;
   }): Promise<{
     summary: string;
     metadata: Record<string, unknown>;
@@ -60,6 +67,20 @@ export interface PythonBrowserRuntimeConnection {
   executeLinkedInConnectBatch(args: {
     items: Array<{ targetUrl: string; targetName?: string; generatedText?: string }>;
     dailyLimit: number;
+    providerConfig: LocalCompanionProviderConfig;
+  }): Promise<{
+    summary: string;
+    metadata: Record<string, unknown>;
+  }>;
+  executeAgentTask(args: {
+    providerConfig: LocalCompanionProviderConfig;
+    goal: string;
+    pageUrl?: string;
+    platformHint?: string;
+    pageContext?: string;
+    fieldTarget?: LocalCompanionFieldTarget;
+    structured?: LocalCompanionStructuredExtraction | null;
+    scannedCandidates?: LocalCompanionCandidateScanItem[];
   }): Promise<{
     summary: string;
     metadata: Record<string, unknown>;
@@ -88,7 +109,21 @@ export function buildPythonBrowserRuntimeProcessOptions(
     command: env.MCP_AGENT_PYTHON_RUNTIME_COMMAND?.trim() || "python3",
     args: env.MCP_AGENT_PYTHON_RUNTIME_ARGS?.trim()
       ? env.MCP_AGENT_PYTHON_RUNTIME_ARGS.trim().split(/\s+/u)
-      : ["-m", "uv", "run", "--with", "mcp-agent", "python", scriptPath],
+      : [
+          "-m",
+          "uv",
+          "run",
+          "--with",
+          "mcp-agent",
+          "--with",
+          "openai",
+          "--with",
+          "anthropic",
+          "--with",
+          "google-genai",
+          "python",
+          scriptPath,
+        ],
     cwd,
     env: {
       ...Object.fromEntries(
@@ -261,6 +296,12 @@ export async function createPythonBrowserRuntimeConnection(
         summary: string;
         metadata: Record<string, unknown>;
       }>("execute_linkedin_connect_batch", args as unknown as Record<string, unknown>);
+    },
+    async executeAgentTask(args) {
+      return request<{
+        summary: string;
+        metadata: Record<string, unknown>;
+      }>("execute_agent_task", args as unknown as Record<string, unknown>);
     },
     async close() {
       if (closed) {

@@ -7,15 +7,25 @@ import math
 import os
 import random
 import re
-import subprocess
 import sys
-from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 from mcp_agent.agents.agent import Agent
 from mcp_agent.app import MCPApp
-from mcp_agent.config import LoggerSettings, MCPServerSettings, MCPSettings, Settings
+from mcp_agent.config import (
+    AnthropicSettings,
+    GoogleSettings,
+    LoggerSettings,
+    MCPServerSettings,
+    MCPSettings,
+    OpenAISettings,
+    Settings,
+)
+from mcp_agent.workflows.llm.augmented_llm import RequestParams
+from mcp_agent.workflows.llm.augmented_llm_anthropic import AnthropicAugmentedLLM
+from mcp_agent.workflows.llm.augmented_llm_google import GoogleAugmentedLLM
+from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
 
 
 VERIFY_INSERT_FUNCTION = """
@@ -34,6 +44,25 @@ VERIFY_INSERT_FUNCTION = """
   return needle.length > 0 && haystack.includes(needle);
 }
 """.strip()
+
+
+BASE_AGENT_SYSTEM_PROMPT = """
+You are a browser control agent operating only through Chrome DevTools MCP tools.
+Always inspect the current page tree with take_snapshot before clicking or typing.
+Prefer built-in browser tools such as list_pages, select_page, new_page, navigate_page,
+take_snapshot, click, fill, fill_form, type_text, press_key, wait_for, and close_page.
+Use evaluate_script only when a built-in tool cannot complete verification or the page
+requires a capability the built-in tools do not provide.
+When the user's goal explicitly asks you to fill, submit, search, navigate, click, send,
+connect, or otherwise complete an on-page task, perform that task instead of stopping at a plan.
+Avoid destructive billing, account-security, or data-deletion actions unless the user explicitly asked for them.
+Never claim success unless you verified it from the live browser state.
+Return only compact JSON that matches the requested schema. Do not return markdown.
+""".strip()
+
+
+def log_runtime(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
 
 def normalize_error_message(error: Exception) -> str:
@@ -192,62 +221,11 @@ def urls_match_for_command_routing(page_url: str | None, target_url: str) -> boo
         target = urlparse(target_url)
         if page_url == target_url:
             return True
-        if (
-            current.scheme != target.scheme
-            or current.netloc != target.netloc
-        ):
+        if current.scheme != target.scheme or current.netloc != target.netloc:
             return False
         return current.path.startswith(target.path)
     except Exception:
         return page_url == target_url
-
-
-def build_linkedin_custom_invite_url(target_url: str) -> str | None:
-    try:
-        parsed = urlparse(target_url)
-        if not parsed.netloc.endswith("linkedin.com"):
-            return None
-        match = re.match(r"^/in/([^/?#]+)/?", parsed.path, re.IGNORECASE)
-        if not match:
-            return None
-        vanity_name = match.group(1).strip()
-        if not vanity_name:
-            return None
-        return (
-            "https://www.linkedin.com/preload/custom-invite/?vanityName="
-            f"{quote(vanity_name)}"
-        )
-    except Exception:
-        return None
-
-
-def summarize_linkedin_connect_debug(result: dict[str, Any] | None) -> str | None:
-    debug = result.get("debug") if isinstance(result, dict) else None
-    if not isinstance(debug, dict):
-        return None
-
-    parts: list[str] = []
-    primary = debug.get("primaryButtons")
-    menu = debug.get("menuOptions")
-    dialog = debug.get("dialogButtons")
-    path = debug.get("resolutionPath")
-    if isinstance(primary, list) and primary:
-        parts.append(f"primary={', '.join(str(item) for item in primary[:5])}")
-    if isinstance(menu, list) and menu:
-        parts.append(f"menu={', '.join(str(item) for item in menu[:5])}")
-    if isinstance(dialog, list) and dialog:
-        parts.append(f"dialog={', '.join(str(item) for item in dialog[:5])}")
-    if isinstance(path, list) and path:
-        parts.append(f"path={' -> '.join(str(item) for item in path[:8])}")
-    return " | ".join(parts) if parts else None
-
-
-def should_retry_linkedin_connect_with_custom_invite(final_state: str) -> bool:
-    return final_state in {
-        "dialog_not_found",
-        "no_connect_control",
-        "menu_connect_not_found",
-    }
 
 
 def human_delay(base_ms: int) -> int:
@@ -269,60 +247,6 @@ def serialize_result(value: Any) -> Any:
     return value
 
 
-def load_browser_control_bundle(cwd: str) -> dict[str, str]:
-    root = Path(cwd)
-    script_path = root / "companion" / "export-browser-control-bundle.ts"
-    local_tsx = root / "node_modules" / ".bin" / "tsx"
-
-    if local_tsx.exists():
-        command = [str(local_tsx), str(script_path)]
-    else:
-        command = ["npx", "tsx", str(script_path)]
-
-    completed = subprocess.run(
-        command,
-        cwd=cwd,
-        env={
-            **os.environ,
-            "NODE_NO_WARNINGS": "1",
-        },
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    parsed = json.loads(completed.stdout)
-    functions = parsed.get("functions")
-    if not isinstance(functions, dict):
-        raise RuntimeError("Browser control bundle is missing function sources")
-
-    required = [
-        "executeInsertTextBySelectorInPage",
-        "executeWaitForLinkedInPrimaryActionsInPage",
-        "executeLinkedInConnectWorkflowInPage",
-        "isLinkedInAddNoteText",
-        "isLinkedInSendText",
-        "isLinkedInFinalSendText",
-        "isBackgroundTabLayoutUnavailable",
-    ]
-    for name in required:
-        if not isinstance(functions.get(name), str) or not functions[name].strip():
-            raise RuntimeError(f"Browser control bundle is missing {name}")
-    return functions
-
-
-def build_function_source(
-    main_source: str, dependencies: dict[str, str] | None = None
-) -> str:
-    dependency_source = "\n".join(
-        f"const {name} = {source};"
-        for name, source in (dependencies or {}).items()
-    )
-    return f"""(...args) => {{
-{dependency_source}
-return ({main_source})(...args);
-}}"""
-
-
 async def read_request_line() -> str:
     return await asyncio.to_thread(sys.stdin.readline)
 
@@ -332,10 +256,162 @@ def write_response(payload: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
+def truncate_text(value: str, max_length: int) -> str:
+    normalized = re.sub(r"\s+", " ", value).strip()
+    if len(normalized) <= max_length:
+        return normalized
+    return normalized[: max_length - 1].rstrip() + "…"
+
+
+def extract_json_payload(text: str) -> dict[str, Any]:
+    candidates: list[str] = [text.strip()]
+    candidates.extend(
+        match.strip()
+        for match in re.findall(r"```json\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+    )
+
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
+    if brace_start >= 0 and brace_end > brace_start:
+        candidates.append(text[brace_start : brace_end + 1].strip())
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    raise RuntimeError(
+        "The browser agent returned a response that was not valid JSON."
+    )
+
+
+def normalize_provider_name(provider: str) -> str:
+    normalized = provider.strip().lower()
+    if normalized in {"google", "gemini"}:
+        return "gemini"
+    if normalized not in {"openai", "anthropic", "gemini"}:
+        raise RuntimeError(f"Unsupported provider for mcp-agent runtime: {provider}")
+    return normalized
+
+
+def build_general_task_prompt(payload: dict[str, Any]) -> str:
+    parts = [
+        "Task:",
+        str(payload.get("goal") or "").strip(),
+        "",
+        "Constraints:",
+        "- Use Chrome DevTools MCP tools only.",
+        "- Complete the requested browser task end-to-end when the goal is explicit.",
+        "- You may click, type, fill, submit, send, connect, search, and navigate when needed to satisfy the goal.",
+        "- Do not perform billing, password, account-deletion, or irreversible security actions unless the user explicitly asked for them.",
+        "- Prefer the current page if it matches the task. You may navigate or open pages when needed.",
+        "- Use take_snapshot to inspect the page tree before interacting.",
+        "- Verify the result from the live page before finishing.",
+    ]
+
+    page_url = str(payload.get("pageUrl") or "").strip()
+    if page_url:
+        parts.extend(["", f"Current page URL: {page_url}"])
+
+    platform_hint = str(payload.get("platformHint") or "").strip()
+    if platform_hint:
+        parts.append(f"Platform hint: {platform_hint}")
+
+    page_context = str(payload.get("pageContext") or "").strip()
+    if page_context:
+        parts.extend(["", "Observed page context:", page_context[:4000]])
+
+    field_target = payload.get("fieldTarget")
+    if isinstance(field_target, dict):
+        selector = str(field_target.get("selector") or "").strip()
+        if selector:
+            parts.extend(["", f"Known field selector: {selector}"])
+
+    structured = payload.get("structured")
+    if isinstance(structured, dict) and structured:
+        parts.extend(
+            [
+                "",
+                "Structured observation:",
+                truncate_text(json.dumps(structured, ensure_ascii=True), 2500),
+            ]
+        )
+
+    scanned_candidates = payload.get("scannedCandidates")
+    if isinstance(scanned_candidates, list) and scanned_candidates:
+        parts.extend(
+            [
+                "",
+                "Candidate scan hints:",
+                truncate_text(json.dumps(scanned_candidates[:8], ensure_ascii=True), 2000),
+            ]
+        )
+
+    parts.extend(
+        [
+            "",
+            'Return JSON: {"summary":"...", "status":"completed|failed", "finalUrl":"optional", "notes":["optional"]}',
+        ]
+    )
+    return "\n".join(parts)
+
+
+def build_insert_draft_prompt(payload: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            "Insert the approved draft into the open page.",
+            "",
+            "Constraints:",
+            "- Use Chrome DevTools MCP tools only.",
+            "- Use take_snapshot to inspect the page tree before interacting.",
+            "- Target the page that matches the provided URL and the field that best matches the provided selector.",
+            "- Insert the exact draft text, preserving line breaks.",
+            "- Do not submit, send, or trigger any irreversible action.",
+            "- Verify that the field contains the verification text before returning success.",
+            "",
+            f'Page URL: {str(payload.get("pageUrl") or "").strip()}',
+            f'Field selector: {str(payload.get("selector") or "").strip()}',
+            f'Draft text: {json.dumps(str(payload.get("generatedText") or ""), ensure_ascii=True)}',
+            f'Verification text: {json.dumps(str(payload.get("verifyText") or ""), ensure_ascii=True)}',
+            "",
+            'Return JSON: {"summary":"...", "status":"completed|failed", "verified":true|false}',
+        ]
+    )
+
+
+def build_linkedin_connect_prompt(item: dict[str, Any]) -> str:
+    note_text = str(item.get("generatedText") or "").strip()
+    target_url = str(item.get("targetUrl") or "").strip()
+    target_name = str(item.get("targetName") or "").strip() or "the target profile"
+    return "\n".join(
+        [
+            "Send a LinkedIn connection request on the focused profile page.",
+            "",
+            "Constraints:",
+            "- Use Chrome DevTools MCP tools only.",
+            "- Use take_snapshot to inspect the page tree before interacting.",
+            "- Confirm whether the profile is already connected or already pending before sending anything.",
+            "- If a personalized note editor is available and note text is provided, add that exact note text.",
+            "- After acting, verify the final page state from the live browser before returning.",
+            "- If the flow becomes ambiguous or blocked, stop and report failure instead of guessing.",
+            "",
+            f"Target profile URL: {target_url}",
+            f"Target name: {target_name}",
+            f"Note text: {json.dumps(note_text, ensure_ascii=True)}",
+            "",
+            'Return JSON: {"summary":"...", "status":"sent|skipped|failed", "finalState":"sent|already_connected|already_pending|connect_not_found|failed", "preservePage":true|false}',
+        ]
+    )
+
+
 class PythonBrowserRuntime:
-    def __init__(self, agent: Agent, bundle: dict[str, str]):
+    def __init__(self, agent: Agent):
         self.agent = agent
-        self.bundle = bundle
 
     async def call_tool(
         self, name: str, args: dict[str, Any] | None = None
@@ -440,6 +516,86 @@ class PythonBrowserRuntime:
     async def close_page(self, page_id: int) -> None:
         await self.call_tool("close_page", {"pageId": page_id})
 
+    async def focus_or_open_page(self, page_url: str) -> dict[str, Any]:
+        page = await self.find_page_by_url(page_url)
+        if page:
+            await self.select_page(page["pageId"], True)
+            return page
+        page = await self.open_page(page_url)
+        await self.wait_for_page_ready(page["pageId"], 15000)
+        return page
+
+    async def attach_augmented_llm(
+        self, provider_config: dict[str, Any], instruction: str
+    ) -> tuple[Any, str, str]:
+        provider = normalize_provider_name(str(provider_config.get("provider") or "openai"))
+        api_key = str(provider_config.get("apiKey") or "").strip()
+        model = str(provider_config.get("model") or "").strip()
+
+        if not api_key:
+            raise RuntimeError(
+                "Missing API key for the configured provider. Add it in Settings before running browser tasks."
+            )
+
+        self.agent.instruction = instruction
+
+        if provider == "openai":
+            self.agent.context.config.openai = OpenAISettings(
+                api_key=api_key,
+                default_model=model or None,
+            )
+            llm = await self.agent.attach_llm(llm_factory=OpenAIAugmentedLLM)
+        elif provider == "anthropic":
+            self.agent.context.config.anthropic = AnthropicSettings(
+                api_key=api_key,
+                default_model=model or None,
+            )
+            llm = await self.agent.attach_llm(llm_factory=AnthropicAugmentedLLM)
+        else:
+            self.agent.context.config.google = GoogleSettings(
+                api_key=api_key,
+                default_model=model or None,
+            )
+            llm = await self.agent.attach_llm(llm_factory=GoogleAugmentedLLM)
+
+        llm.instruction = instruction
+        return llm, provider, model
+
+    async def run_agent_json_task(
+        self,
+        *,
+        provider_config: dict[str, Any],
+        task_label: str,
+        system_prompt: str,
+        user_prompt: str,
+        max_iterations: int,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        llm, provider, model = await self.attach_augmented_llm(
+            provider_config,
+            system_prompt,
+        )
+        log_runtime(
+            f"[agent-task] start label={task_label} provider={provider} model={model or 'default'}"
+        )
+        response_text = await llm.generate_str(
+            user_prompt,
+            RequestParams(
+                model=model or None,
+                max_iterations=max_iterations,
+                maxTokens=max_tokens,
+                temperature=0.1,
+                use_history=False,
+                reasoning_effort="medium" if provider == "openai" else None,
+            ),
+        )
+        log_runtime(
+            f"[agent-task] complete label={task_label} response={truncate_text(response_text, 400)}"
+        )
+        parsed = extract_json_payload(response_text)
+        parsed["_rawResponse"] = response_text
+        return parsed
+
     async def health(self) -> dict[str, Any]:
         pages = await self.list_pages()
         return {
@@ -515,12 +671,16 @@ class PythonBrowserRuntime:
         field_target = payload.get("fieldTarget")
         generated_text = str(payload.get("generatedText") or "")
         verify_text = str(payload.get("verifyText") or "")
-        target_name = payload.get("targetName")
+        target_name = str(payload.get("targetName") or "").strip() or None
+        provider_config = payload.get("providerConfig")
 
         if not page_url:
             raise RuntimeError("pageUrl is required")
         if not isinstance(field_target, dict):
             raise RuntimeError("fieldTarget is required")
+        if not isinstance(provider_config, dict):
+            raise RuntimeError("providerConfig is required")
+
         selector = str(field_target.get("selector") or "").strip()
         if not selector:
             raise RuntimeError("fieldTarget.selector is required")
@@ -531,20 +691,22 @@ class PythonBrowserRuntime:
                 "The approved page is not open in Chrome DevTools MCP. Keep the target page open and try again."
             )
 
-        inserted = await self.evaluate_on_page(
-            page_id=page["pageId"],
-            function_source=build_function_source(
-                self.bundle["executeInsertTextBySelectorInPage"]
+        await self.select_page(page["pageId"], True)
+        agent_result = await self.run_agent_json_task(
+            provider_config=provider_config,
+            task_label="insert_draft",
+            system_prompt=BASE_AGENT_SYSTEM_PROMPT,
+            user_prompt=build_insert_draft_prompt(
+                {
+                    "pageUrl": page_url,
+                    "selector": selector,
+                    "generatedText": generated_text,
+                    "verifyText": verify_text,
+                }
             ),
-            args=[
-                selector,
-                generated_text,
-                field_target.get("platform"),
-            ],
-            bring_to_front=True,
+            max_iterations=10,
+            max_tokens=1200,
         )
-        if not inserted:
-            raise RuntimeError("Failed to insert the approved draft into the target field")
 
         verified = await self.evaluate_on_page(
             page_id=page["pageId"],
@@ -555,9 +717,9 @@ class PythonBrowserRuntime:
         if not verified:
             raise RuntimeError("Inserted draft could not be verified in the target field")
 
-        summary = (
+        summary = str(agent_result.get("summary") or "").strip() or (
             f"Inserted the approved draft for {target_name}."
-            if isinstance(target_name, str) and target_name.strip()
+            if target_name
             else "Inserted the approved draft into the active field."
         )
         return {
@@ -566,6 +728,8 @@ class PythonBrowserRuntime:
                 "kind": "insert_draft",
                 "selector": selector,
                 "pageUrl": page_url,
+                "pageId": page["pageId"],
+                "verified": True,
             },
         }
 
@@ -574,8 +738,11 @@ class PythonBrowserRuntime:
     ) -> dict[str, Any]:
         raw_items = payload.get("items")
         daily_limit = payload.get("dailyLimit")
+        provider_config = payload.get("providerConfig")
         if not isinstance(raw_items, list) or not raw_items:
             raise RuntimeError("items are required")
+        if not isinstance(provider_config, dict):
+            raise RuntimeError("providerConfig is required")
 
         max_items = max(
             1,
@@ -593,7 +760,7 @@ class PythonBrowserRuntime:
         for item in items:
             if not isinstance(item, dict):
                 continue
-            result = await self.execute_linkedin_connect_item(item, {})
+            result = await self.execute_linkedin_connect_item(item, provider_config)
             final_states.append(result["finalState"])
             if result["outcome"] == "sent":
                 sent += 1
@@ -626,125 +793,43 @@ class PythonBrowserRuntime:
         }
 
     async def execute_linkedin_connect_item(
-        self, item: dict[str, Any], dom_hints: dict[str, Any]
+        self,
+        item: dict[str, Any],
+        provider_config: dict[str, Any],
     ) -> dict[str, Any]:
         target_url = str(item.get("targetUrl") or "").strip()
-        target_name = str(item.get("targetName") or "").strip() or None
-        message = str(item.get("generatedText") or "").strip()
         if not target_url:
             raise RuntimeError("LinkedIn batch item targetUrl is required")
 
-        page = await self.open_page(target_url)
+        page = await self.focus_or_open_page(target_url)
         preserve_page = False
 
         try:
             await self.wait_for_page_ready(page["pageId"], 15000)
-            await asyncio.sleep(human_delay(1200) / 1000)
-
-            action_probe = await self.evaluate_on_page(
-                page_id=page["pageId"],
-                function_source=build_function_source(
-                    self.bundle["executeWaitForLinkedInPrimaryActionsInPage"]
-                ),
-                args=[9000, dom_hints],
-            )
-            preflight_labels = (
-                action_probe.get("labels")
-                if isinstance(action_probe, dict) and isinstance(action_probe.get("labels"), list)
-                else []
+            agent_result = await self.run_agent_json_task(
+                provider_config=provider_config,
+                task_label="linkedin_connect",
+                system_prompt=BASE_AGENT_SYSTEM_PROMPT,
+                user_prompt=build_linkedin_connect_prompt(item),
+                max_iterations=14,
+                max_tokens=1400,
             )
 
-            connect_flow = await self.evaluate_on_page(
-                page_id=page["pageId"],
-                function_source=build_function_source(
-                    self.bundle["executeLinkedInConnectWorkflowInPage"],
-                    {
-                        "isBackgroundTabLayoutUnavailable": self.bundle[
-                            "isBackgroundTabLayoutUnavailable"
-                        ],
-                        "isLinkedInAddNoteText": self.bundle["isLinkedInAddNoteText"],
-                        "isLinkedInSendText": self.bundle["isLinkedInSendText"],
-                        "isLinkedInFinalSendText": self.bundle[
-                            "isLinkedInFinalSendText"
-                        ],
-                    },
-                ),
-                args=[message, dom_hints],
-            )
+            outcome = str(agent_result.get("status") or "").strip().lower() or "failed"
+            if outcome not in {"sent", "skipped", "failed"}:
+                outcome = "failed"
 
             final_state = (
-                str(connect_flow.get("state"))
-                if isinstance(connect_flow, dict) and connect_flow.get("state") is not None
-                else "dialog_not_found"
+                str(agent_result.get("finalState") or "").strip() or outcome
             )
-
-            if should_retry_linkedin_connect_with_custom_invite(final_state):
-                custom_invite_url = build_linkedin_custom_invite_url(target_url)
-                if custom_invite_url:
-                    await self.navigate_page(page["pageId"], custom_invite_url)
-                    await asyncio.sleep(human_delay(900) / 1000)
-                    connect_flow = await self.evaluate_on_page(
-                        page_id=page["pageId"],
-                        function_source=build_function_source(
-                            self.bundle["executeLinkedInConnectWorkflowInPage"],
-                            {
-                                "isBackgroundTabLayoutUnavailable": self.bundle[
-                                    "isBackgroundTabLayoutUnavailable"
-                                ],
-                                "isLinkedInAddNoteText": self.bundle[
-                                    "isLinkedInAddNoteText"
-                                ],
-                                "isLinkedInSendText": self.bundle["isLinkedInSendText"],
-                                "isLinkedInFinalSendText": self.bundle[
-                                    "isLinkedInFinalSendText"
-                                ],
-                            },
-                        ),
-                        args=[message, dom_hints],
-                    )
-                    final_state = (
-                        str(connect_flow.get("state"))
-                        if isinstance(connect_flow, dict)
-                        and connect_flow.get("state") is not None
-                        else "dialog_not_found"
-                    )
-
-            debug_summary = summarize_linkedin_connect_debug(connect_flow) or (
-                f"preflight={', '.join(str(label) for label in preflight_labels[:8])}"
-                if preflight_labels
-                else None
-            )
-
-            if final_state in {"already_connected", "already_pending"}:
-                return {
-                    "outcome": "skipped",
-                    "finalState": final_state,
-                    "debugSummary": debug_summary,
-                    "preservedPage": False,
-                }
-
-            if final_state == "sent":
-                return {
-                    "outcome": "sent",
-                    "finalState": final_state,
-                    "debugSummary": debug_summary,
-                    "preservedPage": False,
-                }
-
-            preserve_page = final_state in {
-                "dialog_not_found",
-                "note_editor_not_found",
-                "send_not_found",
-            }
+            preserve_page = bool(agent_result.get("preservePage"))
 
             return {
-                "outcome": (
-                    "skipped"
-                    if final_state in {"no_connect_control", "menu_connect_not_found"}
-                    else "failed"
-                ),
+                "outcome": outcome,
                 "finalState": final_state,
-                "debugSummary": debug_summary,
+                "debugSummary": truncate_text(
+                    str(agent_result.get("_rawResponse") or ""), 300
+                ),
                 "preservedPage": preserve_page,
             }
         finally:
@@ -754,10 +839,51 @@ class PythonBrowserRuntime:
                 except Exception:
                     pass
 
+    async def execute_agent_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        provider_config = payload.get("providerConfig")
+        if not isinstance(provider_config, dict):
+            raise RuntimeError("providerConfig is required")
+
+        page_url = str(payload.get("pageUrl") or "").strip()
+        focused_page: dict[str, Any] | None = None
+        if page_url:
+            focused_page = await self.focus_or_open_page(page_url)
+            await self.wait_for_page_ready(focused_page["pageId"], 15000)
+
+        agent_result = await self.run_agent_json_task(
+            provider_config=provider_config,
+            task_label="generic_browser_task",
+            system_prompt=BASE_AGENT_SYSTEM_PROMPT,
+            user_prompt=build_general_task_prompt(payload),
+            max_iterations=12,
+            max_tokens=1400,
+        )
+
+        status = str(agent_result.get("status") or "").strip().lower() or "failed"
+        summary = str(agent_result.get("summary") or "").strip()
+        if not summary:
+            summary = "The Chrome MCP agent finished without returning a usable summary."
+
+        if status == "failed":
+            raise RuntimeError(summary)
+
+        metadata: dict[str, Any] = {
+            "kind": "execute_agent_task",
+            "status": status,
+        }
+        if focused_page:
+            metadata["pageId"] = focused_page["pageId"]
+        final_url = str(agent_result.get("finalUrl") or "").strip()
+        if final_url:
+            metadata["finalUrl"] = final_url
+
+        return {
+            "summary": summary,
+            "metadata": metadata,
+        }
+
 
 async def run_runtime() -> None:
-    cwd = os.getenv("MCP_AGENT_BRIDGE_CWD", "").strip() or os.getcwd()
-    bundle = load_browser_control_bundle(cwd)
     app = MCPApp(
         name="cheatresume_python_browser_runtime",
         settings=build_settings(),
@@ -771,7 +897,7 @@ async def run_runtime() -> None:
         )
 
         async with agent:
-            runtime = PythonBrowserRuntime(agent, bundle)
+            runtime = PythonBrowserRuntime(agent)
             while True:
                 raw_line = await read_request_line()
                 if raw_line == "":
@@ -821,9 +947,7 @@ async def run_runtime() -> None:
                             {
                                 "id": request_id,
                                 "ok": True,
-                                "result": serialize_result(
-                                    await runtime.insert_draft(args)
-                                ),
+                                "result": serialize_result(await runtime.insert_draft(args)),
                             }
                         )
                         continue
@@ -835,6 +959,18 @@ async def run_runtime() -> None:
                                 "ok": True,
                                 "result": serialize_result(
                                     await runtime.execute_linkedin_connect_batch(args)
+                                ),
+                            }
+                        )
+                        continue
+
+                    if method == "execute_agent_task":
+                        write_response(
+                            {
+                                "id": request_id,
+                                "ok": True,
+                                "result": serialize_result(
+                                    await runtime.execute_agent_task(args)
                                 ),
                             }
                         )

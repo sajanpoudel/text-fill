@@ -71,6 +71,10 @@ async function dispatchRequest(
         ...(typeof request.params?.decisionNote === "string"
           ? { decisionNote: request.params.decisionNote }
           : {}),
+        ...(request.params?.providerConfig &&
+        typeof request.params.providerConfig === "object"
+          ? { providerConfig: request.params.providerConfig as any }
+          : {}),
       });
     case "report_action_result":
       return service.reportActionResult({
@@ -99,7 +103,6 @@ export function startLocalCompanionServer(options?: {
   const host = options?.host ?? process.env.LOCAL_COMPANION_HOST ?? "127.0.0.1";
   const logger = createCompanionLogger(getDefaultCompanionLogFilePath());
   const service = new LocalAgentCompanionService(
-    undefined,
     undefined,
     new ChromeDevtoolsMcpRuntime({ logger }),
     logger
