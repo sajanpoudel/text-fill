@@ -61,6 +61,7 @@ export const updateProfile = mutation({
     anthropicKey: v.optional(v.string()),
     geminiKey: v.optional(v.string()),
     memoryModel: v.optional(v.string()),
+    jobProfile: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);

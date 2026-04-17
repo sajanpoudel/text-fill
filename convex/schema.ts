@@ -33,6 +33,7 @@ export default defineSchema({
     anthropicKey: v.optional(v.string()),
     geminiKey: v.optional(v.string()),
     memoryModel: v.optional(v.string()),   // lighter model for background extraction
+    jobProfile: v.optional(v.string()),    // JSON: structured job application profile
   }).index("by_user", ["userId"]),
 
   // Memory metadata (no embedding here — split table for performance)

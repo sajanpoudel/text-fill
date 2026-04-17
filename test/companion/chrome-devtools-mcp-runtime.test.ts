@@ -96,6 +96,8 @@ describe("ChromeDevtoolsMcpRuntime", () => {
       "run",
       "--with",
       "mcp-agent",
+      "--with",
+      "temporalio",
       "python",
       "/tmp/text-fill-v2/companion/mcp_agent_bridge.py",
     ]);
@@ -114,6 +116,8 @@ describe("ChromeDevtoolsMcpRuntime", () => {
       "run",
       "--with",
       "mcp-agent",
+      "--with",
+      "temporalio",
       "--with",
       "openai",
       "--with",
@@ -145,6 +149,27 @@ describe("ChromeDevtoolsMcpRuntime", () => {
         async health() {
           healthCalls.push(undefined);
           return { connected: true };
+        },
+        async deriveBrowserWorkItems() {
+          throw new Error("not used");
+        },
+        async startGenericBrowserTaskWorkflow() {
+          throw new Error("not used");
+        },
+        async startGenericBrowserQueueWorkflow() {
+          throw new Error("not used");
+        },
+        async startLinkedInConnectBatchWorkflow() {
+          throw new Error("not used");
+        },
+        async getWorkflowStatus() {
+          throw new Error("not used");
+        },
+        async resumeWorkflow() {
+          throw new Error("not used");
+        },
+        async cancelWorkflow() {
+          throw new Error("not used");
         },
         async navigateToUrl() {
           throw new Error("not used");
@@ -213,6 +238,27 @@ describe("ChromeDevtoolsMcpRuntime", () => {
       pythonBridgeFactory: async () => ({
         async health() {
           return { connected: true };
+        },
+        async deriveBrowserWorkItems() {
+          throw new Error("not used");
+        },
+        async startGenericBrowserTaskWorkflow() {
+          throw new Error("not used");
+        },
+        async startGenericBrowserQueueWorkflow() {
+          throw new Error("not used");
+        },
+        async startLinkedInConnectBatchWorkflow() {
+          throw new Error("not used");
+        },
+        async getWorkflowStatus() {
+          throw new Error("not used");
+        },
+        async resumeWorkflow() {
+          throw new Error("not used");
+        },
+        async cancelWorkflow() {
+          throw new Error("not used");
         },
         async navigateToUrl(args) {
           navigateCalls.push(args);
@@ -299,6 +345,27 @@ describe("ChromeDevtoolsMcpRuntime", () => {
               "Could not connect to Chrome. Check if Chrome is running. Cause: Could not find DevToolsActivePort for chrome at /Users/student/Library/Application Support/Google/Chrome/DevToolsActivePort",
           };
         },
+        async deriveBrowserWorkItems() {
+          throw new Error("not used");
+        },
+        async startGenericBrowserTaskWorkflow() {
+          throw new Error("not used");
+        },
+        async startGenericBrowserQueueWorkflow() {
+          throw new Error("not used");
+        },
+        async startLinkedInConnectBatchWorkflow() {
+          throw new Error("not used");
+        },
+        async getWorkflowStatus() {
+          throw new Error("not used");
+        },
+        async resumeWorkflow() {
+          throw new Error("not used");
+        },
+        async cancelWorkflow() {
+          throw new Error("not used");
+        },
         async navigateToUrl() {
           throw new Error("not used");
         },
@@ -343,6 +410,27 @@ describe("ChromeDevtoolsMcpRuntime", () => {
       pythonBridgeFactory: async () => ({
         async health() {
           return { connected: true };
+        },
+        async deriveBrowserWorkItems() {
+          throw new Error("not used");
+        },
+        async startGenericBrowserTaskWorkflow() {
+          throw new Error("not used");
+        },
+        async startGenericBrowserQueueWorkflow() {
+          throw new Error("not used");
+        },
+        async startLinkedInConnectBatchWorkflow() {
+          throw new Error("not used");
+        },
+        async getWorkflowStatus() {
+          throw new Error("not used");
+        },
+        async resumeWorkflow() {
+          throw new Error("not used");
+        },
+        async cancelWorkflow() {
+          throw new Error("not used");
         },
         async navigateToUrl() {
           throw new Error("not used");
@@ -412,6 +500,27 @@ describe("ChromeDevtoolsMcpRuntime", () => {
         async health() {
           return { connected: true };
         },
+        async deriveBrowserWorkItems() {
+          throw new Error("not used");
+        },
+        async startGenericBrowserTaskWorkflow() {
+          throw new Error("not used");
+        },
+        async startGenericBrowserQueueWorkflow() {
+          throw new Error("not used");
+        },
+        async startLinkedInConnectBatchWorkflow() {
+          throw new Error("not used");
+        },
+        async getWorkflowStatus() {
+          throw new Error("not used");
+        },
+        async resumeWorkflow() {
+          throw new Error("not used");
+        },
+        async cancelWorkflow() {
+          throw new Error("not used");
+        },
         async navigateToUrl() {
           throw new Error("not used");
         },
@@ -451,6 +560,116 @@ describe("ChromeDevtoolsMcpRuntime", () => {
     ).resolves.toMatchObject({
       summary: "Opened LinkedIn jobs search for software engineering.",
     });
+
+    await runtime.dispose();
+  });
+
+  test("delegates agent-driven durable work-item discovery to the python mcp-agent runtime", async () => {
+    const discoveryCalls: Array<{
+      goal: string;
+      pageUrl?: string;
+      platformHint?: string;
+    }> = [];
+
+    const runtime = new ChromeDevtoolsMcpRuntime({
+      connectionFactory: async () => {
+        throw new Error("raw MCP connection should not be used");
+      },
+      pythonBridgeFactory: async () => ({
+        async health() {
+          return { connected: true };
+        },
+        async deriveBrowserWorkItems(args) {
+          discoveryCalls.push({
+            goal: args.goal,
+            pageUrl: args.pageUrl,
+            platformHint: args.platformHint,
+          });
+          return {
+            mode: "queue",
+            summary:
+              "Discovered repeated actionable job cards from the live page tree.",
+            workItems: [
+              {
+                title: "Job card 1",
+                pageUrl: "https://jobs.example.com/1",
+              },
+              {
+                title: "Job card 2",
+                pageUrl: "https://jobs.example.com/2",
+              },
+            ],
+          };
+        },
+        async startGenericBrowserTaskWorkflow() {
+          throw new Error("not used");
+        },
+        async startGenericBrowserQueueWorkflow() {
+          throw new Error("not used");
+        },
+        async startLinkedInConnectBatchWorkflow() {
+          throw new Error("not used");
+        },
+        async getWorkflowStatus() {
+          throw new Error("not used");
+        },
+        async resumeWorkflow() {
+          throw new Error("not used");
+        },
+        async cancelWorkflow() {
+          throw new Error("not used");
+        },
+        async navigateToUrl() {
+          throw new Error("not used");
+        },
+        async insertDraft() {
+          throw new Error("not used");
+        },
+        async executeLinkedInConnectBatch() {
+          throw new Error("not used");
+        },
+        async executeAgentTask() {
+          throw new Error("not used");
+        },
+        async close() {
+          return;
+        },
+      }),
+    });
+
+    await expect(
+      runtime.deriveBrowserWorkItems({
+        providerConfig: {
+          provider: "openai",
+          apiKey: "test-key",
+          model: "gpt-5-nano",
+        },
+        goal: "Review the visible jobs and queue the strong matches",
+        pageUrl: "https://jobs.example.com/search?q=software+engineer",
+        platformHint: "jobs_board",
+      })
+    ).resolves.toEqual({
+      mode: "queue",
+      summary: "Discovered repeated actionable job cards from the live page tree.",
+      workItems: [
+        {
+          title: "Job card 1",
+          pageUrl: "https://jobs.example.com/1",
+        },
+        {
+          title: "Job card 2",
+          pageUrl: "https://jobs.example.com/2",
+        },
+      ],
+    });
+
+    expect(discoveryCalls).toEqual([
+      {
+        goal: "Review the visible jobs and queue the strong matches",
+        pageUrl: "https://jobs.example.com/search?q=software+engineer",
+        platformHint: "jobs_board",
+      },
+    ]);
 
     await runtime.dispose();
   });

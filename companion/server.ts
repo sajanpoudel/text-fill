@@ -84,6 +84,51 @@ async function dispatchRequest(
         typeof request.params.providerConfig === "object"
           ? { providerConfig: request.params.providerConfig as any }
           : {}),
+        ...(request.params?.resumeFile &&
+        typeof request.params.resumeFile === "object"
+          ? { resumeFile: request.params.resumeFile as any }
+          : {}),
+      });
+    case "cancel_run":
+      return service.cancelRun({
+        userScope: String(request.params?.userScope ?? ""),
+        runId: String(request.params?.runId ?? ""),
+      });
+    case "resume_run":
+      return service.resumeRun({
+        userScope: String(request.params?.userScope ?? ""),
+        runId: String(request.params?.runId ?? ""),
+        ...(typeof request.params?.pageUrl === "string"
+          ? { pageUrl: request.params.pageUrl }
+          : {}),
+        ...(typeof request.params?.pageContext === "string"
+          ? { pageContext: request.params.pageContext }
+          : {}),
+        ...(typeof request.params?.userContext === "string"
+          ? { userContext: request.params.userContext }
+          : {}),
+        ...(typeof request.params?.systemPrompt === "string"
+          ? { systemPrompt: request.params.systemPrompt }
+          : {}),
+        ...(request.params?.fieldTarget &&
+        typeof request.params.fieldTarget === "object"
+          ? { fieldTarget: request.params.fieldTarget as any }
+          : {}),
+        ...(Array.isArray(request.params?.scannedCandidates)
+          ? { scannedCandidates: request.params.scannedCandidates as any }
+          : {}),
+        ...(typeof request.params?.nextPageUrl === "string" ||
+        request.params?.nextPageUrl === null
+          ? { nextPageUrl: request.params.nextPageUrl as string | null }
+          : {}),
+        ...(request.params?.structured &&
+        typeof request.params.structured === "object"
+          ? { structured: request.params.structured as any }
+          : {}),
+        ...(request.params?.providerConfig &&
+        typeof request.params.providerConfig === "object"
+          ? { providerConfig: request.params.providerConfig as any }
+          : {}),
       });
     case "resolve_approval":
       return service.resolveApproval({

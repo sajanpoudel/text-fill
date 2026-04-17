@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import type {
+  LocalCompanionBrowserWorkItem,
   LocalCompanionCandidateScanItem,
   LocalCompanionFieldTarget,
   LocalCompanionProviderConfig,
+  ResumeFileData,
   LocalCompanionStructuredExtraction,
 } from "../src/lib/local-agent-protocol.ts";
 
@@ -11,6 +13,13 @@ type ConsoleLike = Pick<typeof console, "log" | "warn" | "error">;
 
 type BridgeMethod =
   | "health"
+  | "derive_browser_work_items"
+  | "start_generic_browser_task_workflow"
+  | "start_generic_browser_queue_workflow"
+  | "start_linkedin_connect_batch_workflow"
+  | "get_workflow_status"
+  | "resume_workflow"
+  | "cancel_workflow"
   | "navigate_to_url"
   | "insert_draft"
   | "execute_linkedin_connect_batch"
@@ -45,6 +54,85 @@ export interface PythonBrowserRuntimeBridgeProcessOptions {
 
 export interface PythonBrowserRuntimeConnection {
   health(): Promise<{ connected: boolean; error?: string }>;
+  deriveBrowserWorkItems(args: {
+    providerConfig: LocalCompanionProviderConfig;
+    goal: string;
+    pageUrl?: string;
+    platformHint?: string;
+    pageContext?: string;
+    resumeContext?: string;
+    siteExperienceContext?: string;
+    userContext?: string;
+    systemPrompt?: string;
+    fieldTarget?: LocalCompanionFieldTarget;
+    structured?: LocalCompanionStructuredExtraction | null;
+    scannedCandidates?: LocalCompanionCandidateScanItem[];
+    workItems?: LocalCompanionBrowserWorkItem[];
+  }): Promise<{
+    mode: "single" | "queue";
+    summary: string;
+    workItems: LocalCompanionBrowserWorkItem[];
+  }>;
+  startGenericBrowserTaskWorkflow(args: {
+    providerConfig: LocalCompanionProviderConfig;
+    goal: string;
+    pageUrl?: string;
+    platformHint?: string;
+    pageContext?: string;
+    resumeContext?: string;
+    siteExperienceContext?: string;
+    userContext?: string;
+    systemPrompt?: string;
+    fieldTarget?: LocalCompanionFieldTarget;
+    structured?: LocalCompanionStructuredExtraction | null;
+    scannedCandidates?: LocalCompanionCandidateScanItem[];
+    workItems?: LocalCompanionBrowserWorkItem[];
+    resumeFile?: ResumeFileData | null;
+  }): Promise<{
+    workflowId: string;
+    runId?: string;
+  }>;
+  startGenericBrowserQueueWorkflow(args: {
+    providerConfig: LocalCompanionProviderConfig;
+    goal: string;
+    pageUrl?: string;
+    platformHint?: string;
+    pageContext?: string;
+    resumeContext?: string;
+    siteExperienceContext?: string;
+    userContext?: string;
+    systemPrompt?: string;
+    fieldTarget?: LocalCompanionFieldTarget;
+    structured?: LocalCompanionStructuredExtraction | null;
+    scannedCandidates?: LocalCompanionCandidateScanItem[];
+    workItems: LocalCompanionBrowserWorkItem[];
+    resumeFile?: ResumeFileData | null;
+  }): Promise<{
+    workflowId: string;
+    runId?: string;
+  }>;
+  startLinkedInConnectBatchWorkflow(args: {
+    items: Array<{ targetUrl: string; targetName?: string; generatedText?: string }>;
+    dailyLimit: number;
+    providerConfig: LocalCompanionProviderConfig;
+  }): Promise<{
+    workflowId: string;
+    runId?: string;
+  }>;
+  getWorkflowStatus(args: {
+    workflowId?: string;
+    runId?: string;
+  }): Promise<Record<string, unknown> | null>;
+  resumeWorkflow(args: {
+    workflowId?: string;
+    runId?: string;
+    signalName?: string;
+    payload?: unknown;
+  }): Promise<boolean>;
+  cancelWorkflow(args: {
+    workflowId?: string;
+    runId?: string;
+  }): Promise<boolean>;
   navigateToUrl(args: {
     targetUrl: string;
     currentPageUrl?: string;
@@ -72,17 +160,21 @@ export interface PythonBrowserRuntimeConnection {
     summary: string;
     metadata: Record<string, unknown>;
   }>;
-  executeAgentTask(args: {
+    executeAgentTask(args: {
     providerConfig: LocalCompanionProviderConfig;
     goal: string;
     pageUrl?: string;
     platformHint?: string;
     pageContext?: string;
+    resumeContext?: string;
+    siteExperienceContext?: string;
     userContext?: string;
     systemPrompt?: string;
     fieldTarget?: LocalCompanionFieldTarget;
     structured?: LocalCompanionStructuredExtraction | null;
     scannedCandidates?: LocalCompanionCandidateScanItem[];
+    workItems?: LocalCompanionBrowserWorkItem[];
+    resumeFile?: ResumeFileData | null;
   }): Promise<{
     summary: string;
     metadata: Record<string, unknown>;
@@ -117,6 +209,8 @@ export function buildPythonBrowserRuntimeProcessOptions(
           "run",
           "--with",
           "mcp-agent",
+          "--with",
+          "temporalio",
           "--with",
           "openai",
           "--with",
@@ -290,6 +384,58 @@ export async function createPythonBrowserRuntimeConnection(
   return {
     async health() {
       return request<{ connected: boolean; error?: string }>("health");
+    },
+    async deriveBrowserWorkItems(args) {
+      return request<{
+        mode: "single" | "queue";
+        summary: string;
+        workItems: LocalCompanionBrowserWorkItem[];
+      }>("derive_browser_work_items", args as unknown as Record<string, unknown>);
+    },
+    async startGenericBrowserTaskWorkflow(args) {
+      return request<{
+        workflowId: string;
+        runId?: string;
+      }>(
+        "start_generic_browser_task_workflow",
+        args as unknown as Record<string, unknown>
+      );
+    },
+    async startGenericBrowserQueueWorkflow(args) {
+      return request<{
+        workflowId: string;
+        runId?: string;
+      }>(
+        "start_generic_browser_queue_workflow",
+        args as unknown as Record<string, unknown>
+      );
+    },
+    async startLinkedInConnectBatchWorkflow(args) {
+      return request<{
+        workflowId: string;
+        runId?: string;
+      }>(
+        "start_linkedin_connect_batch_workflow",
+        args as unknown as Record<string, unknown>
+      );
+    },
+    async getWorkflowStatus(args) {
+      return request<Record<string, unknown> | null>(
+        "get_workflow_status",
+        args as unknown as Record<string, unknown>
+      );
+    },
+    async resumeWorkflow(args) {
+      return request<boolean>(
+        "resume_workflow",
+        args as unknown as Record<string, unknown>
+      );
+    },
+    async cancelWorkflow(args) {
+      return request<boolean>(
+        "cancel_workflow",
+        args as unknown as Record<string, unknown>
+      );
     },
     async navigateToUrl(args) {
       return request<{

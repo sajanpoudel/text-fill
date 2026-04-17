@@ -1,0 +1,322 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.jp-container {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 24px 72px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* ── Header ── */
+.jp-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 4px;
+}
+
+.jp-header-logo {
+  width: 48px;
+  height: 48px;
+  min-width: 48px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.jp-header-text h1 {
+  margin: 0 0 2px;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+}
+
+.jp-header-text p {
+  margin: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #666;
+}
+
+/* ── Banner ── */
+.jp-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px;
+  background: #f9f9f9;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #444;
+  font-weight: 500;
+}
+
+/* ── Section card ── */
+.jp-card {
+  background: var(--color-surface, #fff);
+  border: 1px solid #e5e5e5;
+  border-radius: 10px;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.02);
+}
+
+.jp-card-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--color-text);
+  letter-spacing: -0.2px;
+  margin: 0 0 2px;
+}
+
+.jp-card-hint {
+  font-size: 12px;
+  color: #666;
+  font-weight: 500;
+  margin: -10px 0 0;
+}
+
+/* ── Grid layouts ── */
+.jp-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.jp-grid-3 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 14px;
+}
+
+/* ── Field ── */
+.jp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.jp-field label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #444;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.jp-field .required {
+  color: #000;
+  font-weight: 800;
+}
+
+.jp-field input,
+.jp-field select,
+.jp-field textarea {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--color-text);
+  background: var(--color-bg, #fff);
+  transition: border-color 0.15s;
+  outline: none;
+}
+
+.jp-field input:focus,
+.jp-field select:focus,
+.jp-field textarea:focus {
+  border-color: #000;
+  box-shadow: 0 0 0 2px rgba(0,0,0,0.06);
+}
+
+.jp-field textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+.jp-field input::placeholder,
+.jp-field textarea::placeholder {
+  color: #aaa;
+  font-weight: 400;
+}
+
+/* ── Checkbox row ── */
+.jp-checkboxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+}
+
+.jp-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+  user-select: none;
+}
+
+.jp-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #ccc;
+  border-radius: 3px;
+  cursor: pointer;
+  accent-color: #000;
+  flex-shrink: 0;
+}
+
+/* ── Resume upload ── */
+.jp-resume-drop {
+  position: relative;
+  border: 1.5px dashed #ccc;
+  border-radius: 8px;
+  padding: 24px 20px;
+  text-align: center;
+  cursor: pointer;
+  color: #666;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.jp-resume-drop:hover {
+  border-color: #000;
+  background: #f9f9f9;
+}
+
+.jp-resume-drop input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  width: 100%;
+  height: 100%;
+}
+
+.jp-resume-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px;
+  background: #f5f5f5;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+  border: 1px solid #e5e5e5;
+}
+
+.jp-resume-file-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Actions ── */
+.jp-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 4px;
+}
+
+.jp-btn-save {
+  padding: 11px 28px;
+  background: #000;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.jp-btn-save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.jp-btn-back {
+  padding: 10px 18px;
+  background: transparent;
+  color: #666;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.jp-btn-back:hover {
+  background: #f5f5f5;
+}
+
+.jp-status-ok {
+  font-size: 13px;
+  font-weight: 700;
+  background: #000;
+  color: #fff;
+  padding: 5px 12px;
+  border-radius: 4px;
+}
+
+.jp-status-err {
+  font-size: 13px;
+  font-weight: 700;
+  color: #dc2626;
+  border: 1px solid #dc2626;
+  padding: 5px 12px;
+  border-radius: 4px;
+}
+
+/* ── Section divider ── */
+.jp-divider {
+  height: 1px;
+  background: #f0f0f0;
+  margin: 2px 0;
+}
+
+/* ── Optional badge ── */
+.jp-optional {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #888;
+  background: #f0f0f0;
+  padding: 2px 6px;
+  border-radius: 3px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+@media (max-width: 560px) {
+  .jp-grid-2, .jp-grid-3 { grid-template-columns: 1fr; }
+  .jp-container { padding: 20px 14px 60px; }
+}

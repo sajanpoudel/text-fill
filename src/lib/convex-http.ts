@@ -1,6 +1,11 @@
 // ConvexHttpClient instance for the background service worker.
 // The reactive ConvexReactClient is only used in popup/options/memory pages.
 import { ConvexHttpClient } from "convex/browser";
+import {
+  CONVEX_AUTH_JWT_STORAGE_KEY,
+  CONVEX_TOKEN_STORAGE_KEY,
+  getStoredConvexAccessToken,
+} from "./convex-auth-storage.ts";
 
 let _client: ConvexHttpClient | null = null;
 
@@ -22,9 +27,11 @@ export function clearConvexAuth(): void {
 }
 
 export async function syncConvexAuthFromStorage(): Promise<string | null> {
-  const stored = await chrome.storage.local.get("convexToken");
-  const token =
-    typeof stored.convexToken === "string" ? stored.convexToken : null;
+  const stored = await chrome.storage.local.get([
+    CONVEX_AUTH_JWT_STORAGE_KEY,
+    CONVEX_TOKEN_STORAGE_KEY,
+  ]);
+  const token = getStoredConvexAccessToken(stored);
   if (token) {
     setConvexAuth(token);
   } else {

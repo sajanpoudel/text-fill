@@ -1,7 +1,10 @@
 import type { PlatformKey } from "./platform.ts";
 import type { AgentFieldTarget } from "./agent-run-context.ts";
 import type {
+  LocalCompanionBrowserWorkItem,
   LocalCompanionCandidateScanItem,
+  LocalCompanionRunProgress,
+  LocalCompanionRunTask,
   LocalCompanionStructuredExtraction,
 } from "./local-agent-protocol.ts";
 
@@ -32,11 +35,17 @@ export interface AgentPanelRun {
   goal: string;
   platformHint?: string;
   status: AgentRunStatus;
+  resumeSourceRunId?: string;
+  workflowId?: string;
+  workflowRunId?: string;
+  workflowStatus?: string;
   latestSummary?: string;
   createdAt: number;
   updatedAt: number;
   completedAt?: number;
   lastError?: string;
+  progress?: LocalCompanionRunProgress;
+  tasks?: LocalCompanionRunTask[];
 }
 
 export interface AgentPanelState {
@@ -154,6 +163,38 @@ export function getAgentRunSummary(run: AgentPanelRun): string {
   }
 }
 
+export function getAgentRunProgressSummary(run: AgentPanelRun): string | null {
+  if (!run.progress) return null;
+  const parts = [`${run.progress.completedTasks}/${run.progress.totalTasks} complete`];
+  if (run.progress.retryingTasks > 0) {
+    parts.push(`${run.progress.retryingTasks} retrying`);
+  }
+  if (run.progress.blockedTasks > 0) {
+    parts.push(`${run.progress.blockedTasks} blocked`);
+  }
+  if (run.progress.skippedTasks > 0) {
+    parts.push(`${run.progress.skippedTasks} skipped`);
+  }
+  return parts.join(" · ");
+}
+
+export function getAgentRunCurrentTask(run: AgentPanelRun): LocalCompanionRunTask | null {
+  if (!Array.isArray(run.tasks) || run.tasks.length === 0) return null;
+  if (run.status === "completed") {
+    return (
+      [...run.tasks].reverse().find((task) => task.status === "completed") ??
+      run.tasks.at(-1) ??
+      run.tasks[0]
+    );
+  }
+  return (
+    run.tasks.find((task) => task.status === "running" || task.status === "retrying") ??
+    run.tasks.find((task) => task.status === "blocked") ??
+    run.tasks[run.progress?.currentTaskIndex ?? 0] ??
+    run.tasks[0]
+  );
+}
+
 export function summarizeApprovalPayload(
   payload: Record<string, unknown> | undefined
 ): string | null {
@@ -266,6 +307,7 @@ export async function startAgentRun(
     pageContext?: string;
     fieldTarget?: AgentFieldTarget;
     scannedCandidates?: LocalCompanionCandidateScanItem[];
+    workItems?: LocalCompanionBrowserWorkItem[];
     nextPageUrl?: string | null;
     structured?: LocalCompanionStructuredExtraction | null;
   }
@@ -294,6 +336,7 @@ export async function startAgentRun(
         scannedCandidates: Array.isArray(args.scannedCandidates)
           ? args.scannedCandidates
           : undefined,
+        workItems: Array.isArray(args.workItems) ? args.workItems : undefined,
         nextPageUrl:
           typeof args.nextPageUrl === "string" || args.nextPageUrl === null
             ? args.nextPageUrl
@@ -309,6 +352,105 @@ export async function startAgentRun(
         throw new Error("Invalid agent run response");
       }
       return {
+        runId: response.runId,
+        runtimeId:
+          typeof response.runtimeId === "string" ? response.runtimeId : undefined,
+      };
+    }
+  );
+}
+
+export async function cancelAgentRun(
+  sendMessage: RuntimeSender,
+  args: {
+    runId: string;
+  }
+): Promise<{ ok: boolean; status: string; runId: string }> {
+  if (!args.runId.trim()) {
+    throw new Error("Run id is required");
+  }
+
+  return sendRuntimeMessage(
+    sendMessage,
+    {
+      type: "CANCEL_AGENT_RUN",
+      payload: {
+        runId: args.runId.trim(),
+      },
+    },
+    (response) => {
+      if (!isPlainObject(response) || typeof response.runId !== "string") {
+        throw new Error("Invalid cancel agent run response");
+      }
+      return {
+        ok: response.ok === true,
+        status: typeof response.status === "string" ? response.status : "unknown",
+        runId: response.runId,
+      };
+    }
+  );
+}
+
+export async function resumeAgentRun(
+  sendMessage: RuntimeSender,
+  args: {
+    runId: string;
+    goal?: string;
+    platformHint?: PlatformKey;
+    pageUrl?: string;
+    pageContext?: string;
+    fieldTarget?: AgentFieldTarget;
+    scannedCandidates?: LocalCompanionCandidateScanItem[];
+    workItems?: LocalCompanionBrowserWorkItem[];
+    nextPageUrl?: string | null;
+    structured?: LocalCompanionStructuredExtraction | null;
+  }
+): Promise<{ ok: boolean; status: string; runId: string; runtimeId?: string }> {
+  if (!args.runId.trim()) {
+    throw new Error("Run id is required");
+  }
+
+  return sendRuntimeMessage(
+    sendMessage,
+    {
+      type: "RESUME_AGENT_RUN",
+      payload: {
+        runId: args.runId.trim(),
+        goal:
+          typeof args.goal === "string" && args.goal.trim()
+            ? args.goal.trim()
+            : undefined,
+        platformHint: args.platformHint,
+        pageUrl:
+          typeof args.pageUrl === "string" && args.pageUrl.trim()
+            ? args.pageUrl
+            : undefined,
+        pageContext:
+          typeof args.pageContext === "string" && args.pageContext.trim()
+            ? args.pageContext
+            : undefined,
+        fieldTarget: args.fieldTarget,
+        scannedCandidates: Array.isArray(args.scannedCandidates)
+          ? args.scannedCandidates
+          : undefined,
+        workItems: Array.isArray(args.workItems) ? args.workItems : undefined,
+        nextPageUrl:
+          typeof args.nextPageUrl === "string" || args.nextPageUrl === null
+            ? args.nextPageUrl
+            : undefined,
+        structured:
+          args.structured && isPlainObject(args.structured)
+            ? args.structured
+            : undefined,
+      },
+    },
+    (response) => {
+      if (!isPlainObject(response) || typeof response.runId !== "string") {
+        throw new Error("Invalid resume agent run response");
+      }
+      return {
+        ok: response.ok === true,
+        status: typeof response.status === "string" ? response.status : "unknown",
         runId: response.runId,
         runtimeId:
           typeof response.runtimeId === "string" ? response.runtimeId : undefined,

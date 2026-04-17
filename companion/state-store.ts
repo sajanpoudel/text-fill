@@ -2,16 +2,54 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type {
   LocalCompanionApproval,
+  LocalCompanionBrowserWorkItem,
   LocalCompanionFieldTarget,
   LocalCompanionPanelState,
   LocalCompanionRun,
+  LocalCompanionRunProgress,
+  LocalCompanionRunTask,
 } from "../src/lib/local-agent-protocol.ts";
+
+export interface StoredRunSiteMemoryItem {
+  title: string;
+  sourceType?: string;
+  pagePattern?: string;
+  itemGoal?: string;
+}
+
+export interface StoredRunSiteMemoryTaskPattern {
+  title: string;
+  status: LocalCompanionRunTask["status"];
+  pagePattern?: string;
+  resultSummary?: string;
+  lastError?: string;
+  skipReason?: string;
+}
+
+export interface StoredRunSiteMemory {
+  host?: string;
+  pagePattern?: string;
+  workflowName?: string;
+  queueType?: string;
+  itemCount?: number;
+  sourceTypes?: string[];
+  exampleItems?: StoredRunSiteMemoryItem[];
+  taskPatterns?: StoredRunSiteMemoryTaskPattern[];
+  terminalStatus?: StoredRunRecord["status"];
+  summary?: string;
+  lastError?: string;
+  updatedAt: number;
+}
 
 export interface StoredRunRecord extends LocalCompanionRun {
   userScope: string;
   pageUrl?: string;
   pageContext?: string;
   fieldTarget?: LocalCompanionFieldTarget;
+  workItems?: LocalCompanionBrowserWorkItem[];
+  siteMemory?: StoredRunSiteMemory;
+  progress?: LocalCompanionRunProgress;
+  tasks?: LocalCompanionRunTask[];
 }
 
 export interface StoredApprovalRecord extends LocalCompanionApproval {
@@ -29,10 +67,12 @@ type StoredState = {
   users: Record<string, StoredUserState>;
 };
 
-const EMPTY_STATE: StoredState = {
-  version: 1,
-  users: {},
-};
+function createEmptyState(): StoredState {
+  return {
+    version: 1,
+    users: {},
+  };
+}
 
 function createId(prefix: string): string {
   const randomUUID = globalThis.crypto?.randomUUID?.bind(globalThis.crypto);
@@ -45,6 +85,7 @@ function createId(prefix: string): string {
 
 export class CompanionStateStore {
   private cachedState: StoredState | null = null;
+  private loadStatePromise: Promise<StoredState> | null = null;
   private mutationQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -83,6 +124,11 @@ export class CompanionStateStore {
     pageUrl?: string;
     pageContext?: string;
     fieldTarget?: LocalCompanionFieldTarget;
+    resumeSourceRunId?: string;
+    workItems?: LocalCompanionBrowserWorkItem[];
+    siteMemory?: StoredRunSiteMemory;
+    progress?: LocalCompanionRunProgress;
+    tasks?: LocalCompanionRunTask[];
   }): Promise<StoredRunRecord> {
     return this.enqueueMutation(async (state) => {
       const now = Date.now();
@@ -99,6 +145,11 @@ export class CompanionStateStore {
         ...(args.pageUrl ? { pageUrl: args.pageUrl } : {}),
         ...(args.pageContext ? { pageContext: args.pageContext } : {}),
         ...(args.fieldTarget ? { fieldTarget: args.fieldTarget } : {}),
+        ...(args.resumeSourceRunId ? { resumeSourceRunId: args.resumeSourceRunId } : {}),
+        ...(args.workItems ? { workItems: args.workItems } : {}),
+        ...(args.siteMemory ? { siteMemory: args.siteMemory } : {}),
+        ...(args.progress ? { progress: args.progress } : {}),
+        ...(args.tasks ? { tasks: args.tasks } : {}),
       };
       const userState = this.getUserState(state, args.userScope);
       userState.runs.unshift(run);
@@ -122,6 +173,30 @@ export class CompanionStateStore {
     const state = await this.loadState();
     const userState = this.getUserState(state, userScope);
     return userState.runs.find((run) => run._id === runId) ?? null;
+  }
+
+  async listRuns(userScope: string, limit = 20): Promise<StoredRunRecord[]> {
+    const state = await this.loadState();
+    const userState = this.getUserState(state, userScope);
+    const boundedLimit = Math.max(1, Math.min(100, Math.round(limit)));
+    return [...userState.runs]
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, boundedLimit);
+  }
+
+  async listRecoverableManagedRuns(limit = 50): Promise<StoredRunRecord[]> {
+    const state = await this.loadState();
+    const boundedLimit = Math.max(1, Math.min(200, Math.round(limit)));
+    const runs = Object.values(state.users)
+      .flatMap((userState) => userState.runs)
+      .filter(
+        (run) =>
+          run.status === "executing" &&
+          (typeof run.workflowId === "string" ||
+            typeof run.workflowRunId === "string")
+      )
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+    return runs.slice(0, boundedLimit);
   }
 
   async createApproval(args: {
@@ -176,15 +251,25 @@ export class CompanionStateStore {
       return this.cachedState;
     }
 
-    try {
-      const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as StoredState;
-      this.cachedState = parsed?.version === 1 ? parsed : { ...EMPTY_STATE };
-    } catch {
-      this.cachedState = { ...EMPTY_STATE };
+    if (this.loadStatePromise) {
+      return this.loadStatePromise;
     }
 
-    return this.cachedState;
+    this.loadStatePromise = (async () => {
+      try {
+        const raw = await readFile(this.filePath, "utf8");
+        const parsed = JSON.parse(raw) as StoredState;
+        this.cachedState = parsed?.version === 1 ? parsed : createEmptyState();
+      } catch {
+        this.cachedState = createEmptyState();
+      } finally {
+        this.loadStatePromise = null;
+      }
+
+      return this.cachedState;
+    })();
+
+    return this.loadStatePromise;
   }
 
   private async writeState(state: StoredState): Promise<void> {
@@ -247,4 +332,3 @@ export class CompanionStateStore {
     return approval;
   }
 }
-

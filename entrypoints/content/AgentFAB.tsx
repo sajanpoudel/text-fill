@@ -11,11 +11,15 @@ import { createPortal } from "react-dom";
 import { isPageDark } from "../../src/lib/dom/theme.ts";
 import {
   buildDefaultAgentGoal,
+  cancelAgentRun,
   fetchAgentPanelState,
+  getAgentRunCurrentTask,
+  getAgentRunProgressSummary,
   formatAgentRunStatus,
   getAgentPanelPollMs,
   getAgentRunSummary,
   normalizeAgentGoal,
+  resumeAgentRun,
   resolveAgentApproval,
   startAgentRun,
   summarizeApprovalPayload,
@@ -109,9 +113,12 @@ function AgentComposer({
   latestRun,
   approvals,
   actingApprovalId,
+  runActionPending,
   onGoalChange,
   onRefresh,
   onStart,
+  onCancelRun,
+  onResumeRun,
   onResolve,
   onClose,
   isListening,
@@ -128,9 +135,12 @@ function AgentComposer({
   latestRun: AgentRunListEntry | null;
   approvals: AgentApprovalListEntry[];
   actingApprovalId: string | null;
+  runActionPending: "cancel" | "resume" | null;
   onGoalChange: (next: string) => void;
   onRefresh: () => void;
   onStart: () => void;
+  onCancelRun: () => void;
+  onResumeRun: () => void;
   onResolve: (approvalId: string, decision: "approved" | "rejected") => void;
   onClose: () => void;
   isListening: boolean;
@@ -164,6 +174,19 @@ function AgentComposer({
 
   const statusColors = latestRun ? getStatusColors(latestRun.status, dark) : null;
   const summary = latestRun ? getAgentRunSummary(latestRun) : null;
+  const progressSummary = latestRun ? getAgentRunProgressSummary(latestRun) : null;
+  const currentTask = latestRun ? getAgentRunCurrentTask(latestRun) : null;
+  const canCancelLatestRun = Boolean(
+    latestRun &&
+      latestRun.workflowId &&
+      (latestRun.status === "planning" || latestRun.status === "executing")
+  );
+  const canResumeLatestRun = Boolean(
+    latestRun &&
+      (latestRun.status === "paused" ||
+        latestRun.status === "failed" ||
+        latestRun.status === "cancelled")
+  );
 
   let detail = "Start a bounded task for the current page.";
   if (!authenticated) {
@@ -227,6 +250,50 @@ function AgentComposer({
             </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            {canResumeLatestRun && (
+              <button
+                onClick={onResumeRun}
+                onMouseDown={stopDown}
+                disabled={runActionPending !== null}
+                title="Continue from the last checkpoint"
+                style={{
+                  height: 24,
+                  padding: "0 8px",
+                  borderRadius: 4,
+                  border: `1px solid ${border}`,
+                  background: bg,
+                  color: text,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  cursor: runActionPending ? "not-allowed" : "pointer",
+                  opacity: runActionPending ? 0.6 : 1,
+                }}
+              >
+                {runActionPending === "resume" ? "Continuing…" : "Continue"}
+              </button>
+            )}
+            {canCancelLatestRun && (
+              <button
+                onClick={onCancelRun}
+                onMouseDown={stopDown}
+                disabled={runActionPending !== null}
+                title="Cancel the active workflow"
+                style={{
+                  height: 24,
+                  padding: "0 8px",
+                  borderRadius: 4,
+                  border: `1px solid ${border}`,
+                  background: bg,
+                  color: textSub,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  cursor: runActionPending ? "not-allowed" : "pointer",
+                  opacity: runActionPending ? 0.6 : 1,
+                }}
+              >
+                {runActionPending === "cancel" ? "Cancelling…" : "Cancel"}
+              </button>
+            )}
             <button
               onClick={onRefresh}
               onMouseDown={stopDown}
@@ -254,6 +321,58 @@ function AgentComposer({
             </button>
           </div>
         </div>
+
+        {(progressSummary || currentTask) && (
+          <div
+            style={{
+              padding: "8px 14px",
+              borderBottom: `1px solid ${divider}`,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              background: dark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.015)",
+            }}
+          >
+            <div style={{ minWidth: 0, flex: 1 }}>
+              {progressSummary && (
+                <div style={{ fontSize: 11, fontWeight: 700, color: text }}>
+                  {progressSummary}
+                </div>
+              )}
+              {currentTask && (
+                <div style={{ minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: textSub,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    Current task: {currentTask.title}
+                    {currentTask.retryCount > 0 ? ` · retries ${currentTask.retryCount}` : ""}
+                    {currentTask.pageUrl ? ` · ${currentTask.pageUrl}` : ""}
+                  </div>
+                  {currentTask.resultSummary && (
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: textMuted,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {currentTask.resultSummary}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Input Area */}
         <div style={{ position: "relative" }}>
@@ -398,6 +517,9 @@ export function AgentFAB({
   const [approvals, setApprovals] = useState<AgentApprovalListEntry[]>([]);
   const [runs, setRuns] = useState<AgentRunListEntry[]>([]);
   const [actingApprovalId, setActingApprovalId] = useState<string | null>(null);
+  const [runActionPending, setRunActionPending] = useState<"cancel" | "resume" | null>(
+    null
+  );
   const [isListening, setIsListening] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const placeholder = useMemo(
@@ -551,6 +673,7 @@ export function AgentFAB({
               platformHint: platform,
               pageUrl: bootstrap.pageUrl,
               scannedCandidates: bootstrap.scannedCandidates,
+              workItems: bootstrap.workItems,
               nextPageUrl: bootstrap.nextPageUrl,
               structured: bootstrap.structured,
               ...buildAgentRunStartContext(currentField, platform),
@@ -608,6 +731,57 @@ export function AgentFAB({
     },
     [refresh, showToast]
   );
+
+  const handleCancelRun = useCallback(async () => {
+    if (!latestRun?.workflowId) {
+      showToast("This run cannot be cancelled from the panel.", "info");
+      return;
+    }
+
+    setRunActionPending("cancel");
+    try {
+      await cancelAgentRun((message) => chrome.runtime.sendMessage(message), {
+        runId: latestRun._id,
+      });
+      showToast("Run cancelled", "info");
+      await refresh();
+    } catch (error: any) {
+      showToast(error?.message ?? "Failed to cancel run", "error");
+    } finally {
+      setRunActionPending(null);
+    }
+  }, [latestRun, refresh, showToast]);
+
+  const handleResumeRun = useCallback(async () => {
+    if (!latestRun) {
+      return;
+    }
+
+    setRunActionPending("resume");
+    try {
+      const bootstrap = buildAgentRunBootstrapContext(platform);
+      await resumeAgentRun((message) => chrome.runtime.sendMessage(message), {
+        runId: latestRun._id,
+        goal: latestRun.goal,
+        platformHint: platform,
+        pageUrl: bootstrap.pageUrl,
+        pageContext: bootstrap.pageContext,
+        scannedCandidates: bootstrap.scannedCandidates,
+        workItems: bootstrap.workItems,
+        nextPageUrl: bootstrap.nextPageUrl,
+        structured: bootstrap.structured,
+        ...(currentField
+          ? { fieldTarget: buildAgentRunStartContext(currentField, platform).fieldTarget }
+          : {}),
+      });
+      showToast("Run continued from the last checkpoint", "success");
+      await refresh();
+    } catch (error: any) {
+      showToast(error?.message ?? "Failed to continue run", "error");
+    } finally {
+      setRunActionPending(null);
+    }
+  }, [currentField, latestRun, platform, refresh, showToast]);
 
   const swallowPointer = (event: ReactPointerEvent | ReactMouseEvent) => {
     event.preventDefault();
@@ -722,9 +896,12 @@ export function AgentFAB({
           latestRun={latestRun}
           approvals={approvals}
           actingApprovalId={actingApprovalId}
+          runActionPending={runActionPending}
           onGoalChange={setGoal}
           onRefresh={() => void refresh()}
           onStart={() => void handleStart()}
+          onCancelRun={() => void handleCancelRun()}
+          onResumeRun={() => void handleResumeRun()}
           onResolve={(approvalId, decision) => {
             void handleResolve(approvalId, decision);
           }}

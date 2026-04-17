@@ -63,7 +63,17 @@ export function buildMcpAgentBridgeProcessOptions(
     command: env.MCP_AGENT_BRIDGE_COMMAND?.trim() || "python3",
     args: env.MCP_AGENT_BRIDGE_ARGS?.trim()
       ? env.MCP_AGENT_BRIDGE_ARGS.trim().split(/\s+/u)
-      : ["-m", "uv", "run", "--with", "mcp-agent", "python", bridgePath],
+      : [
+          "-m",
+          "uv",
+          "run",
+          "--with",
+          "mcp-agent",
+          "--with",
+          "temporalio",
+          "python",
+          bridgePath,
+        ],
     cwd,
     env: {
       ...Object.fromEntries(

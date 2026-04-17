@@ -4,6 +4,7 @@ import {
   fetchAgentPanelState,
   formatAgentRunStatus,
   getAgentPanelPollMs,
+  getAgentRunCurrentTask,
   getAgentRunSummary,
   normalizeAgentGoal,
   resolveAgentApproval,
@@ -79,6 +80,48 @@ describe("agent panel runtime helpers", () => {
         updatedAt: 0,
       })
     ).toBe("Selector not found");
+  });
+
+  test("prefers the last completed task for completed runs", () => {
+    const task = getAgentRunCurrentTask({
+      _id: "run-3",
+      goal: "Inspect",
+      status: "completed",
+      createdAt: 0,
+      updatedAt: 0,
+      progress: {
+        totalTasks: 2,
+        completedTasks: 2,
+        skippedTasks: 0,
+        blockedTasks: 0,
+        retryingTasks: 0,
+        currentTaskIndex: 2,
+      },
+      tasks: [
+        {
+          _id: "task-1",
+          title: "Open the page",
+          status: "completed",
+          retryCount: 0,
+          createdAt: 0,
+          updatedAt: 1,
+          completedAt: 1,
+        },
+        {
+          _id: "task-2",
+          title: "Verify the final state",
+          status: "completed",
+          retryCount: 0,
+          createdAt: 1,
+          updatedAt: 2,
+          completedAt: 2,
+          resultSummary: "Confirmed the page reached the requested state.",
+        },
+      ],
+    });
+
+    expect(task?.title).toBe("Verify the final state");
+    expect(task?.resultSummary).toContain("requested state");
   });
 
   test("summarizes approval payloads from generated text or targets", () => {
@@ -164,6 +207,17 @@ describe("agent panel runtime helpers", () => {
           headline: "Principal Engineering Recruiter",
         },
       ],
+      workItems: [
+        {
+          title: "Handle Carolyn Wilmes Orr",
+          pageUrl: "https://www.linkedin.com/in/carolyn-wilmes-orr/",
+          targetUrl: "https://www.linkedin.com/in/carolyn-wilmes-orr/",
+          targetName: "Carolyn Wilmes Orr",
+          itemContext:
+            "Target: Carolyn Wilmes Orr\nHeadline: Principal Engineering Recruiter",
+          sourceType: "scanned_candidate",
+        },
+      ],
       nextPageUrl:
         "https://www.linkedin.com/search/results/people/?page=2&keywords=recruiter",
       structured: {
@@ -192,6 +246,17 @@ describe("agent panel runtime helpers", () => {
             targetName: "Carolyn Wilmes Orr",
             targetUrl: "https://www.linkedin.com/in/carolyn-wilmes-orr/",
             headline: "Principal Engineering Recruiter",
+          },
+        ],
+        workItems: [
+          {
+            title: "Handle Carolyn Wilmes Orr",
+            pageUrl: "https://www.linkedin.com/in/carolyn-wilmes-orr/",
+            targetUrl: "https://www.linkedin.com/in/carolyn-wilmes-orr/",
+            targetName: "Carolyn Wilmes Orr",
+            itemContext:
+              "Target: Carolyn Wilmes Orr\nHeadline: Principal Engineering Recruiter",
+            sourceType: "scanned_candidate",
           },
         ],
         nextPageUrl:

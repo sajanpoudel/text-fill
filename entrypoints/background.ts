@@ -54,15 +54,32 @@ import {
   DEFAULT_LOCAL_COMPANION_URL,
   requestLocalCompanion,
 } from "../src/lib/local-agent-bridge.ts";
-import { formatSavedSettingsContext } from "../src/lib/agent-user-context.ts";
+import {
+  buildStoredConvexTokenUpdates,
+  CONVEX_AUTH_JWT_STORAGE_KEY,
+  CONVEX_AUTH_REFRESH_TOKEN_STORAGE_KEY,
+  CONVEX_REFRESH_TOKEN_STORAGE_KEY,
+  CONVEX_TOKEN_STORAGE_KEY,
+  getStoredConvexAccessToken,
+  getStoredConvexRefreshToken,
+} from "../src/lib/convex-auth-storage.ts";
+import {
+  formatSavedSettingsContext,
+  formatJobProfileContext,
+  shouldIncludeJobApplicationArtifacts,
+} from "../src/lib/agent-user-context.ts";
 import type {
   LocalCompanionAction,
+  LocalCompanionBrowserWorkItem,
+  LocalCompanionCancelRunResult,
   LocalCompanionPanelState,
   LocalCompanionProviderConfig,
   LocalCompanionReportActionResult,
+  LocalCompanionResumeRunResult,
   LocalCompanionResolveApprovalResult,
   LocalCompanionStartRunResult,
   LocalCompanionStructuredExtraction,
+  ResumeFileData,
 } from "../src/lib/local-agent-protocol.ts";
 import { resolveApiKey } from "../convex/llmProvider.ts";
 
@@ -77,9 +94,9 @@ const LOCAL_COMPANION_URL_KEY = "localCompanionUrl";
 const LOCAL_COMPANION_TIMEOUT_MS_KEY = "localCompanionTimeoutMs";
 
 // ── Auth sync + silent refresh ────────────────────────────────────────────
-// The popup stores the JWT (convexToken) and refresh token (convexRefreshToken)
-// in chrome.storage.local. We load the JWT here every time the SW wakes up
-// and proactively refresh it when it's close to expiry.
+// Auth state must survive popup/service-worker churn, so we persist both the
+// Convex Auth provider keys (__convexAuth*) and the legacy generic mirror keys
+// the background uses for fast access.
 
 function parseJwtExpiry(token: string): number | null {
   try {
@@ -93,8 +110,11 @@ function parseJwtExpiry(token: string): number | null {
 }
 
 async function refreshConvexToken(): Promise<boolean> {
-  const stored = await chrome.storage.local.get("convexRefreshToken");
-  const refreshToken = typeof stored.convexRefreshToken === "string" ? stored.convexRefreshToken : null;
+  const stored = await chrome.storage.local.get([
+    CONVEX_AUTH_REFRESH_TOKEN_STORAGE_KEY,
+    CONVEX_REFRESH_TOKEN_STORAGE_KEY,
+  ]);
+  const refreshToken = getStoredConvexRefreshToken(stored);
   if (!refreshToken) return false;
 
   try {
@@ -105,8 +125,7 @@ async function refreshConvexToken(): Promise<boolean> {
     const tokens = result?.tokens as { token: string; refreshToken?: string } | null;
     if (!tokens?.token) return false;
 
-    const updates: Record<string, string> = { convexToken: tokens.token };
-    if (tokens.refreshToken) updates.convexRefreshToken = tokens.refreshToken;
+    const updates = buildStoredConvexTokenUpdates(tokens);
     await chrome.storage.local.set(updates);
     await syncTaskQueueScope(tokens.token);
     convex.setAuth(tokens.token);
@@ -155,8 +174,11 @@ async function syncTaskQueueScope(token: string | null): Promise<void> {
 }
 
 async function loadToken() {
-  const stored = await chrome.storage.local.get("convexToken");
-  const convexToken = typeof stored.convexToken === "string" ? stored.convexToken : null;
+  const stored = await chrome.storage.local.get([
+    CONVEX_AUTH_JWT_STORAGE_KEY,
+    CONVEX_TOKEN_STORAGE_KEY,
+  ]);
+  const convexToken = getStoredConvexAccessToken(stored);
   await syncTaskQueueScope(convexToken);
 
   if (!convexToken) {
@@ -243,6 +265,8 @@ async function callLocalCompanion<TResult>(
   method:
     | "get_panel_state"
     | "start_run"
+    | "cancel_run"
+    | "resume_run"
     | "resolve_approval"
     | "report_action_result",
   params: Record<string, unknown>,
@@ -272,13 +296,23 @@ async function loadCurrentProviderConfig(): Promise<LocalCompanionProviderConfig
   };
 }
 
-async function loadCurrentAgentUserContext(): Promise<string | null> {
+async function loadCurrentAgentUserContext(options?: {
+  includeJobProfile?: boolean;
+}): Promise<string | null> {
   const profile = await convex.query(api.users.getProfile, {});
   const parts: string[] = [];
 
   const formattedSettingsContext = formatSavedSettingsContext(profile?.contextText);
   if (formattedSettingsContext) {
     parts.push(formattedSettingsContext);
+  }
+
+  const formattedJobProfile =
+    options?.includeJobProfile === false
+      ? null
+      : formatJobProfileContext((profile as any)?.jobProfile);
+  if (formattedJobProfile) {
+    parts.push(formattedJobProfile);
   }
 
   const capturedContexts = await loadCapturedContextsForGeneration();
@@ -310,6 +344,76 @@ async function loadCurrentAgentUserContext(): Promise<string | null> {
 
   const combined = parts.join("\n\n");
   return combined.trim() ? combined.trim() : null;
+}
+
+async function loadResumeFile(): Promise<ResumeFileData | null> {
+  try {
+    const stored = await chrome.storage.local.get("resumeFile");
+    const rf = isPlainObject(stored?.resumeFile)
+      ? (stored.resumeFile as Record<string, unknown>)
+      : null;
+    if (
+      rf &&
+      typeof rf.name === "string" && rf.name &&
+      typeof rf.base64 === "string" && rf.base64 &&
+      typeof rf.mimeType === "string"
+    ) {
+      return { name: rf.name, mimeType: rf.mimeType, base64: rf.base64 };
+    }
+  } catch {
+    // storage not available in this context
+  }
+  return null;
+}
+
+function resolveAgentRunPageUrl(
+  sender: chrome.runtime.MessageSender,
+  payloadPageUrl: unknown
+): string | undefined {
+  if (typeof sender.tab?.url === "string" && sender.tab.url.trim()) {
+    return sender.tab.url;
+  }
+  if (typeof payloadPageUrl === "string" && payloadPageUrl.trim()) {
+    return payloadPageUrl.trim();
+  }
+  return undefined;
+}
+
+function shouldAttachJobApplicationArtifacts(args: {
+  goal?: string;
+  platformHint?: string;
+  pageUrl?: string;
+  pageContext?: string;
+  fieldTarget?: {
+    selector?: string;
+    platform?: string;
+    fieldType?: string;
+    charLimit?: number;
+  };
+  workItems?: LocalCompanionBrowserWorkItem[];
+  structured?: LocalCompanionStructuredExtraction | null;
+}): boolean {
+  return shouldIncludeJobApplicationArtifacts({
+    goal: args.goal,
+    platformHint: args.platformHint,
+    pageUrl: args.pageUrl,
+    pageContext: args.pageContext,
+    fieldTarget: args.fieldTarget
+      ? {
+          platform: args.fieldTarget.platform,
+          fieldType: args.fieldTarget.fieldType,
+        }
+      : null,
+    workItems: args.workItems,
+    structured: args.structured
+      ? {
+          text: args.structured.text,
+          headings: args.structured.headings,
+          matchedFields: args.structured.matchedFields,
+          unmatchedFields: args.structured.unmatchedFields,
+        }
+      : null,
+  });
 }
 
 async function loadCurrentAgentSystemPrompt(): Promise<string | null> {
@@ -347,12 +451,15 @@ chrome.alarms.create("expireContexts", { periodInMinutes: 5 });
 chrome.alarms.create("syncApprovedBatches", { periodInMinutes: 1 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== "local" || !("convexToken" in changes)) return;
-  const nextToken =
-    typeof changes.convexToken?.newValue === "string"
-      ? changes.convexToken.newValue
-      : null;
-  void syncTaskQueueScope(nextToken);
+  if (
+    areaName !== "local" ||
+    (!("convexToken" in changes) && !(CONVEX_AUTH_JWT_STORAGE_KEY in changes))
+  ) {
+    return;
+  }
+  void chrome.storage.local
+    .get([CONVEX_AUTH_JWT_STORAGE_KEY, CONVEX_TOKEN_STORAGE_KEY])
+    .then((stored) => syncTaskQueueScope(getStoredConvexAccessToken(stored)));
 });
 
 // ── SPA navigation detection ──────────────────────────────────────────────────
@@ -406,6 +513,12 @@ async function handleMessage(
 
     case "START_AGENT_RUN":
       return handleStartAgentRun(msg.payload, sender);
+
+    case "CANCEL_AGENT_RUN":
+      return handleCancelAgentRun(msg.payload);
+
+    case "RESUME_AGENT_RUN":
+      return handleResumeAgentRun(msg.payload, sender);
 
     case "RESOLVE_AGENT_APPROVAL":
       return handleResolveAgentApproval(msg.payload, sender);
@@ -1052,6 +1165,117 @@ async function reportLocalCompanionActionResult(payload: {
   }
 }
 
+function normalizeAgentRunFieldTarget(
+  fieldTarget:
+    | {
+        selector?: string;
+        platform?: string;
+        fieldType?: string;
+        charLimit?: number;
+      }
+    | undefined
+) {
+  if (
+    !fieldTarget ||
+    typeof fieldTarget.selector !== "string" ||
+    !fieldTarget.selector.trim()
+  ) {
+    return undefined;
+  }
+  return {
+    selector: fieldTarget.selector.trim(),
+    platform:
+      typeof fieldTarget.platform === "string"
+        ? fieldTarget.platform
+        : undefined,
+    fieldType:
+      typeof fieldTarget.fieldType === "string"
+        ? fieldTarget.fieldType
+        : undefined,
+    charLimit:
+      typeof fieldTarget.charLimit === "number"
+        ? fieldTarget.charLimit
+        : undefined,
+  };
+}
+
+function normalizeAgentRunCandidates(
+  scannedCandidates:
+    | Array<{
+        targetName?: string;
+        targetUrl?: string;
+        headline?: string;
+      }>
+    | undefined
+) {
+  const normalized = Array.isArray(scannedCandidates)
+    ? scannedCandidates
+        .map((item) => ({
+          targetName:
+            typeof item?.targetName === "string" ? item.targetName.trim() : "",
+          targetUrl:
+            typeof item?.targetUrl === "string" ? item.targetUrl.trim() : "",
+          headline:
+            typeof item?.headline === "string" && item.headline.trim()
+              ? item.headline.trim()
+              : undefined,
+        }))
+        .filter((item) => item.targetName && item.targetUrl)
+    : undefined;
+  return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeAgentRunWorkItems(
+  workItems:
+    | Array<{
+        title?: string;
+        pageUrl?: string;
+        targetUrl?: string;
+        targetName?: string;
+        itemGoal?: string;
+        itemContext?: string;
+        sourceType?: string;
+      }>
+    | undefined
+): LocalCompanionBrowserWorkItem[] | undefined {
+  const normalized = Array.isArray(workItems)
+    ? workItems
+        .map((item, index) => {
+          const title =
+            typeof item?.title === "string" ? item.title.trim() : "";
+          const pageUrl =
+            typeof item?.pageUrl === "string" && item.pageUrl.trim()
+              ? item.pageUrl.trim()
+              : typeof item?.targetUrl === "string" && item.targetUrl.trim()
+                ? item.targetUrl.trim()
+                : "";
+          if (!title && !pageUrl) {
+            return null;
+          }
+          return {
+            title: title || `Handle item ${index + 1}`,
+            ...(pageUrl ? { pageUrl, targetUrl: pageUrl } : {}),
+            ...(typeof item?.targetName === "string" && item.targetName.trim()
+              ? { targetName: item.targetName.trim() }
+              : {}),
+            ...(typeof item?.itemGoal === "string" && item.itemGoal.trim()
+              ? { itemGoal: item.itemGoal.trim() }
+              : {}),
+            ...(typeof item?.itemContext === "string" && item.itemContext.trim()
+              ? { itemContext: item.itemContext.trim() }
+              : {}),
+            ...(typeof item?.sourceType === "string" && item.sourceType.trim()
+              ? { sourceType: item.sourceType.trim() }
+              : {}),
+          } satisfies LocalCompanionBrowserWorkItem;
+        })
+        .filter(
+          (item): item is LocalCompanionBrowserWorkItem => item !== null
+        )
+    : undefined;
+  return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
 async function handleStartAgentRun(
   payload:
     | {
@@ -1070,6 +1294,15 @@ async function handleStartAgentRun(
           targetUrl?: string;
           headline?: string;
         }>;
+        workItems?: Array<{
+          title?: string;
+          pageUrl?: string;
+          targetUrl?: string;
+          targetName?: string;
+          itemGoal?: string;
+          itemContext?: string;
+          sourceType?: string;
+        }>;
         nextPageUrl?: string | null;
         structured?: unknown;
       }
@@ -1085,25 +1318,32 @@ async function handleStartAgentRun(
     return { error: "Goal is required" };
   }
 
-  const providerConfig = await loadCurrentProviderConfig();
-  const userContext = await loadCurrentAgentUserContext();
-  const systemPrompt = await loadCurrentAgentSystemPrompt();
-  const scannedCandidates = Array.isArray(payload?.scannedCandidates)
-    ? payload.scannedCandidates
-        .map((item) => ({
-          targetName:
-            typeof item?.targetName === "string" ? item.targetName.trim() : "",
-          targetUrl:
-            typeof item?.targetUrl === "string" ? item.targetUrl.trim() : "",
-          headline:
-            typeof item?.headline === "string" && item.headline.trim()
-              ? item.headline.trim()
-              : undefined,
-        }))
-        .filter((item) => item.targetName && item.targetUrl)
-    : undefined;
-
+  const pageUrl = resolveAgentRunPageUrl(sender, payload?.pageUrl);
+  const fieldTarget = normalizeAgentRunFieldTarget(payload?.fieldTarget);
+  const scannedCandidates = normalizeAgentRunCandidates(payload?.scannedCandidates);
+  const workItems = normalizeAgentRunWorkItems(payload?.workItems);
   const structured = normalizeStructuredExtraction(payload?.structured);
+  const includeJobApplicationArtifacts = shouldAttachJobApplicationArtifacts({
+    goal,
+    platformHint:
+      typeof payload?.platformHint === "string" ? payload.platformHint : undefined,
+    pageUrl,
+    pageContext:
+      typeof payload?.pageContext === "string" && payload.pageContext.trim()
+        ? payload.pageContext.trim()
+        : undefined,
+    fieldTarget,
+    workItems,
+    structured,
+  });
+  const providerConfig = await loadCurrentProviderConfig();
+  const userContext = await loadCurrentAgentUserContext({
+    includeJobProfile: includeJobApplicationArtifacts,
+  });
+  const systemPrompt = await loadCurrentAgentSystemPrompt();
+  const resumeFile = includeJobApplicationArtifacts
+    ? await loadResumeFile()
+    : null;
 
   try {
     return await callLocalCompanion<LocalCompanionStartRunResult>(
@@ -1115,48 +1355,157 @@ async function handleStartAgentRun(
           typeof payload?.platformHint === "string"
             ? payload.platformHint
             : undefined,
-        pageUrl:
-          typeof sender.tab?.url === "string" && sender.tab.url.trim()
-            ? sender.tab.url
-            : typeof payload?.pageUrl === "string" && payload.pageUrl.trim()
-              ? payload.pageUrl.trim()
-              : undefined,
+        pageUrl,
         pageContext:
           typeof payload?.pageContext === "string" && payload.pageContext.trim()
             ? payload.pageContext.trim()
             : undefined,
         userContext: userContext ?? undefined,
         systemPrompt: systemPrompt ?? undefined,
-        fieldTarget:
-          payload?.fieldTarget &&
-          typeof payload.fieldTarget.selector === "string" &&
-          payload.fieldTarget.selector.trim()
-            ? {
-                selector: payload.fieldTarget.selector.trim(),
-                platform:
-                  typeof payload.fieldTarget.platform === "string"
-                    ? payload.fieldTarget.platform
-                    : undefined,
-                fieldType:
-                  typeof payload.fieldTarget.fieldType === "string"
-                    ? payload.fieldTarget.fieldType
-                    : undefined,
-                charLimit:
-                  typeof payload.fieldTarget.charLimit === "number"
-                    ? payload.fieldTarget.charLimit
-                    : undefined,
-              }
-            : undefined,
-        scannedCandidates:
-          scannedCandidates && scannedCandidates.length > 0
-            ? scannedCandidates
-            : undefined,
+        fieldTarget,
+        scannedCandidates,
+        workItems,
         nextPageUrl:
           typeof payload?.nextPageUrl === "string" || payload?.nextPageUrl === null
             ? payload.nextPageUrl
             : undefined,
         structured,
         providerConfig,
+        resumeFile,
+      },
+      60_000
+    );
+  } catch (error) {
+    return { error: normalizeAgentCommandError(error) };
+  }
+}
+
+async function handleCancelAgentRun(
+  payload:
+    | {
+        runId?: string;
+      }
+    | undefined
+) {
+  if (currentTaskQueueScope === DEFAULT_TASK_QUEUE_SCOPE) {
+    return { error: "Sign in through the extension popup before cancelling runs" };
+  }
+
+  const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
+  if (!runId) {
+    return { error: "Run id is required" };
+  }
+
+  try {
+    return await callLocalCompanion<LocalCompanionCancelRunResult>(
+      "cancel_run",
+      {
+        userScope: currentTaskQueueScope,
+        runId,
+      },
+      20_000
+    );
+  } catch (error) {
+    return { error: normalizeAgentCommandError(error) };
+  }
+}
+
+async function handleResumeAgentRun(
+  payload:
+    | {
+        runId?: string;
+        goal?: string;
+        platformHint?: string;
+        pageUrl?: string;
+        pageContext?: string;
+        fieldTarget?: {
+          selector?: string;
+          platform?: string;
+          fieldType?: string;
+          charLimit?: number;
+        };
+        scannedCandidates?: Array<{
+          targetName?: string;
+          targetUrl?: string;
+          headline?: string;
+        }>;
+        workItems?: Array<{
+          title?: string;
+          pageUrl?: string;
+          targetUrl?: string;
+          targetName?: string;
+          itemGoal?: string;
+          itemContext?: string;
+          sourceType?: string;
+        }>;
+        nextPageUrl?: string | null;
+        structured?: unknown;
+      }
+    | undefined,
+  sender: chrome.runtime.MessageSender
+) {
+  if (currentTaskQueueScope === DEFAULT_TASK_QUEUE_SCOPE) {
+    return { error: "Sign in through the extension popup before resuming runs" };
+  }
+
+  const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
+  if (!runId) {
+    return { error: "Run id is required" };
+  }
+
+  const pageUrl = resolveAgentRunPageUrl(sender, payload?.pageUrl);
+  const fieldTarget = normalizeAgentRunFieldTarget(payload?.fieldTarget);
+  const scannedCandidates = normalizeAgentRunCandidates(payload?.scannedCandidates);
+  const workItems = normalizeAgentRunWorkItems(payload?.workItems);
+  const structured = normalizeStructuredExtraction(payload?.structured);
+  const includeJobApplicationArtifacts = shouldAttachJobApplicationArtifacts({
+    goal:
+      typeof payload?.goal === "string" && payload.goal.trim()
+        ? payload.goal.trim()
+        : undefined,
+    platformHint:
+      typeof payload?.platformHint === "string" ? payload.platformHint : undefined,
+    pageUrl,
+    pageContext:
+      typeof payload?.pageContext === "string" && payload.pageContext.trim()
+        ? payload.pageContext.trim()
+        : undefined,
+    fieldTarget,
+    workItems,
+    structured,
+  });
+  const providerConfig = await loadCurrentProviderConfig();
+  const userContext = await loadCurrentAgentUserContext({
+    includeJobProfile: includeJobApplicationArtifacts,
+  });
+  const systemPrompt = await loadCurrentAgentSystemPrompt();
+  const resumeFile = includeJobApplicationArtifacts
+    ? await loadResumeFile()
+    : null;
+
+  try {
+    return await callLocalCompanion<LocalCompanionResumeRunResult>(
+      "resume_run",
+      {
+        userScope: currentTaskQueueScope,
+        runId,
+        pageUrl,
+        pageContext:
+          typeof payload?.pageContext === "string" && payload.pageContext.trim()
+            ? payload.pageContext.trim()
+            : undefined,
+        userContext: userContext ?? undefined,
+        systemPrompt: systemPrompt ?? undefined,
+        fieldTarget,
+        scannedCandidates,
+        workItems,
+        nextPageUrl:
+          typeof payload?.nextPageUrl === "string" || payload?.nextPageUrl === null
+            ? payload.nextPageUrl
+            : undefined,
+        structured,
+        providerConfig,
+        resumeFile,
       },
       60_000
     );
