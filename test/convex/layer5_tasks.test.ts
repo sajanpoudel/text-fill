@@ -122,4 +122,26 @@ describe("task batches", () => {
       })
     ).rejects.toThrow("Forbidden");
   });
+
+  test("getSyncableBatches returns pending batch details with items for the current user", async () => {
+    const { authed } = await setup();
+    const { batchId } = await authed.mutation(api.tasks.createBatch, {
+      batchType: "linkedin_connect",
+      dailyLimit: 5,
+      items: [
+        { targetUrl: "https://www.linkedin.com/in/a", targetName: "A" },
+        { targetUrl: "https://www.linkedin.com/in/b", targetName: "B" },
+      ],
+    });
+
+    const syncable = await authed.query(api.tasks.getSyncableBatches, {
+      limit: 10,
+      perStatusLimit: 5,
+    });
+
+    expect(syncable).toHaveLength(1);
+    expect(syncable[0].batch._id).toBe(batchId);
+    expect(syncable[0].items).toHaveLength(2);
+    expect(syncable[0].items.map((item) => item.targetName)).toEqual(["A", "B"]);
+  });
 });

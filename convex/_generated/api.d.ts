@@ -9,11 +9,6 @@
  */
 
 import type * as agent from "../agent.js";
-import type * as agentOrchestration from "../agentOrchestration.js";
-import type * as agentPlanner from "../agentPlanner.js";
-import type * as agentRunValidators from "../agentRunValidators.js";
-import type * as agentRuns from "../agentRuns.js";
-import type * as agentWorkflows from "../agentWorkflows.js";
 import type * as auth from "../auth.js";
 import type * as context from "../context.js";
 import type * as crons from "../crons.js";
@@ -43,11 +38,6 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   agent: typeof agent;
-  agentOrchestration: typeof agentOrchestration;
-  agentPlanner: typeof agentPlanner;
-  agentRunValidators: typeof agentRunValidators;
-  agentRuns: typeof agentRuns;
-  agentWorkflows: typeof agentWorkflows;
   auth: typeof auth;
   context: typeof context;
   crons: typeof crons;

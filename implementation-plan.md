@@ -1649,8 +1649,6 @@ The extension should not be responsible for speaking MCP directly. The local com
 
 #### Keep only as transitional / fallback path
 
-- the current Convex-first `agentRuns` + `browserCommands` runtime
-- the extension-native generic browser command bus
 - site-specific extension-side browser automation beyond deterministic reviewed sends
 
 #### Stop treating as the main investment path

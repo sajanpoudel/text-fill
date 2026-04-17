@@ -52,7 +52,7 @@ export interface AgentPanelState {
   authenticated: boolean;
   approvals: AgentPanelApproval[];
   runs: AgentPanelRun[];
-  runtime: "local_companion" | "legacy_convex";
+  runtime: "local_companion";
   runtimeConnected: boolean;
   runtimeError?: string;
 }
@@ -286,8 +286,7 @@ export async function fetchAgentPanelState(
         ? (response.approvals as AgentPanelApproval[])
         : [],
       runs: Array.isArray(response.runs) ? (response.runs as AgentPanelRun[]) : [],
-      runtime:
-        response.runtime === "legacy_convex" ? "legacy_convex" : "local_companion",
+      runtime: "local_companion",
       runtimeConnected:
         response.runtimeConnected === false ? false : response.authenticated === true,
       runtimeError:

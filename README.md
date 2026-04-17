@@ -286,7 +286,6 @@ text-fill-v2/
 │   │   ├── AgentFAB.tsx           # Agent task trigger button
 │   │   ├── SuggestionChip.tsx     # Proactive scan result chip
 │   │   ├── QueuePreviewPanel.tsx  # Batch task approval panel
-│   │   └── useAgentCommandRelay.ts # Polls and executes agent browser commands
 │   ├── popup/                     # Extension popup (memory stats, recent writings)
 │   ├── options/                   # Settings page
 │   ├── memory/                    # Memory Bank page
@@ -327,8 +326,6 @@ text-fill-v2/
 │   ├── interactions.ts            # Session recording + pattern promotion trigger
 │   ├── patterns.ts                # Procedural pattern promotion and decay
 │   ├── entities.ts                # Entity graph lifecycle and resolution
-│   ├── agentRuns.ts               # Agent run state machine + browser command routing
-│   ├── agentWorkflows.ts          # Long-running agent workflow orchestration
 │   ├── taskBatches.ts             # Task batch management
 │   ├── voice.ts                   # Voice intent parsing
 │   ├── traces.ts                  # Generation trace recording

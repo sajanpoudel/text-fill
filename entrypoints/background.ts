@@ -2,14 +2,11 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "../convex/_generated/api";
 import type { SessionPayload } from "../src/lib/session-observer.ts";
 import { ChromeBrowserExecutor } from "../src/lib/browser-executor.ts";
-import type { SerializableBrowserCommand } from "../src/lib/browser-command-spec.ts";
 import {
   executeWaitForLinkedInPrimaryActionsInPage,
   executeLinkedInConnectWorkflowInPage,
 } from "../src/lib/browser-control.ts";
 import {
-  executeSerializableBrowserCommand,
-  formatAgentRelayExecutorId,
   normalizeAgentCommandError,
 } from "../src/lib/agent-command-runtime.ts";
 import {
@@ -92,6 +89,19 @@ let voiceRuntimeState: VoiceRuntimeState = "idle";
 const PLATFORM_DOM_LEARNING_KEY = "platformDomLearning";
 const LOCAL_COMPANION_URL_KEY = "localCompanionUrl";
 const LOCAL_COMPANION_TIMEOUT_MS_KEY = "localCompanionTimeoutMs";
+const EXPIRE_CONTEXTS_ALARM_MINUTES = 30;
+
+type BackgroundProfileSnapshot = {
+  provider?: string;
+  openaiKey?: string;
+  anthropicKey?: string;
+  geminiKey?: string;
+  model?: string;
+  memoryModel?: string;
+  contextText?: string;
+  jobProfile?: string;
+  systemPrompt?: string;
+} | null;
 
 // ── Auth sync + silent refresh ────────────────────────────────────────────
 // Auth state must survive popup/service-worker churn, so we persist both the
@@ -282,8 +292,9 @@ async function callLocalCompanion<TResult>(
   });
 }
 
-async function loadCurrentProviderConfig(): Promise<LocalCompanionProviderConfig | null> {
-  const profile = await convex.query(api.users.getProfile, {});
+function buildLocalCompanionProviderConfig(
+  profile: BackgroundProfileSnapshot
+): LocalCompanionProviderConfig | null {
   if (!profile) return null;
 
   const { provider, apiKey } = resolveApiKey(profile);
@@ -296,10 +307,19 @@ async function loadCurrentProviderConfig(): Promise<LocalCompanionProviderConfig
   };
 }
 
-async function loadCurrentAgentUserContext(options?: {
+async function buildCurrentAgentRuntimeInputs(options?: {
   includeJobProfile?: boolean;
-}): Promise<string | null> {
-  const profile = await convex.query(api.users.getProfile, {});
+  includeResumeFile?: boolean;
+}): Promise<{
+  providerConfig: LocalCompanionProviderConfig | null;
+  userContext: string | null;
+  systemPrompt: string | null;
+  resumeFile: ResumeFileData | null;
+}> {
+  const profile = (await convex.query(
+    api.users.getProfile,
+    {}
+  )) as BackgroundProfileSnapshot;
   const parts: string[] = [];
 
   const formattedSettingsContext = formatSavedSettingsContext(profile?.contextText);
@@ -343,7 +363,15 @@ async function loadCurrentAgentUserContext(options?: {
   }
 
   const combined = parts.join("\n\n");
-  return combined.trim() ? combined.trim() : null;
+  const systemPrompt =
+    typeof profile?.systemPrompt === "string" ? profile.systemPrompt.trim() : "";
+
+  return {
+    providerConfig: buildLocalCompanionProviderConfig(profile),
+    userContext: combined.trim() ? combined.trim() : null,
+    systemPrompt: systemPrompt || null,
+    resumeFile: options?.includeResumeFile ? await loadResumeFile() : null,
+  };
 }
 
 async function loadResumeFile(): Promise<ResumeFileData | null> {
@@ -416,13 +444,6 @@ function shouldAttachJobApplicationArtifacts(args: {
   });
 }
 
-async function loadCurrentAgentSystemPrompt(): Promise<string | null> {
-  const profile = await convex.query(api.users.getProfile, {});
-  const systemPrompt =
-    typeof profile?.systemPrompt === "string" ? profile.systemPrompt.trim() : "";
-  return systemPrompt || null;
-}
-
 // ── Event listeners — MUST be synchronous top-level ──────────────────────
 
 chrome.runtime.onMessage.addListener(
@@ -438,17 +459,14 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "expireContexts") {
     void expireOldContexts();
   }
-  if (alarm.name === "syncApprovedBatches") {
-    void taskQueue.process();
-  }
   if (alarm.name === "resumeTaskQueue") {
     void taskQueue.process();
   }
 });
 
-// Set up recurring alarm for TTL cleanup (runs every 5 minutes)
-chrome.alarms.create("expireContexts", { periodInMinutes: 5 });
-chrome.alarms.create("syncApprovedBatches", { periodInMinutes: 1 });
+chrome.alarms.create("expireContexts", {
+  periodInMinutes: EXPIRE_CONTEXTS_ALARM_MINUTES,
+});
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (
@@ -522,15 +540,6 @@ async function handleMessage(
 
     case "RESOLVE_AGENT_APPROVAL":
       return handleResolveAgentApproval(msg.payload, sender);
-
-    case "GET_COMMAND_RELAY_CONTEXT":
-      return {
-        tabId: sender.tab?.id ?? null,
-        url: sender.tab?.url ?? null,
-      };
-
-    case "EXECUTE_BROWSER_COMMAND":
-      return handleExecuteBrowserCommand(msg.payload, sender);
 
     case "START_VOICE":
       return startVoiceListening();
@@ -671,6 +680,10 @@ async function loadCapturedContextsForGeneration(): Promise<
     localContexts = normalizeCapturedGenerationContexts(capturedContexts);
   } catch {
     // Non-fatal
+  }
+
+  if (localContexts.length > 0) {
+    return localContexts;
   }
 
   let activeBackendContext: GenerationCapturedContext[] = [];
@@ -1336,14 +1349,10 @@ async function handleStartAgentRun(
     workItems,
     structured,
   });
-  const providerConfig = await loadCurrentProviderConfig();
-  const userContext = await loadCurrentAgentUserContext({
+  const runtimeInputs = await buildCurrentAgentRuntimeInputs({
     includeJobProfile: includeJobApplicationArtifacts,
+    includeResumeFile: includeJobApplicationArtifacts,
   });
-  const systemPrompt = await loadCurrentAgentSystemPrompt();
-  const resumeFile = includeJobApplicationArtifacts
-    ? await loadResumeFile()
-    : null;
 
   try {
     return await callLocalCompanion<LocalCompanionStartRunResult>(
@@ -1360,8 +1369,8 @@ async function handleStartAgentRun(
           typeof payload?.pageContext === "string" && payload.pageContext.trim()
             ? payload.pageContext.trim()
             : undefined,
-        userContext: userContext ?? undefined,
-        systemPrompt: systemPrompt ?? undefined,
+        userContext: runtimeInputs.userContext ?? undefined,
+        systemPrompt: runtimeInputs.systemPrompt ?? undefined,
         fieldTarget,
         scannedCandidates,
         workItems,
@@ -1370,8 +1379,8 @@ async function handleStartAgentRun(
             ? payload.nextPageUrl
             : undefined,
         structured,
-        providerConfig,
-        resumeFile,
+        providerConfig: runtimeInputs.providerConfig,
+        resumeFile: runtimeInputs.resumeFile,
       },
       60_000
     );
@@ -1474,14 +1483,10 @@ async function handleResumeAgentRun(
     workItems,
     structured,
   });
-  const providerConfig = await loadCurrentProviderConfig();
-  const userContext = await loadCurrentAgentUserContext({
+  const runtimeInputs = await buildCurrentAgentRuntimeInputs({
     includeJobProfile: includeJobApplicationArtifacts,
+    includeResumeFile: includeJobApplicationArtifacts,
   });
-  const systemPrompt = await loadCurrentAgentSystemPrompt();
-  const resumeFile = includeJobApplicationArtifacts
-    ? await loadResumeFile()
-    : null;
 
   try {
     return await callLocalCompanion<LocalCompanionResumeRunResult>(
@@ -1494,8 +1499,8 @@ async function handleResumeAgentRun(
           typeof payload?.pageContext === "string" && payload.pageContext.trim()
             ? payload.pageContext.trim()
             : undefined,
-        userContext: userContext ?? undefined,
-        systemPrompt: systemPrompt ?? undefined,
+        userContext: runtimeInputs.userContext ?? undefined,
+        systemPrompt: runtimeInputs.systemPrompt ?? undefined,
         fieldTarget,
         scannedCandidates,
         workItems,
@@ -1504,8 +1509,8 @@ async function handleResumeAgentRun(
             ? payload.nextPageUrl
             : undefined,
         structured,
-        providerConfig,
-        resumeFile,
+        providerConfig: runtimeInputs.providerConfig,
+        resumeFile: runtimeInputs.resumeFile,
       },
       60_000
     );
@@ -1538,7 +1543,7 @@ async function handleResolveAgentApproval(
     return { error: "Approval decision must be approved or rejected" };
   }
 
-  const providerConfig = await loadCurrentProviderConfig();
+  const runtimeInputs = await buildCurrentAgentRuntimeInputs();
 
   try {
     return await callLocalCompanion<LocalCompanionResolveApprovalResult>(
@@ -1551,7 +1556,7 @@ async function handleResolveAgentApproval(
           typeof payload?.decisionNote === "string"
             ? payload.decisionNote
             : undefined,
-        providerConfig,
+        providerConfig: runtimeInputs.providerConfig,
       },
       20_000
     );
@@ -1563,101 +1568,6 @@ async function handleResolveAgentApproval(
 async function handleProcessTaskQueue() {
   void taskQueue.process();
   return { ok: true };
-}
-
-async function syncRunTabForExecutedCommand(
-  runId: string,
-  command: SerializableBrowserCommand,
-  result: unknown
-) {
-  if (command.kind === "open_tab") {
-    const openResult = result as { kind: "open_tab"; tabId: number; url?: string };
-    if (typeof openResult.tabId === "number" && openResult.url) {
-      await convex.mutation(api.agentRuns.syncRunTabForRelay, {
-        runId: runId as any,
-        tabId: openResult.tabId,
-        status: "open",
-        url: openResult.url,
-      });
-    }
-    return;
-  }
-
-  if (command.kind === "navigate") {
-    await convex.mutation(api.agentRuns.syncRunTabForRelay, {
-      runId: runId as any,
-      tabId: command.tabId,
-      status: "open",
-      url: command.url,
-    });
-    return;
-  }
-
-  if (command.kind === "close_tab") {
-    await convex.mutation(api.agentRuns.syncRunTabForRelay, {
-      runId: runId as any,
-      tabId: command.tabId,
-      status: "closed",
-    });
-  }
-}
-
-async function handleExecuteBrowserCommand(
-  payload: { commandId?: string } | undefined,
-  sender: chrome.runtime.MessageSender
-) {
-  const commandId =
-    typeof payload?.commandId === "string" ? payload.commandId : null;
-  const tabId = sender.tab?.id;
-  if (!commandId) {
-    return { ok: false, error: "Missing command id" };
-  }
-  if (typeof tabId !== "number") {
-    return { ok: false, error: "Missing sender tab id" };
-  }
-  const claimedBy = formatAgentRelayExecutorId(tabId);
-
-  const claimed = await convex.mutation(api.agentRuns.claimBrowserCommandForRelay, {
-    commandId: commandId as any,
-    claimedBy,
-    tabId,
-    pageUrl: sender.tab?.url,
-  });
-
-  if (!claimed.ok) {
-    return claimed;
-  }
-
-  const command = claimed.command as SerializableBrowserCommand;
-
-  try {
-    const executionResult = await executeSerializableBrowserCommand(
-      browserExecutor,
-      command
-    );
-
-    await syncRunTabForExecutedCommand(claimed.runId, command, executionResult).catch(
-      () => {}
-    );
-
-    await convex.mutation(api.agentRuns.completeBrowserCommandForRelay, {
-      commandId: commandId as any,
-      claimedBy,
-      status: "completed",
-      result: executionResult as any,
-    });
-
-    return { ok: true, status: "completed", result: executionResult };
-  } catch (error) {
-    const errorMessage = normalizeAgentCommandError(error).slice(0, 500);
-    await convex.mutation(api.agentRuns.completeBrowserCommandForRelay, {
-      commandId: commandId as any,
-      claimedBy,
-      status: "failed",
-      errorMessage,
-    });
-    return { ok: false, error: errorMessage };
-  }
 }
 
 // ── Live recipient profile retrieval (Layer 3) ───────────────────────────────
@@ -1891,35 +1801,26 @@ class PersistentTaskQueue {
   }
 
   private async loadSyncableBatchDetails(): Promise<ExecutableTaskBatch[]> {
-    const batches = await convex.query(api.tasks.getPendingBatches, {});
-    const details: ExecutableTaskBatch[] = [];
-
-    for (const batch of batches) {
-      const batchDetails = await convex.query(api.tasks.getBatch, {
-        batchId: batch._id as any,
-      });
-      if (!batchDetails) {
-        continue;
-      }
-      details.push({
-        batch: {
-          _id: String(batchDetails.batch._id),
-          batchType: batchDetails.batch.batchType,
-          status: batchDetails.batch.status,
-          dailyLimit: batchDetails.batch.dailyLimit,
-        },
-        items: batchDetails.items.map((item) => ({
+    const batchDetails = await convex.query(api.tasks.getSyncableBatches, {
+      limit: 40,
+      perStatusLimit: 10,
+    });
+    return batchDetails.map((batchDetails) => ({
+      batch: {
+        _id: String(batchDetails.batch._id),
+        batchType: batchDetails.batch.batchType,
+        status: batchDetails.batch.status,
+        dailyLimit: batchDetails.batch.dailyLimit,
+      },
+      items: batchDetails.items.map((item) => ({
           _id: String(item._id),
           targetUrl: item.targetUrl,
           targetName: item.targetName,
           status: item.status,
           generatedText: item.generatedText,
           userEditedText: item.userEditedText,
-        })),
-      });
-    }
-
-    return details;
+      })),
+    }));
   }
 
   private async syncApprovedBatches(scope: string): Promise<number> {
@@ -2364,8 +2265,7 @@ const taskQueue = new PersistentTaskQueue();
 async function expireOldContexts() {
   try {
     await loadToken();
-    // The getActive query auto-expires; just calling it is enough
-    await convex.query(api.context.getActive, {});
+    await convex.mutation(api.context.expireActive, {});
   } catch {
     // Ignore — user may not be signed in
   }
@@ -2374,7 +2274,6 @@ async function expireOldContexts() {
 export default defineBackground({
   type: "module",
   main() {
-    // All registration happens at module top-level above.
-    // This function is called by WXT to activate the service worker.
+    void taskQueue.process();
   },
 });

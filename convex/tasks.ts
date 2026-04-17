@@ -297,3 +297,49 @@ export const getPendingBatches = query({
     return results.flat().sort((a, b) => b.createdAt - a.createdAt);
   },
 });
+
+export const getSyncableBatches = query({
+  args: {
+    limit: v.optional(v.number()),
+    perStatusLimit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return [];
+
+    const limit = Math.max(1, Math.min(100, Math.round(args.limit ?? 40)));
+    const perStatusLimit = Math.max(
+      1,
+      Math.min(limit, Math.round(args.perStatusLimit ?? 10))
+    );
+
+    const batches = (
+      await Promise.all(
+        ["pending", "approved", "running", "paused"].map((status) =>
+          ctx.db
+            .query("taskBatches")
+            .withIndex("by_user_status", (q) =>
+              q.eq("userId", userId).eq("status", status)
+            )
+            .order("desc")
+            .take(perStatusLimit)
+        )
+      )
+    )
+      .flat()
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, limit);
+
+    const details = [];
+    for (const batch of batches) {
+      const items = await ctx.db
+        .query("taskItems")
+        .withIndex("by_batch", (q) => q.eq("batchId", batch._id))
+        .order("asc")
+        .collect();
+      details.push({ batch, items });
+    }
+
+    return details;
+  },
+});
