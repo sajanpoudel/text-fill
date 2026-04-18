@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from contextlib import asynccontextmanager, suppress
+from datetime import timedelta
 import json
 import math
 import os
@@ -34,6 +35,7 @@ from mcp_agent.executor.temporal import (
     TemporalExecutor,
     Worker,
 )
+from temporalio.common import RetryPolicy
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from mcp_agent.workflows.llm.augmented_llm_anthropic import AnthropicAugmentedLLM
 from mcp_agent.workflows.llm.augmented_llm_google import GoogleAugmentedLLM
@@ -410,8 +412,8 @@ def build_json_finalization_prompt(
 def normalize_provider_name(provider: str) -> str:
     normalized = provider.strip().lower()
     if normalized in {"google", "gemini"}:
-        return "gemini"
-    if normalized not in {"openai", "anthropic", "gemini"}:
+        return "google"
+    if normalized not in {"openai", "anthropic", "google"}:
         raise RuntimeError(f"Unsupported provider for mcp-agent runtime: {provider}")
     return normalized
 
@@ -975,12 +977,9 @@ def build_retry_resume_context(
     if page_title:
         parts.append(f"Current page title after failure: {page_title}")
 
-    page_snapshot = str(page_state.get("pageSnapshot") or "").strip()
-    if page_snapshot:
-        parts.append(
-            "Current page snapshot after failure:\n"
-            + truncate_text(page_snapshot, 2500)
-        )
+    # Skip including the full page snapshot in retry context — it bloats Temporal
+    # workflow history and the agent will call take_snapshot fresh on the next attempt.
+    # The URL and title above are sufficient for the agent to orient itself.
 
     parts.append(
         "Do not restart from scratch if the page already reflects prior progress. Inspect the live page and continue from the furthest verified checkpoint."
@@ -1107,6 +1106,577 @@ def merge_resume_signal_payload(
     return merged_payload
 
 
+def _get_workflow_runtime_app(workflow_instance: Workflow[Any]) -> MCPApp:
+    app = getattr(getattr(workflow_instance, "context", None), "app", None)
+    if not isinstance(app, MCPApp):
+        raise RuntimeError("Workflow browser execution requires an initialized app.")
+    return app
+
+
+def _build_workflow_runtime(workflow_instance: Workflow[Any]) -> PythonBrowserRuntime:
+    runtime_owner = getattr(workflow_instance.__class__, "_runtime_owner", None)
+    if isinstance(runtime_owner, PythonBrowserRuntime):
+        return runtime_owner
+    return PythonBrowserRuntime(None, app=_get_workflow_runtime_app(workflow_instance))
+
+
+def _build_registered_workflow_run_method(
+    app: MCPApp,
+    workflow_name: str,
+    base_cls: type[Workflow[dict[str, Any]]],
+):
+    async def run(self, payload: dict[str, Any]) -> WorkflowResult[dict[str, Any]]:
+        return await base_cls.run(self, payload)
+
+    run.__name__ = "run"
+    run.__qualname__ = f"{workflow_name}.run"
+    run.__module__ = __name__
+    return app.workflow_run(run)
+
+
+def _register_runtime_workflow_class(
+    *,
+    runtime: PythonBrowserRuntime,
+    app: MCPApp,
+    workflow_name: str,
+    base_cls: type[Workflow[dict[str, Any]]],
+) -> type[Workflow[dict[str, Any]]]:
+    workflow_cls = type(
+        workflow_name,
+        (base_cls,),
+        {
+            "__module__": __name__,
+            "__doc__": getattr(base_cls, "__doc__", None),
+            "_runtime_owner": runtime,
+            "run": _build_registered_workflow_run_method(
+                app,
+                workflow_name,
+                base_cls,
+            ),
+        },
+    )
+    return app.workflow(workflow_cls, workflow_id=workflow_name)
+
+
+class GenericBrowserTaskWorkflowBase(Workflow[dict[str, Any]]):
+    async def run(
+        self, payload: dict[str, Any]
+    ) -> WorkflowResult[dict[str, Any]]:
+        # NOTE: We do NOT use workflow_attempt_runtime / call_tool_task activities here.
+        # Each MCP tool call (take_snapshot, click, etc.) returns a full DOM snapshot
+        # (~50-100 KB).  Routing those through Temporal activities stores every snapshot
+        # in the workflow history, blowing it past the 512 KB-per-payload limit after
+        # only ~12 tool calls.  Instead, the entire browser task (all LLM + MCP calls)
+        # runs as ONE Temporal activity ("execute_browser_task") so only the final
+        # small JSON result is persisted in Temporal history.
+        from temporalio import workflow as _tw
+
+        app = _get_workflow_runtime_app(self)
+        max_attempts = 3
+        max_resume_cycles = 2
+        attempt_history: list[dict[str, Any]] = []
+        current_payload = dict(payload)
+        resume_count = 0
+
+        while True:
+            for attempt in range(1, max_attempts + 1):
+                self.update_status("running")
+                self.state.metadata["attempts"] = attempt
+                self.state.metadata["resumeCount"] = resume_count
+                self.state.metadata["recoveryHistory"] = attempt_history
+
+                try:
+                    # Dispatch the entire browser task as a single long-running activity.
+                    # start_to_close_timeout: maximum wall-clock time for one attempt.
+                    # heartbeat_timeout: Temporal will cancel the activity if it stops
+                    #   heartbeating for this long (the activity sends heartbeats every 30s).
+                    outcome = await _tw.execute_activity(
+                        "execute_browser_task",
+                        args=[current_payload],
+                        start_to_close_timeout=timedelta(minutes=90),
+                        heartbeat_timeout=timedelta(seconds=120),
+                        retry_policy=RetryPolicy(
+                            initial_interval=timedelta(seconds=60),
+                            maximum_interval=timedelta(minutes=5),
+                            maximum_attempts=5,
+                        ),
+                    )
+
+                    metadata: dict[str, Any] = {
+                        "workflowName": "GenericBrowserTaskWorkflow",
+                        "executionEngine": str(
+                            app.context.config.execution_engine
+                        ),
+                        "attempts": attempt,
+                        "resumeCount": resume_count,
+                        "recovered": attempt > 1 or resume_count > 0,
+                        "recoveryHistory": attempt_history,
+                    }
+                    outcome_metadata = outcome.get("metadata")
+                    if isinstance(outcome_metadata, dict):
+                        task_steps = outcome_metadata.get("taskSteps")
+                        if isinstance(task_steps, list) and task_steps:
+                            metadata["taskSteps"] = task_steps
+                        execution_mode = str(
+                            outcome_metadata.get("executionMode") or ""
+                        ).strip()
+                        if execution_mode:
+                            metadata["executionMode"] = execution_mode
+                        final_url = str(
+                            outcome_metadata.get("finalUrl") or ""
+                        ).strip()
+                        if final_url:
+                            metadata["finalUrl"] = final_url
+                            self.state.metadata["latestPageUrl"] = final_url
+
+                    self.state.metadata.pop("pauseReason", None)
+                    self.state.metadata.pop("awaitingSignal", None)
+                    self.state.metadata.pop("lastError", None)
+                    self.state.metadata.update(metadata)
+                    return WorkflowResult(value=outcome, metadata=metadata)
+
+                except Exception as error:
+                    message = normalize_error_message(
+                        error if isinstance(error, Exception) else Exception(str(error))
+                    )
+                    history_item: dict[str, Any] = {
+                        "attempt": attempt,
+                        "resumeCount": resume_count,
+                        "error": message,
+                    }
+                    latest_url = str(
+                        self.state.metadata.get("latestPageUrl") or ""
+                    ).strip()
+                    if latest_url:
+                        history_item["pageUrl"] = latest_url
+                    attempt_history.append(history_item)
+                    self.state.metadata["lastError"] = message
+                    self.state.metadata["recoveryHistory"] = attempt_history
+
+                    if not is_retryable_browser_workflow_error(message):
+                        raise
+
+                    if attempt < max_attempts:
+                        current_payload = dict(current_payload)
+                        current_payload["resumeContext"] = build_retry_resume_context(
+                            existing_resume_context=str(
+                                current_payload.get("resumeContext") or ""
+                            ),
+                            attempt=attempt,
+                            error_message=message,
+                            page_state={"pageUrl": latest_url},
+                        )
+                        continue
+
+                    if resume_count >= max_resume_cycles:
+                        raise
+
+                    self.update_status("paused")
+                    self.state.metadata["pauseReason"] = message
+                    self.state.metadata["awaitingSignal"] = "resume"
+                    resume_payload = await app.context.executor.wait_for_signal(
+                        signal_name="resume",
+                        workflow_id=self.id,
+                        run_id=self.run_id,
+                        signal_description=(
+                            "Workflow paused after repeated browser-task failures. "
+                            "Resume to continue from the last checkpoint."
+                        ),
+                    )
+                    resume_count += 1
+                    current_payload = merge_resume_signal_payload(
+                        current_payload=current_payload,
+                        signal_payload=resume_payload,
+                        pause_reason=message,
+                        resume_count=resume_count,
+                    )
+                    self.update_status("running")
+                    self.state.metadata["resumeCount"] = resume_count
+                    self.state.metadata.pop("awaitingSignal", None)
+                    self.state.metadata.pop("pauseReason", None)
+                    break
+
+
+class GenericBrowserQueueWorkflowBase(Workflow[dict[str, Any]]):
+    async def run(
+        self, payload: dict[str, Any]
+    ) -> WorkflowResult[dict[str, Any]]:
+        from temporalio import workflow as _tw
+        items = coerce_generic_work_items(payload)
+        if not items:
+            raise RuntimeError("workItems are required")
+
+        completed = 0
+        skipped = 0
+        failed = 0
+        task_steps: list[dict[str, Any]] = []
+
+        for item in items:
+            page_url = str(item.get("pageUrl") or "").strip()
+            task_steps.append(
+                {
+                    "title": str(item.get("title") or "Queued browser task").strip(),
+                    "status": "pending",
+                    **({"pageUrl": page_url} if page_url else {}),
+                }
+            )
+
+        self.state.metadata.update(
+            {
+                "workflowName": "GenericBrowserQueueWorkflow",
+                "queueType": "generic_browser_queue",
+                "itemCount": len(items),
+                "completed": 0,
+                "skipped": 0,
+                "failed": 0,
+                "taskSteps": task_steps,
+            }
+        )
+
+        for index, item in enumerate(items):
+            self.update_status("running")
+            step = task_steps[index]
+            step["status"] = "running"
+            step["retryCount"] = 0
+            current_page_url = str(item.get("pageUrl") or "").strip()
+            if current_page_url:
+                self.state.metadata["latestPageUrl"] = current_page_url
+            self.state.metadata["taskSteps"] = task_steps
+
+            item_result: dict[str, Any] | None = None
+            item_error: str | None = None
+            max_attempts = 3
+
+            for attempt in range(1, max_attempts + 1):
+                step["retryCount"] = attempt - 1
+                step["status"] = "running" if attempt == 1 else "retrying"
+                self.state.metadata["taskSteps"] = task_steps
+                try:
+                    item_payload = build_generic_queue_item_payload(payload, item)
+                    item_result = await _tw.execute_activity(
+                        "execute_browser_task",
+                        args=[item_payload],
+                        start_to_close_timeout=timedelta(minutes=90),
+                        heartbeat_timeout=timedelta(seconds=120),
+                        retry_policy=RetryPolicy(
+                            initial_interval=timedelta(seconds=60),
+                            maximum_interval=timedelta(minutes=5),
+                            maximum_attempts=5,
+                        ),
+                    )
+                    break
+                except Exception as error:
+                    item_error = normalize_error_message(
+                        error
+                        if isinstance(error, Exception)
+                        else Exception(str(error))
+                    )
+                    if attempt >= max_attempts:
+                        break
+                    await asyncio.sleep(human_delay(1600) / 1000)
+
+                if item_result is None:
+                    failed += 1
+                    step["status"] = "failed"
+                    step["lastError"] = item_error or "Queued browser task failed."
+                    self.state.metadata["failed"] = failed
+                    self.state.metadata["taskSteps"] = task_steps
+                    continue
+
+                metadata = (
+                    dict(item_result.get("metadata"))
+                    if isinstance(item_result.get("metadata"), dict)
+                    else {}
+                )
+                outcome_status = (
+                    str(metadata.get("status") or item_result.get("status") or "")
+                    .strip()
+                    .lower()
+                )
+                result_summary = str(item_result.get("summary") or "").strip()
+                final_url = str(metadata.get("finalUrl") or "").strip()
+                if final_url:
+                    step["pageUrl"] = final_url
+                    self.state.metadata["latestPageUrl"] = final_url
+
+                if outcome_status == "skipped":
+                    skipped += 1
+                    step["status"] = "skipped"
+                    if result_summary:
+                        step["skipReason"] = result_summary
+                else:
+                    completed += 1
+                    step["status"] = "completed"
+
+                if result_summary:
+                    step["resultSummary"] = result_summary
+
+                self.state.metadata["completed"] = completed
+                self.state.metadata["skipped"] = skipped
+                self.state.metadata["failed"] = failed
+                self.state.metadata["taskSteps"] = task_steps
+                await asyncio.sleep(human_delay(1200) / 1000)
+
+        summary_parts = [
+            f"Queued browser workflow finished for {len(items)} item{'s' if len(items) != 1 else ''}.",
+            f"Completed: {completed}.",
+        ]
+        if skipped > 0:
+            summary_parts.append(f"Skipped: {skipped}.")
+        if failed > 0:
+            summary_parts.append(f"Failed: {failed}.")
+
+        metadata = {
+            "kind": "execute_task_queue",
+            "workflowName": "GenericBrowserQueueWorkflow",
+            "queueType": "generic_browser_queue",
+            "itemCount": len(items),
+            "completed": completed,
+            "skipped": skipped,
+            "failed": failed,
+            "taskSteps": task_steps,
+        }
+        latest_page_url = str(self.state.metadata.get("latestPageUrl") or "").strip()
+        if latest_page_url:
+            metadata["finalUrl"] = latest_page_url
+
+        return WorkflowResult(
+            value={
+                "summary": " ".join(summary_parts),
+                "metadata": metadata,
+            },
+            metadata=metadata,
+        )
+
+
+class LinkedInConnectBatchWorkflowBase(Workflow[dict[str, Any]]):
+    async def run(
+        self, payload: dict[str, Any]
+    ) -> WorkflowResult[dict[str, Any]]:
+        from temporalio import workflow as _tw
+        raw_items = payload.get("items")
+        daily_limit = payload.get("dailyLimit")
+        provider_config = payload.get("providerConfig")
+        if not isinstance(raw_items, list) or not raw_items:
+            raise RuntimeError("items are required")
+        if not isinstance(provider_config, dict):
+            raise RuntimeError("providerConfig is required")
+
+        max_items = max(
+            1,
+            min(
+                len(raw_items),
+                round(
+                    daily_limit
+                    if isinstance(daily_limit, (int, float))
+                    else len(raw_items)
+                ),
+            ),
+        )
+        items = [item for item in raw_items[:max_items] if isinstance(item, dict)]
+        task_steps: list[dict[str, Any]] = []
+        sent = 0
+        skipped = 0
+        failed = 0
+        final_states: list[str] = []
+
+        for item in items:
+            target_name = str(item.get("targetName") or "").strip() or str(
+                item.get("targetUrl") or ""
+            ).strip() or "LinkedIn profile"
+            target_url = str(item.get("targetUrl") or "").strip()
+            task_steps.append(
+                {
+                    "title": f"Connect with {target_name}",
+                    "status": "pending",
+                    **({"pageUrl": target_url} if target_url else {}),
+                }
+            )
+
+        self.state.metadata.update(
+            {
+                "workflowName": "LinkedInConnectBatchWorkflow",
+                "batchType": "linkedin_connect",
+                "itemCount": len(items),
+                "sent": 0,
+                "skipped": 0,
+                "failed": 0,
+                "taskSteps": task_steps,
+            }
+        )
+
+        for index, item in enumerate(items):
+            self.update_status("running")
+            step = task_steps[index]
+            step["status"] = "running"
+            step["retryCount"] = 0
+            self.state.metadata["taskSteps"] = task_steps
+            target_url = str(item.get("targetUrl") or "").strip()
+            if target_url:
+                self.state.metadata["latestPageUrl"] = target_url
+
+            item_result: dict[str, Any] | None = None
+            item_error: str | None = None
+            max_attempts = 2
+
+            for attempt in range(1, max_attempts + 1):
+                step["retryCount"] = attempt - 1
+                self.state.metadata["taskSteps"] = task_steps
+                try:
+                    item_result = await _tw.execute_activity(
+                        "execute_linkedin_connect",
+                        args=[item, provider_config],
+                        start_to_close_timeout=timedelta(minutes=30),
+                        heartbeat_timeout=timedelta(seconds=120),
+                        retry_policy=RetryPolicy(
+                            initial_interval=timedelta(seconds=60),
+                            maximum_interval=timedelta(minutes=5),
+                            maximum_attempts=5,
+                        ),
+                    )
+                    break
+                except Exception as error:
+                    item_error = normalize_error_message(
+                        error
+                        if isinstance(error, Exception)
+                        else Exception(str(error))
+                    )
+                    if attempt >= max_attempts:
+                        break
+                    await asyncio.sleep(human_delay(1800) / 1000)
+
+                if item_result is None:
+                    failed += 1
+                    step["status"] = "failed"
+                    step["lastError"] = item_error or "LinkedIn connect item failed."
+                    final_states.append("failed")
+                    self.state.metadata["failed"] = failed
+                    self.state.metadata["taskSteps"] = task_steps
+                    continue
+
+                final_state = str(item_result.get("finalState") or "").strip() or "failed"
+                final_states.append(final_state)
+                item_summary = str(item_result.get("summary") or "").strip()
+                preserve_page = bool(item_result.get("preservePage"))
+                if preserve_page and target_url:
+                    self.state.metadata["latestPageUrl"] = target_url
+
+                outcome = str(item_result.get("outcome") or "").strip()
+                if outcome == "sent":
+                    sent += 1
+                    step["status"] = "completed"
+                elif outcome == "skipped":
+                    skipped += 1
+                    step["status"] = "skipped"
+                    step["skipReason"] = item_summary or final_state
+                else:
+                    failed += 1
+                    step["status"] = "failed"
+                    step["lastError"] = item_summary or final_state
+
+                if item_summary:
+                    step["resultSummary"] = item_summary
+
+                self.state.metadata["sent"] = sent
+                self.state.metadata["skipped"] = skipped
+                self.state.metadata["failed"] = failed
+                self.state.metadata["taskSteps"] = task_steps
+
+                await asyncio.sleep(human_delay(2200) / 1000)
+
+        summary_parts = [
+            f"LinkedIn connect batch finished for {len(items)} target{'s' if len(items) != 1 else ''}.",
+            f"Sent: {sent}.",
+        ]
+        if skipped > 0:
+            summary_parts.append(f"Skipped: {skipped}.")
+        if failed > 0:
+            summary_parts.append(f"Failed: {failed}.")
+
+        metadata = {
+            "workflowName": "LinkedInConnectBatchWorkflow",
+            "batchType": "linkedin_connect",
+            "itemCount": len(items),
+            "sent": sent,
+            "skipped": skipped,
+            "failed": failed,
+            "finalStates": final_states,
+            "taskSteps": task_steps,
+        }
+        latest_page_url = str(self.state.metadata.get("latestPageUrl") or "").strip()
+        if latest_page_url:
+            metadata["finalUrl"] = latest_page_url
+
+        return WorkflowResult(
+            value={
+                "summary": " ".join(summary_parts),
+                "metadata": {
+                    "kind": "execute_task_batch",
+                    **metadata,
+                },
+            },
+            metadata=metadata,
+        )
+
+
+class BrowserTaskActivities:
+    """Temporal activities that wrap the entire browser task execution.
+
+    By making the full LLM-loop + all MCP tool calls a single Temporal activity,
+    individual DOM snapshots (50-100 KB each) are never written to the Temporal
+    workflow history.  Only the final small JSON result is persisted, keeping
+    history well under the 512 KB per-payload limit.
+    """
+
+    def __init__(self, runtime: "PythonBrowserRuntime") -> None:
+        self._runtime = runtime
+
+    async def execute_browser_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Run one complete browser task (LLM loop + all tool calls) as a single activity."""
+        try:
+            from temporalio import activity as _temporal_activity
+            _temporal_activity.heartbeat("browser task running")
+        except Exception:
+            pass
+        # Periodic heartbeat so Temporal knows the activity is alive during long tasks
+        heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        try:
+            return await self._runtime.execute_generic_browser_task_once(payload)
+        finally:
+            heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
+
+    async def execute_linkedin_connect(
+        self,
+        item: dict[str, Any],
+        provider_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Run one LinkedIn connect operation as a single activity."""
+        try:
+            from temporalio import activity as _temporal_activity
+            _temporal_activity.heartbeat("linkedin connect running")
+        except Exception:
+            pass
+        heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        try:
+            return await self._runtime.execute_linkedin_connect_item(item, provider_config)
+        finally:
+            heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
+
+    @staticmethod
+    async def _heartbeat_loop() -> None:
+        while True:
+            await asyncio.sleep(30)
+            try:
+                from temporalio import activity as _temporal_activity
+                _temporal_activity.heartbeat("browser task in progress")
+            except Exception:
+                break
+
+
 class PythonBrowserRuntime:
     def __init__(self, agent: Agent | None, app: MCPApp | None = None):
         self.agent = agent
@@ -1124,6 +1694,25 @@ class PythonBrowserRuntime:
 
     @asynccontextmanager
     async def workflow_attempt_runtime(self):
+        if self.agent is not None:
+            yield self
+            return
+        if self.app is None:
+            raise RuntimeError("Workflow browser execution requires an initialized app.")
+
+        agent = Agent(
+            name="chrome_runtime_workflow",
+            server_names=["chrome-devtools"],
+            context=self.app.context,
+        )
+        async with agent:
+            yield PythonBrowserRuntime(agent, app=self.app)
+
+    @asynccontextmanager
+    async def persistent_workflow_runtime(self):
+        """Creates ONE agent for a multi-item workflow (queue/batch).
+        Reusing the same MCP connection across items avoids repeated Chrome
+        auto-connect modals and reconnect overhead."""
         if self.agent is not None:
             yield self
             return
@@ -1331,24 +1920,36 @@ class PythonBrowserRuntime:
 
         agent.instruction = instruction
 
+        # Always pass context=agent.context explicitly so the LLM uses the asyncio
+        # executor from direct_app.  Without this, the LLM falls back to
+        # get_current_context() which may resolve to the temporal_app context
+        # (TemporalExecutor) when running inside a Temporal activity, causing
+        # "TemporalExecutor.execute must be called from within a workflow".
+        agent_ctx = agent.context
         if provider == "openai":
-            agent.context.config.openai = OpenAISettings(
+            agent_ctx.config.openai = OpenAISettings(
                 api_key=api_key,
                 default_model=model or None,
             )
-            llm = await agent.attach_llm(llm_factory=OpenAIAugmentedLLM)
+            llm = await agent.attach_llm(
+                llm=OpenAIAugmentedLLM(agent=agent, context=agent_ctx)
+            )
         elif provider == "anthropic":
-            agent.context.config.anthropic = AnthropicSettings(
+            agent_ctx.config.anthropic = AnthropicSettings(
                 api_key=api_key,
                 default_model=model or None,
             )
-            llm = await agent.attach_llm(llm_factory=AnthropicAugmentedLLM)
+            llm = await agent.attach_llm(
+                llm=AnthropicAugmentedLLM(agent=agent, context=agent_ctx)
+            )
         else:
-            agent.context.config.google = GoogleSettings(
+            agent_ctx.config.google = GoogleSettings(
                 api_key=api_key,
                 default_model=model or None,
             )
-            llm = await agent.attach_llm(llm_factory=GoogleAugmentedLLM)
+            llm = await agent.attach_llm(
+                llm=GoogleAugmentedLLM(agent=agent, context=agent_ctx)
+            )
 
         llm.instruction = instruction
         return llm, provider, model
@@ -1394,140 +1995,12 @@ class PythonBrowserRuntime:
             return self._generic_task_workflow_cls
         if self.app is None:
             return None
-
-        runtime = self
-        app = self.app
-
-        @app.workflow
-        class GenericBrowserTaskWorkflow(Workflow[dict[str, Any]]):
-            @app.workflow_run
-            async def run(
-                self, payload: dict[str, Any]
-            ) -> WorkflowResult[dict[str, Any]]:
-                max_attempts = 3
-                max_resume_cycles = 2
-                attempt_history: list[dict[str, Any]] = []
-                current_payload = dict(payload)
-                resume_count = 0
-
-                while True:
-                    for attempt in range(1, max_attempts + 1):
-                        self.update_status("running")
-                        self.state.metadata["attempts"] = attempt
-                        self.state.metadata["resumeCount"] = resume_count
-                        self.state.metadata["recoveryHistory"] = attempt_history
-
-                        try:
-                            async with runtime.workflow_attempt_runtime() as active_runtime:
-                                try:
-                                    outcome = await active_runtime.execute_generic_browser_task_once(
-                                        current_payload
-                                    )
-                                    metadata: dict[str, Any] = {
-                                        "workflowName": "GenericBrowserTaskWorkflow",
-                                        "executionEngine": str(
-                                            runtime.app.context.config.execution_engine
-                                        )
-                                        if runtime.app is not None
-                                        else "asyncio",
-                                        "attempts": attempt,
-                                        "resumeCount": resume_count,
-                                        "recovered": attempt > 1 or resume_count > 0,
-                                        "recoveryHistory": attempt_history,
-                                    }
-                                    outcome_metadata = outcome.get("metadata")
-                                    if isinstance(outcome_metadata, dict):
-                                        task_steps = outcome_metadata.get("taskSteps")
-                                        if isinstance(task_steps, list) and task_steps:
-                                            metadata["taskSteps"] = task_steps
-                                        execution_mode = str(
-                                            outcome_metadata.get("executionMode") or ""
-                                        ).strip()
-                                        if execution_mode:
-                                            metadata["executionMode"] = execution_mode
-                                        final_url = str(
-                                            outcome_metadata.get("finalUrl") or ""
-                                        ).strip()
-                                        if final_url:
-                                            metadata["finalUrl"] = final_url
-                                            self.state.metadata["latestPageUrl"] = final_url
-
-                                    self.state.metadata.pop("pauseReason", None)
-                                    self.state.metadata.pop("awaitingSignal", None)
-                                    self.state.metadata.pop("lastError", None)
-                                    self.state.metadata.update(metadata)
-                                    return WorkflowResult(value=outcome, metadata=metadata)
-                                except Exception as error:
-                                    message = normalize_error_message(
-                                        error
-                                        if isinstance(error, Exception)
-                                        else Exception(str(error))
-                                    )
-                                    page_state = (
-                                        await active_runtime.capture_selected_page_state()
-                                    )
-                                    history_item: dict[str, Any] = {
-                                        "attempt": attempt,
-                                        "resumeCount": resume_count,
-                                        "error": message,
-                                    }
-                                    page_url = str(page_state.get("pageUrl") or "").strip()
-                                    if page_url:
-                                        history_item["pageUrl"] = page_url
-                                        self.state.metadata["latestPageUrl"] = page_url
-                                    attempt_history.append(history_item)
-                                    self.state.metadata["lastError"] = message
-                                    self.state.metadata["recoveryHistory"] = attempt_history
-
-                                    if not is_retryable_browser_workflow_error(message):
-                                        raise
-
-                                    if attempt < max_attempts:
-                                        current_payload = dict(current_payload)
-                                        current_payload["resumeContext"] = (
-                                            build_retry_resume_context(
-                                                existing_resume_context=str(
-                                                    current_payload.get("resumeContext")
-                                                    or ""
-                                                ),
-                                                attempt=attempt,
-                                                error_message=message,
-                                                page_state=page_state,
-                                            )
-                                        )
-                                        continue
-
-                                    if resume_count >= max_resume_cycles:
-                                        raise
-
-                                    self.update_status("paused")
-                                    self.state.metadata["pauseReason"] = message
-                                    self.state.metadata["awaitingSignal"] = "resume"
-                                    resume_payload = await app.context.executor.wait_for_signal(
-                                        signal_name="resume",
-                                        workflow_id=self.id,
-                                        run_id=self.run_id,
-                                        signal_description=(
-                                            "Workflow paused after repeated browser-task failures. "
-                                            "Resume to continue from the last checkpoint."
-                                        ),
-                                    )
-                                    resume_count += 1
-                                    current_payload = merge_resume_signal_payload(
-                                        current_payload=current_payload,
-                                        signal_payload=resume_payload,
-                                        pause_reason=message,
-                                        resume_count=resume_count,
-                                    )
-                                    self.update_status("running")
-                                    self.state.metadata["resumeCount"] = resume_count
-                                    self.state.metadata.pop("awaitingSignal", None)
-                                    self.state.metadata.pop("pauseReason", None)
-                                    break
-                        except Exception:
-                            raise
-
-        self._generic_task_workflow_cls = GenericBrowserTaskWorkflow
+        self._generic_task_workflow_cls = _register_runtime_workflow_class(
+            runtime=self,
+            app=self.app,
+            workflow_name="GenericBrowserTaskWorkflow",
+            base_cls=GenericBrowserTaskWorkflowBase,
+        )
         return self._generic_task_workflow_cls
 
     def create_generic_queue_workflow_class(
@@ -1537,156 +2010,12 @@ class PythonBrowserRuntime:
             return self._generic_queue_workflow_cls
         if self.app is None:
             return None
-
-        runtime = self
-        app = self.app
-
-        @app.workflow
-        class GenericBrowserQueueWorkflow(Workflow[dict[str, Any]]):
-            @app.workflow_run
-            async def run(
-                self, payload: dict[str, Any]
-            ) -> WorkflowResult[dict[str, Any]]:
-                items = coerce_generic_work_items(payload)
-                if not items:
-                    raise RuntimeError("workItems are required")
-
-                completed = 0
-                skipped = 0
-                failed = 0
-                task_steps: list[dict[str, Any]] = []
-
-                for item in items:
-                    page_url = str(item.get("pageUrl") or "").strip()
-                    task_steps.append(
-                        {
-                            "title": str(item.get("title") or "Queued browser task").strip(),
-                            "status": "pending",
-                            **({"pageUrl": page_url} if page_url else {}),
-                        }
-                    )
-
-                self.state.metadata.update(
-                    {
-                        "workflowName": "GenericBrowserQueueWorkflow",
-                        "queueType": "generic_browser_queue",
-                        "itemCount": len(items),
-                        "completed": 0,
-                        "skipped": 0,
-                        "failed": 0,
-                        "taskSteps": task_steps,
-                    }
-                )
-
-                for index, item in enumerate(items):
-                    self.update_status("running")
-                    step = task_steps[index]
-                    step["status"] = "running"
-                    step["retryCount"] = 0
-                    current_page_url = str(item.get("pageUrl") or "").strip()
-                    if current_page_url:
-                        self.state.metadata["latestPageUrl"] = current_page_url
-                    self.state.metadata["taskSteps"] = task_steps
-
-                    item_result: dict[str, Any] | None = None
-                    item_error: str | None = None
-                    max_attempts = 3
-
-                    for attempt in range(1, max_attempts + 1):
-                        step["retryCount"] = attempt - 1
-                        step["status"] = "running" if attempt == 1 else "retrying"
-                        self.state.metadata["taskSteps"] = task_steps
-                        try:
-                            item_payload = build_generic_queue_item_payload(payload, item)
-                            async with runtime.workflow_attempt_runtime() as active_runtime:
-                                item_result = await active_runtime.execute_generic_browser_task_once(
-                                    item_payload
-                                )
-                            break
-                        except Exception as error:
-                            item_error = normalize_error_message(
-                                error
-                                if isinstance(error, Exception)
-                                else Exception(str(error))
-                            )
-                            if attempt >= max_attempts:
-                                break
-                            await asyncio.sleep(human_delay(1600) / 1000)
-
-                    if item_result is None:
-                        failed += 1
-                        step["status"] = "failed"
-                        step["lastError"] = item_error or "Queued browser task failed."
-                        self.state.metadata["failed"] = failed
-                        self.state.metadata["taskSteps"] = task_steps
-                        continue
-
-                    metadata = (
-                        dict(item_result.get("metadata"))
-                        if isinstance(item_result.get("metadata"), dict)
-                        else {}
-                    )
-                    outcome_status = (
-                        str(metadata.get("status") or item_result.get("status") or "")
-                        .strip()
-                        .lower()
-                    )
-                    result_summary = str(item_result.get("summary") or "").strip()
-                    final_url = str(metadata.get("finalUrl") or "").strip()
-                    if final_url:
-                        step["pageUrl"] = final_url
-                        self.state.metadata["latestPageUrl"] = final_url
-
-                    if outcome_status == "skipped":
-                        skipped += 1
-                        step["status"] = "skipped"
-                        if result_summary:
-                            step["skipReason"] = result_summary
-                    else:
-                        completed += 1
-                        step["status"] = "completed"
-
-                    if result_summary:
-                        step["resultSummary"] = result_summary
-
-                    self.state.metadata["completed"] = completed
-                    self.state.metadata["skipped"] = skipped
-                    self.state.metadata["failed"] = failed
-                    self.state.metadata["taskSteps"] = task_steps
-                    await asyncio.sleep(human_delay(1200) / 1000)
-
-                summary_parts = [
-                    f"Queued browser workflow finished for {len(items)} item{'s' if len(items) != 1 else ''}.",
-                    f"Completed: {completed}.",
-                ]
-                if skipped > 0:
-                    summary_parts.append(f"Skipped: {skipped}.")
-                if failed > 0:
-                    summary_parts.append(f"Failed: {failed}.")
-
-                metadata = {
-                    "kind": "execute_task_queue",
-                    "workflowName": "GenericBrowserQueueWorkflow",
-                    "queueType": "generic_browser_queue",
-                    "itemCount": len(items),
-                    "completed": completed,
-                    "skipped": skipped,
-                    "failed": failed,
-                    "taskSteps": task_steps,
-                }
-                latest_page_url = str(self.state.metadata.get("latestPageUrl") or "").strip()
-                if latest_page_url:
-                    metadata["finalUrl"] = latest_page_url
-
-                return WorkflowResult(
-                    value={
-                        "summary": " ".join(summary_parts),
-                        "metadata": metadata,
-                    },
-                    metadata=metadata,
-                )
-
-        self._generic_queue_workflow_cls = GenericBrowserQueueWorkflow
+        self._generic_queue_workflow_cls = _register_runtime_workflow_class(
+            runtime=self,
+            app=self.app,
+            workflow_name="GenericBrowserQueueWorkflow",
+            base_cls=GenericBrowserQueueWorkflowBase,
+        )
         return self._generic_queue_workflow_cls
 
     def create_linkedin_connect_batch_workflow_class(
@@ -1696,176 +2025,12 @@ class PythonBrowserRuntime:
             return self._linkedin_connect_batch_workflow_cls
         if self.app is None:
             return None
-
-        runtime = self
-        app = self.app
-
-        @app.workflow
-        class LinkedInConnectBatchWorkflow(Workflow[dict[str, Any]]):
-            @app.workflow_run
-            async def run(
-                self, payload: dict[str, Any]
-            ) -> WorkflowResult[dict[str, Any]]:
-                raw_items = payload.get("items")
-                daily_limit = payload.get("dailyLimit")
-                provider_config = payload.get("providerConfig")
-                if not isinstance(raw_items, list) or not raw_items:
-                    raise RuntimeError("items are required")
-                if not isinstance(provider_config, dict):
-                    raise RuntimeError("providerConfig is required")
-
-                max_items = max(
-                    1,
-                    min(
-                        len(raw_items),
-                        round(
-                            daily_limit
-                            if isinstance(daily_limit, (int, float))
-                            else len(raw_items)
-                        ),
-                    ),
-                )
-                items = [
-                    item for item in raw_items[:max_items] if isinstance(item, dict)
-                ]
-                task_steps: list[dict[str, Any]] = []
-                sent = 0
-                skipped = 0
-                failed = 0
-                final_states: list[str] = []
-
-                for item in items:
-                    target_name = str(item.get("targetName") or "").strip() or str(
-                        item.get("targetUrl") or ""
-                    ).strip() or "LinkedIn profile"
-                    target_url = str(item.get("targetUrl") or "").strip()
-                    task_steps.append(
-                        {
-                            "title": f"Connect with {target_name}",
-                            "status": "pending",
-                            **({"pageUrl": target_url} if target_url else {}),
-                        }
-                    )
-
-                self.state.metadata.update(
-                    {
-                        "workflowName": "LinkedInConnectBatchWorkflow",
-                        "batchType": "linkedin_connect",
-                        "itemCount": len(items),
-                        "sent": 0,
-                        "skipped": 0,
-                        "failed": 0,
-                        "taskSteps": task_steps,
-                    }
-                )
-
-                for index, item in enumerate(items):
-                    self.update_status("running")
-                    step = task_steps[index]
-                    step["status"] = "running"
-                    step["retryCount"] = 0
-                    self.state.metadata["taskSteps"] = task_steps
-                    target_url = str(item.get("targetUrl") or "").strip()
-                    if target_url:
-                        self.state.metadata["latestPageUrl"] = target_url
-
-                    item_result: dict[str, Any] | None = None
-                    item_error: str | None = None
-                    max_attempts = 2
-
-                    for attempt in range(1, max_attempts + 1):
-                        step["retryCount"] = attempt - 1
-                        self.state.metadata["taskSteps"] = task_steps
-                        try:
-                            async with runtime.workflow_attempt_runtime() as active_runtime:
-                                item_result = await active_runtime.execute_linkedin_connect_item(
-                                    item, provider_config
-                                )
-                            break
-                        except Exception as error:
-                            item_error = normalize_error_message(
-                                error
-                                if isinstance(error, Exception)
-                                else Exception(str(error))
-                            )
-                            if attempt >= max_attempts:
-                                break
-                            await asyncio.sleep(human_delay(1800) / 1000)
-
-                    if item_result is None:
-                        failed += 1
-                        step["status"] = "failed"
-                        step["lastError"] = item_error or "LinkedIn connect item failed."
-                        final_states.append("failed")
-                        self.state.metadata["failed"] = failed
-                        self.state.metadata["taskSteps"] = task_steps
-                        continue
-
-                    final_state = str(item_result.get("finalState") or "").strip() or "failed"
-                    final_states.append(final_state)
-                    item_summary = str(item_result.get("summary") or "").strip()
-                    preserve_page = bool(item_result.get("preservePage"))
-                    if preserve_page and target_url:
-                        self.state.metadata["latestPageUrl"] = target_url
-
-                    outcome = str(item_result.get("outcome") or "").strip()
-                    if outcome == "sent":
-                        sent += 1
-                        step["status"] = "completed"
-                    elif outcome == "skipped":
-                        skipped += 1
-                        step["status"] = "skipped"
-                        step["skipReason"] = item_summary or final_state
-                    else:
-                        failed += 1
-                        step["status"] = "failed"
-                        step["lastError"] = item_summary or final_state
-
-                    if item_summary:
-                        step["resultSummary"] = item_summary
-
-                    self.state.metadata["sent"] = sent
-                    self.state.metadata["skipped"] = skipped
-                    self.state.metadata["failed"] = failed
-                    self.state.metadata["taskSteps"] = task_steps
-
-                    await asyncio.sleep(human_delay(2200) / 1000)
-
-                summary_parts = [
-                    f"LinkedIn connect batch finished for {len(items)} target{'s' if len(items) != 1 else ''}.",
-                    f"Sent: {sent}.",
-                ]
-                if skipped > 0:
-                    summary_parts.append(f"Skipped: {skipped}.")
-                if failed > 0:
-                    summary_parts.append(f"Failed: {failed}.")
-
-                metadata = {
-                    "workflowName": "LinkedInConnectBatchWorkflow",
-                    "batchType": "linkedin_connect",
-                    "itemCount": len(items),
-                    "sent": sent,
-                    "skipped": skipped,
-                    "failed": failed,
-                    "finalStates": final_states,
-                    "taskSteps": task_steps,
-                }
-                latest_page_url = str(self.state.metadata.get("latestPageUrl") or "").strip()
-                if latest_page_url:
-                    metadata["finalUrl"] = latest_page_url
-
-                return WorkflowResult(
-                    value={
-                        "summary": " ".join(summary_parts),
-                        "metadata": {
-                            "kind": "execute_task_batch",
-                            **metadata,
-                        },
-                    },
-                    metadata=metadata,
-                )
-
-        self._linkedin_connect_batch_workflow_cls = LinkedInConnectBatchWorkflow
+        self._linkedin_connect_batch_workflow_cls = _register_runtime_workflow_class(
+            runtime=self,
+            app=self.app,
+            workflow_name="LinkedInConnectBatchWorkflow",
+            base_cls=LinkedInConnectBatchWorkflowBase,
+        )
         return self._linkedin_connect_batch_workflow_cls
 
     async def run_agent_json_task(
@@ -1897,46 +2062,41 @@ class PythonBrowserRuntime:
             reasoning_effort="medium" if provider == "openai" else None,
         )
 
-        if task_label == "generic_browser_task":
-            runner: Any | None = None
-            try:
-                runner = self.create_generic_task_orchestrator(
-                    provider=provider,
-                    model=model,
-                    system_prompt=system_prompt,
-                )
-                execution_mode = "iterative_orchestrator"
-                log_runtime(
-                    f"[agent-task] using_iterative_orchestrator label={task_label}"
-                )
-            except Exception as error:
-                log_runtime(
-                    f"[agent-task] orchestrator_fallback label={task_label} reason={normalize_error_message(error if isinstance(error, Exception) else Exception(str(error)))}"
-                )
-                execution_mode = "direct_llm"
-            if runner is not None:
-                plan_result = await runner.execute(
-                    user_prompt,
-                    request_params,
-                )
-                response_text = str(getattr(plan_result, "result", "") or "")
-                plan_steps = normalize_orchestrator_task_steps(plan_result)
-                log_runtime(
-                    f"[agent-task] orchestrator_steps label={task_label} count={len(plan_steps)}"
-                )
-            else:
-                response_text = await llm.generate_str(
-                    user_prompt,
-                    request_params,
-                )
-        else:
+        # Always use direct LLM for browser tasks.  The orchestrator pattern
+        # opened a fresh chrome-devtools MCP connection per sub-agent and made
+        # two LLM calls per step (planner + worker), making single clicks take
+        # 2-3 minutes.  The persistent agent already has chrome-devtools tools
+        # loaded; llm.generate_str() reuses that connection and needs only one
+        # LLM call per tool cycle — same throughput, 2-3x lower latency.
+        #
+        # Retry loop: mcp-agent returns empty string on 429 rate-limit instead
+        # of raising.  We wait inside the activity (keeping the heartbeat alive)
+        # rather than failing and letting Temporal restart from scratch, which
+        # would race multiple activities back to the API at the same time.
+        _rate_limit_wait = 75  # seconds — slightly over the 56 s max the API reports
+        _max_llm_attempts = 4
+        for _llm_attempt in range(1, _max_llm_attempts + 1):
             response_text = await llm.generate_str(
                 user_prompt,
                 request_params,
             )
+            if response_text.strip():
+                break
+            if _llm_attempt < _max_llm_attempts:
+                log_runtime(
+                    f"[agent-task] rate_limited label={task_label} "
+                    f"attempt={_llm_attempt}/{_max_llm_attempts} "
+                    f"waiting={_rate_limit_wait}s"
+                )
+                await asyncio.sleep(_rate_limit_wait)
         log_runtime(
             f"[agent-task] complete label={task_label} response={truncate_text(response_text, 400)}"
         )
+        if not response_text.strip():
+            raise RuntimeError(
+                f"LLM returned empty response for task {task_label!r} after "
+                f"{_max_llm_attempts} attempts (rate-limited); Temporal will retry"
+            )
         try:
             parsed = extract_json_payload(response_text)
         except RuntimeError:
@@ -2058,8 +2218,8 @@ class PythonBrowserRuntime:
                 str(payload.get("systemPrompt") or "").strip() or None,
             ),
             user_prompt=build_general_task_prompt(payload),
-            max_iterations=12,
-            max_tokens=1400,
+            max_iterations=100,
+            max_tokens=1600,
         )
 
         status = str(agent_result.get("status") or "").strip().lower() or "failed"
@@ -2498,7 +2658,7 @@ class PythonBrowserRuntime:
         return outcome
 
 
-async def create_temporal_worker(app: MCPApp) -> Worker:
+async def create_temporal_worker(app: MCPApp, runtime: PythonBrowserRuntime) -> Worker:
     if not isinstance(app.executor, TemporalExecutor):
         raise RuntimeError("Temporal worker startup requires a TemporalExecutor.")
 
@@ -2519,6 +2679,17 @@ async def create_temporal_worker(app: MCPApp) -> Worker:
     app.workflow_task(name="mcp_request_user_input")(system_activities.request_user_input)
     app.workflow_task(name="mcp_relay_notify")(system_activities.relay_notify)
     app.workflow_task(name="mcp_relay_request")(system_activities.relay_request)
+
+    # Register browser task activities that use the persistent direct-asyncio agent.
+    # These wrap the entire LLM loop + all MCP tool calls as ONE activity so that
+    # individual DOM snapshots never get written to the Temporal workflow history.
+    browser_activities = BrowserTaskActivities(runtime)
+    app.workflow_task(name="execute_browser_task")(
+        browser_activities.execute_browser_task
+    )
+    app.workflow_task(name="execute_linkedin_connect")(
+        browser_activities.execute_linkedin_connect
+    )
 
     app._register_global_workflow_tasks()
 
@@ -2570,7 +2741,9 @@ async def run_runtime() -> None:
                     workflow_runtime.create_generic_task_workflow_class()
                     workflow_runtime.create_generic_queue_workflow_class()
                     workflow_runtime.create_linkedin_connect_batch_workflow_class()
-                    temporal_worker = await create_temporal_worker(temporal_app)
+                    # Pass the direct asyncio runtime so browser activities use the
+                    # persistent agent (no per-call agent restarts, no history bloat).
+                    temporal_worker = await create_temporal_worker(temporal_app, runtime)
                     temporal_worker_task = asyncio.create_task(temporal_worker.run())
                     log_runtime(
                         f"[temporal-worker] started host={build_temporal_host()} task_queue={temporal_app.executor.config.task_queue}"
