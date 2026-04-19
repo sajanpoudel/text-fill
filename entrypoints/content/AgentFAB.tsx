@@ -176,6 +176,7 @@ function AgentComposer({
   const summary = latestRun ? getAgentRunSummary(latestRun) : null;
   const progressSummary = latestRun ? getAgentRunProgressSummary(latestRun) : null;
   const currentTask = latestRun ? getAgentRunCurrentTask(latestRun) : null;
+  const [statusDetailsVisible, setStatusDetailsVisible] = useState(true);
   const canCancelLatestRun = Boolean(
     latestRun &&
       latestRun.workflowId &&
@@ -196,6 +197,10 @@ function AgentComposer({
   } else if (summary) {
     detail = summary;
   }
+
+  useEffect(() => {
+    setStatusDetailsVisible(true);
+  }, [latestRun?._id]);
 
   return createPortal(
     <div
@@ -307,6 +312,31 @@ function AgentComposer({
                 <path d="M21 12a9 9 0 1 1-6.219-8.56" /><polyline points="21 3 21 9 15 9" />
               </svg>
             </button>
+            {(progressSummary || currentTask) && (
+              <button
+                onClick={() => setStatusDetailsVisible((current) => !current)}
+                onMouseDown={stopDown}
+                title={statusDetailsVisible ? "Hide run details" : "Show run details"}
+                style={{ background: "none", border: "none", color: textSub, cursor: "pointer", padding: 4, borderRadius: 4, display: "flex" }}
+                onMouseEnter={(e) => e.currentTarget.style.background = hoverBg}
+                onMouseLeave={(e) => e.currentTarget.style.background = "none"}
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  style={{
+                    transform: statusDetailsVisible ? "rotate(180deg)" : "rotate(0deg)",
+                    transition: "transform 0.16s ease",
+                  }}
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+            )}
             <button
               onClick={onClose}
               onMouseDown={stopDown}
@@ -322,7 +352,7 @@ function AgentComposer({
           </div>
         </div>
 
-        {(progressSummary || currentTask) && (
+        {(progressSummary || currentTask) && statusDetailsVisible && (
           <div
             style={{
               padding: "8px 14px",
@@ -340,29 +370,56 @@ function AgentComposer({
                   {progressSummary}
                 </div>
               )}
+              {summary && (
+                <div
+                  style={{
+                    marginTop: progressSummary ? 2 : 0,
+                    fontSize: 10,
+                    color: textMuted,
+                    whiteSpace: "normal",
+                    lineHeight: 1.45,
+                  }}
+                >
+                  {summary}
+                </div>
+              )}
               {currentTask && (
-                <div style={{ minWidth: 0 }}>
+                <div style={{ minWidth: 0, marginTop: summary ? 6 : 4 }}>
                   <div
                     style={{
                       fontSize: 10,
                       color: textSub,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
+                      whiteSpace: "normal",
+                      overflowWrap: "anywhere",
+                      lineHeight: 1.45,
                     }}
                   >
                     Current task: {currentTask.title}
                     {currentTask.retryCount > 0 ? ` · retries ${currentTask.retryCount}` : ""}
-                    {currentTask.pageUrl ? ` · ${currentTask.pageUrl}` : ""}
                   </div>
+                  {currentTask.pageUrl && (
+                    <div
+                      style={{
+                        marginTop: 2,
+                        fontSize: 10,
+                        color: textMuted,
+                        whiteSpace: "normal",
+                        overflowWrap: "anywhere",
+                        lineHeight: 1.45,
+                      }}
+                    >
+                      {currentTask.pageUrl}
+                    </div>
+                  )}
                   {currentTask.resultSummary && (
                     <div
                       style={{
+                        marginTop: 2,
                         fontSize: 10,
                         color: textMuted,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
+                        whiteSpace: "normal",
+                        overflowWrap: "anywhere",
+                        lineHeight: 1.45,
                       }}
                     >
                       {currentTask.resultSummary}
@@ -371,6 +428,50 @@ function AgentComposer({
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {(progressSummary || currentTask) && !statusDetailsVisible && (
+          <div
+            style={{
+              padding: "6px 14px",
+              borderBottom: `1px solid ${divider}`,
+              background: dark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.015)",
+            }}
+          >
+            <button
+              onClick={() => setStatusDetailsVisible(true)}
+              onMouseDown={stopDown}
+              style={{
+                display: "flex",
+                width: "100%",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                background: "none",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+                color: textSub,
+                textAlign: "left",
+              }}
+            >
+              <span
+                style={{
+                  minWidth: 0,
+                  fontSize: 10,
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {progressSummary ?? `Current task: ${currentTask?.title ?? "Show run details"}`}
+              </span>
+              <span style={{ fontSize: 10, fontWeight: 700, color: text }}>
+                Show details
+              </span>
+            </button>
           </div>
         )}
 

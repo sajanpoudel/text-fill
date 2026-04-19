@@ -36,6 +36,9 @@ from mcp_agent.executor.temporal import (
     Worker,
 )
 from temporalio.common import RetryPolicy
+from google.genai import Client
+from google.genai import types as _google_types
+from mcp_agent.executor.errors import WorkflowApplicationError
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from mcp_agent.workflows.llm.augmented_llm_anthropic import AnthropicAugmentedLLM
 from mcp_agent.workflows.llm.augmented_llm_google import GoogleAugmentedLLM
@@ -79,6 +82,8 @@ Avoid destructive billing, account-security, or data-deletion actions unless the
 Never claim success unless you verified it from the live browser state.
 Return only compact JSON that matches the requested schema. Do not return markdown.
 """.strip()
+
+MAX_GENERIC_BROWSER_TASK_ITERATIONS = 100
 
 
 def build_effective_system_prompt(base_prompt: str, custom_prompt: str | None) -> str:
@@ -343,30 +348,135 @@ def summarize_json_value(value: Any, max_length: int = 400) -> str:
     return truncate_text(serialized, max_length)
 
 
-def extract_json_payload(text: str) -> dict[str, Any]:
-    candidates: list[str] = [text.strip()]
-    candidates.extend(
-        match.strip()
-        for match in re.findall(r"```json\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+def is_max_output_limit_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return (
+        "max_tokens or model output limit was reached" in message
+        or "try again with higher max_tokens" in message
     )
 
+
+def is_permanent_provider_error(error: Exception) -> bool:
+    if getattr(error, "non_retryable", False):
+        return True
+
+    message = str(error).lower()
+    permanent_markers = (
+        "resource_exhausted",
+        "prepayment credits are depleted",
+        "manage your project and billing",
+        "insufficient_quota",
+        "permission_denied",
+        "service_disabled",
+        "gemini api has not been used",
+        "vertex ai api has not been used",
+        "enable it by visiting",
+        "aiplatform.googleapis.com",
+        "api key not valid",
+        "invalid api key",
+    )
+    return any(marker in message for marker in permanent_markers)
+
+
+def raise_non_retryable_llm_error(error: BaseException) -> None:
+    if isinstance(error, Exception):
+        exception = error
+    else:
+        exception = RuntimeError(str(error))
+
+    if getattr(exception, "non_retryable", False):
+        raise exception
+
+    if is_permanent_provider_error(exception):
+        raise WorkflowApplicationError(str(exception), non_retryable=True) from exception
+
+
+def build_google_provider_settings(api_key: str, model: str) -> GoogleSettings:
+    return GoogleSettings(
+        api_key=api_key,
+        default_model=model or None,
+        vertexai=True,
+    )
+
+
+def build_google_client_kwargs(config: GoogleSettings) -> dict[str, Any]:
+    if getattr(config, "vertexai", False):
+        kwargs: dict[str, Any] = {
+            "vertexai": True,
+            "api_key": config.api_key,
+            # Force the stable Vertex AI v1 REST surface, matching the express-mode
+            # curl the extension settings are intended to use.
+            "http_options": _google_types.HttpOptions(api_version="v1"),
+        }
+        # Vertex AI Express Mode with an API key must not include project/location.
+        if not getattr(config, "api_key", None):
+            location = getattr(config, "location", None)
+            project = getattr(config, "project", None)
+            if isinstance(location, str) and location.strip():
+                kwargs["location"] = location.strip()
+            if isinstance(project, str) and project.strip():
+                kwargs["project"] = project.strip()
+        return kwargs
+    return {"api_key": config.api_key}
+
+
+async def request_google_generate_content(
+    config: GoogleSettings,
+    payload: dict[str, Any],
+) -> _google_types.GenerateContentResponse:
+    client = Client(**build_google_client_kwargs(config))
+    return await asyncio.to_thread(lambda: client.models.generate_content(**payload))
+
+
+def next_output_token_budget(current_max_tokens: int, max_cap: int = 4800) -> int | None:
+    if current_max_tokens >= max_cap:
+        return None
+    return min(max_cap, max(current_max_tokens * 2, current_max_tokens + 800))
+
+
+def extract_json_payload(
+    text: str, *, required_keys: tuple[str, ...] = ("status",)
+) -> dict[str, Any]:
+    required = tuple(key for key in required_keys if isinstance(key, str) and key)
+    if not required:
+        raise ValueError("extract_json_payload requires at least one required key")
+
+    def matches_schema(candidate: Any) -> bool:
+        return isinstance(candidate, dict) and all(key in candidate for key in required)
+
+    required_description = ", ".join(sorted(required))
+
+    # Priority 1: fenced ```json blocks — explicit, unambiguous.
+    fenced = re.findall(r"```json\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+    for raw in fenced:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            continue
+        if matches_schema(parsed):
+            return parsed
+
+    # Priority 2: bare JSON object — only if it contains the required keys.
+    # This guards against accidentally extracting JSON embedded in page content
+    # or LLM narration (e.g. a LinkedIn profile's JSON-LD block).
     brace_start = text.find("{")
     brace_end = text.rfind("}")
     if brace_start >= 0 and brace_end > brace_start:
-        candidates.append(text[brace_start : brace_end + 1].strip())
-
-    for candidate in candidates:
-        if not candidate:
-            continue
+        raw = text[brace_start : brace_end + 1].strip()
         try:
-            parsed = json.loads(candidate)
+            parsed = json.loads(raw)
+            if matches_schema(parsed):
+                return parsed
         except Exception:
-            continue
-        if isinstance(parsed, dict):
-            return parsed
+            pass
 
     raise RuntimeError(
-        "The browser agent returned a response that was not valid JSON."
+        "The browser agent returned a response that was not valid JSON with required keys "
+        f"({required_description}). "
+        "Raw response: " + text[:300]
     )
 
 
@@ -443,44 +553,131 @@ def write_resume_to_temp(resume_file: dict[str, Any]) -> str | None:
         return None
 
 
+def extract_explicit_search_query(goal: str, page_url: str | None = None) -> str | None:
+    normalized_goal = re.sub(r"\s+", " ", goal.strip())
+    if not normalized_goal:
+        return None
+
+    patterns = (
+        r"\bsearch(?:\s+for)?\s+(.+?)\s+\bon\s+(?:the\s+)?google(?:\.com)?\b",
+        r"\b(?:go to|goto|open|visit|navigate to|head to|load)\s+google(?:\.com)?\s+and\s+search(?:\s+for)?\s+(.+)$",
+        r"\bsearch(?:\s+for)?\s+(.+)$",
+    )
+
+    search_on_google = bool(
+        re.search(r"\bgoogle(?:\.com)?\b", normalized_goal, flags=re.IGNORECASE)
+        or (
+            isinstance(page_url, str)
+            and "google." in page_url.lower()
+        )
+    )
+
+    for index, pattern in enumerate(patterns):
+        if index == 2 and not search_on_google:
+            continue
+        match = re.search(pattern, normalized_goal, flags=re.IGNORECASE)
+        if not match:
+            continue
+        query = match.group(1).strip().strip("\"'")
+        query = re.sub(r"[\s,.;:!?]+$", "", query).strip()
+        if query:
+            return query
+    return None
+
+
+def build_execution_boundary_lines(payload: dict[str, Any]) -> list[str]:
+    goal = str(payload.get("goal") or "").strip()
+    page_url = str(payload.get("pageUrl") or "").strip()
+    lines = [
+        "Keep the execution bounded to 1-4 major steps. Do not expand the goal with inferred side objectives.",
+        "Use continuation context or site experience only to avoid repeating completed work. They must not change the requested target, query, or destination.",
+    ]
+
+    explicit_query = extract_explicit_search_query(goal, page_url)
+    if explicit_query:
+        lines.extend(
+            [
+                f"Exact search query: {json.dumps(explicit_query, ensure_ascii=True)}",
+                "Search only for that exact query text. Do not append extra keywords from resume context, page context, site experience, user context, browser history, or autocomplete suggestions.",
+                "For this search task, the bounded steps are: verify the Google page, enter the exact query, submit the search, and verify the results page.",
+            ]
+        )
+
+    return lines
+
+
 def build_general_task_prompt(payload: dict[str, Any]) -> str:
+    # Context priority (highest to lowest):
+    # 1. Goal — the user's explicit instruction. Always wins.
+    # 2. Current page URL + platform hint — ground truth about where we are.
+    # 3. Continuation context (resumeContext) — what happened in prior attempts.
+    # 4. Observed page context — what the extension extracted from the page.
+    # 5. Site experience — patterns that worked before on this site (advisory only).
+    # 6. User-specific context — durable facts about the user.
+    # If anything in 3-6 conflicts with 1-2, the goal and live page state win.
+
+    goal = str(payload.get("goal") or "").strip()
+    page_url = str(payload.get("pageUrl") or "").strip()
+    platform_hint = str(payload.get("platformHint") or "").strip()
+
     parts = [
-        "Task:",
-        str(payload.get("goal") or "").strip(),
+        "=== GOAL (highest priority — always follow this) ===",
+        goal,
         "",
         "Constraints:",
-        "- Use Chrome DevTools MCP tools only.",
+        "- Use Chrome DevTools MCP tools only. Do not invent browser actions outside what the tools provide.",
         "- Complete the requested browser task end-to-end when the goal is explicit.",
         "- You may click, type, fill, submit, send, connect, search, and navigate when needed to satisfy the goal.",
         "- Do not perform billing, password, account-deletion, or irreversible security actions unless the user explicitly asked for them.",
-        "- Prefer the current page if it matches the task. You may navigate or open pages when needed.",
-        "- Use take_snapshot to inspect the page tree before interacting.",
-        "- Verify the result from the live page before finishing.",
+        "- Call take_snapshot to read the live page tree before every interaction. Never guess at selectors.",
+        "- After completing the action, verify success from the live page before returning a result.",
+        '- Return output as a fenced JSON block: ```json\\n{"status":"completed|skipped|failed","summary":"...","finalUrl":"optional"}\\n```',
     ]
 
-    page_url = str(payload.get("pageUrl") or "").strip()
-    if page_url:
-        parts.extend(["", f"Current page URL: {page_url}"])
+    if page_url or platform_hint:
+        parts.append("")
+        parts.append("=== CURRENT PAGE ===")
+        if page_url:
+            parts.append(f"URL: {page_url}")
+        if platform_hint:
+            parts.append(f"Platform: {platform_hint}")
 
-    platform_hint = str(payload.get("platformHint") or "").strip()
-    if platform_hint:
-        parts.append(f"Platform hint: {platform_hint}")
-
-    page_context = str(payload.get("pageContext") or "").strip()
-    if page_context:
-        parts.extend(["", "Observed page context:", page_context[:4000]])
+    boundary_lines = build_execution_boundary_lines(payload)
+    if boundary_lines:
+        parts.extend(["", "=== EXECUTION BOUNDARY ===", *boundary_lines])
 
     resume_context = str(payload.get("resumeContext") or "").strip()
     if resume_context:
-        parts.extend(["", "Continuation context:", resume_context[:4000]])
+        parts.extend([
+            "",
+            "=== CONTINUATION CONTEXT (what happened in prior attempts) ===",
+            resume_context[:4000],
+            "Do not redo steps that are already confirmed complete. Inspect the live page first.",
+        ])
+
+    page_context = str(payload.get("pageContext") or "").strip()
+    if page_context:
+        parts.extend([
+            "",
+            "=== OBSERVED PAGE CONTEXT (extracted by extension before this run) ===",
+            page_context[:4000],
+        ])
 
     site_experience_context = str(payload.get("siteExperienceContext") or "").strip()
     if site_experience_context:
-        parts.extend(["", "What has worked on similar pages before:", site_experience_context[:4000]])
+        parts.extend([
+            "",
+            "=== SITE EXPERIENCE (advisory — patterns that worked before, may be outdated) ===",
+            site_experience_context[:2000],
+        ])
 
     user_context = str(payload.get("userContext") or "").strip()
     if user_context:
-        parts.extend(["", "User-specific context:", user_context[:4000]])
+        parts.extend([
+            "",
+            "=== USER CONTEXT (durable facts about the user) ===",
+            user_context[:4000],
+        ])
 
     current_work_item = payload.get("currentWorkItem")
     if isinstance(current_work_item, dict) and current_work_item:
@@ -559,12 +756,6 @@ def build_general_task_prompt(payload: dict[str, Any]) -> str:
             ]
         )
 
-    parts.extend(
-        [
-            "",
-            'Return JSON: {"summary":"...", "status":"completed|skipped|failed", "finalUrl":"optional", "notes":["optional"]}',
-        ]
-    )
     return "\n".join(parts)
 
 
@@ -946,6 +1137,16 @@ def is_retryable_browser_workflow_error(message: str) -> bool:
         "unsupported provider",
         "a linkedin profile url is required",
         "browser agent returned a response that was not valid json",
+        "llm request failed with a permanent error",
+        "resource_exhausted",
+        "prepayment credits are depleted",
+        "manage your project and billing",
+        "permission_denied",
+        "service_disabled",
+        "gemini api has not been used",
+        "vertex ai api has not been used",
+        "enable it by visiting",
+        "aiplatform.googleapis.com",
     )
     return not any(marker in normalized for marker in non_retryable_markers)
 
@@ -971,18 +1172,25 @@ def build_retry_resume_context(
 
     page_url = str(page_state.get("pageUrl") or "").strip()
     if page_url:
-        parts.append(f"Current page URL after failure: {page_url}")
+        parts.append(f"Page URL when the failure occurred: {page_url}")
 
     page_title = str(page_state.get("pageTitle") or "").strip()
     if page_title:
-        parts.append(f"Current page title after failure: {page_title}")
+        parts.append(f"Page title when the failure occurred: {page_title}")
 
-    # Skip including the full page snapshot in retry context — it bloats Temporal
-    # workflow history and the agent will call take_snapshot fresh on the next attempt.
-    # The URL and title above are sufficient for the agent to orient itself.
+    # Include a compact snapshot so the agent can orient itself without
+    # calling take_snapshot blind. Truncated to 800 chars to keep Temporal
+    # history small while still giving the model enough to recognise the page.
+    page_snapshot = str(page_state.get("pageSnapshot") or "").strip()
+    if page_snapshot:
+        parts.append(
+            "Page state when the failure occurred (truncated):\n"
+            + page_snapshot[:800]
+        )
 
     parts.append(
-        "Do not restart from scratch if the page already reflects prior progress. Inspect the live page and continue from the furthest verified checkpoint."
+        "Inspect the live page with take_snapshot before acting. "
+        "Do not redo steps that are already confirmed complete — continue from the furthest verified checkpoint."
     )
     return "\n\n".join(parts)
 
@@ -1375,47 +1583,47 @@ class GenericBrowserQueueWorkflowBase(Workflow[dict[str, Any]]):
                         break
                     await asyncio.sleep(human_delay(1600) / 1000)
 
-                if item_result is None:
-                    failed += 1
-                    step["status"] = "failed"
-                    step["lastError"] = item_error or "Queued browser task failed."
-                    self.state.metadata["failed"] = failed
-                    self.state.metadata["taskSteps"] = task_steps
-                    continue
-
-                metadata = (
-                    dict(item_result.get("metadata"))
-                    if isinstance(item_result.get("metadata"), dict)
-                    else {}
-                )
-                outcome_status = (
-                    str(metadata.get("status") or item_result.get("status") or "")
-                    .strip()
-                    .lower()
-                )
-                result_summary = str(item_result.get("summary") or "").strip()
-                final_url = str(metadata.get("finalUrl") or "").strip()
-                if final_url:
-                    step["pageUrl"] = final_url
-                    self.state.metadata["latestPageUrl"] = final_url
-
-                if outcome_status == "skipped":
-                    skipped += 1
-                    step["status"] = "skipped"
-                    if result_summary:
-                        step["skipReason"] = result_summary
-                else:
-                    completed += 1
-                    step["status"] = "completed"
-
-                if result_summary:
-                    step["resultSummary"] = result_summary
-
-                self.state.metadata["completed"] = completed
-                self.state.metadata["skipped"] = skipped
+            if item_result is None:
+                failed += 1
+                step["status"] = "failed"
+                step["lastError"] = item_error or "Queued browser task failed."
                 self.state.metadata["failed"] = failed
                 self.state.metadata["taskSteps"] = task_steps
-                await asyncio.sleep(human_delay(1200) / 1000)
+                continue
+
+            metadata = (
+                dict(item_result.get("metadata"))
+                if isinstance(item_result.get("metadata"), dict)
+                else {}
+            )
+            outcome_status = (
+                str(metadata.get("status") or item_result.get("status") or "")
+                .strip()
+                .lower()
+            )
+            result_summary = str(item_result.get("summary") or "").strip()
+            final_url = str(metadata.get("finalUrl") or "").strip()
+            if final_url:
+                step["pageUrl"] = final_url
+                self.state.metadata["latestPageUrl"] = final_url
+
+            if outcome_status == "skipped":
+                skipped += 1
+                step["status"] = "skipped"
+                if result_summary:
+                    step["skipReason"] = result_summary
+            else:
+                completed += 1
+                step["status"] = "completed"
+
+            if result_summary:
+                step["resultSummary"] = result_summary
+
+            self.state.metadata["completed"] = completed
+            self.state.metadata["skipped"] = skipped
+            self.state.metadata["failed"] = failed
+            self.state.metadata["taskSteps"] = task_steps
+            await asyncio.sleep(human_delay(1200) / 1000)
 
         summary_parts = [
             f"Queued browser workflow finished for {len(items)} item{'s' if len(items) != 1 else ''}.",
@@ -1545,44 +1753,44 @@ class LinkedInConnectBatchWorkflowBase(Workflow[dict[str, Any]]):
                         break
                     await asyncio.sleep(human_delay(1800) / 1000)
 
-                if item_result is None:
-                    failed += 1
-                    step["status"] = "failed"
-                    step["lastError"] = item_error or "LinkedIn connect item failed."
-                    final_states.append("failed")
-                    self.state.metadata["failed"] = failed
-                    self.state.metadata["taskSteps"] = task_steps
-                    continue
-
-                final_state = str(item_result.get("finalState") or "").strip() or "failed"
-                final_states.append(final_state)
-                item_summary = str(item_result.get("summary") or "").strip()
-                preserve_page = bool(item_result.get("preservePage"))
-                if preserve_page and target_url:
-                    self.state.metadata["latestPageUrl"] = target_url
-
-                outcome = str(item_result.get("outcome") or "").strip()
-                if outcome == "sent":
-                    sent += 1
-                    step["status"] = "completed"
-                elif outcome == "skipped":
-                    skipped += 1
-                    step["status"] = "skipped"
-                    step["skipReason"] = item_summary or final_state
-                else:
-                    failed += 1
-                    step["status"] = "failed"
-                    step["lastError"] = item_summary or final_state
-
-                if item_summary:
-                    step["resultSummary"] = item_summary
-
-                self.state.metadata["sent"] = sent
-                self.state.metadata["skipped"] = skipped
+            if item_result is None:
+                failed += 1
+                step["status"] = "failed"
+                step["lastError"] = item_error or "LinkedIn connect item failed."
+                final_states.append("failed")
                 self.state.metadata["failed"] = failed
                 self.state.metadata["taskSteps"] = task_steps
+                continue
 
-                await asyncio.sleep(human_delay(2200) / 1000)
+            final_state = str(item_result.get("finalState") or "").strip() or "failed"
+            final_states.append(final_state)
+            item_summary = str(item_result.get("summary") or "").strip()
+            preserve_page = bool(item_result.get("preservePage"))
+            if preserve_page and target_url:
+                self.state.metadata["latestPageUrl"] = target_url
+
+            outcome = str(item_result.get("outcome") or "").strip()
+            if outcome == "sent":
+                sent += 1
+                step["status"] = "completed"
+            elif outcome == "skipped":
+                skipped += 1
+                step["status"] = "skipped"
+                step["skipReason"] = item_summary or final_state
+            else:
+                failed += 1
+                step["status"] = "failed"
+                step["lastError"] = item_summary or final_state
+
+            if item_summary:
+                step["resultSummary"] = item_summary
+
+            self.state.metadata["sent"] = sent
+            self.state.metadata["skipped"] = skipped
+            self.state.metadata["failed"] = failed
+            self.state.metadata["taskSteps"] = task_steps
+
+            await asyncio.sleep(human_delay(2200) / 1000)
 
         summary_parts = [
             f"LinkedIn connect batch finished for {len(items)} target{'s' if len(items) != 1 else ''}.",
@@ -1677,7 +1885,327 @@ class BrowserTaskActivities:
                 break
 
 
+class BrowserOpenAIAugmentedLLM(OpenAIAugmentedLLM):
+    """Re-raises non-retryable API errors (auth, bad key) instead of silently returning empty string.
+
+    mcp-agent's executor catches ALL exceptions from the OpenAI client and returns
+    them as values.  The base generate() just logs and breaks, leaving responses=[],
+    which generate_str() converts to "".  Our retry loop then treats every error as
+    a rate-limit and waits 75 s × 4 times before giving up — even for a 401 that
+    will never succeed.  This subclass intercepts those values and re-raises
+    non-retryable ones so callers fail fast.
+    """
+
+    async def generate(self, message, request_params=None):
+        captured: list[BaseException] = []
+        original_execute = self.executor.execute
+
+        async def _capturing_execute(fn, *args, **kwargs):
+            result = await original_execute(fn, *args, **kwargs)
+            if isinstance(result, BaseException):
+                captured.append(result)
+            return result
+
+        self.executor.execute = _capturing_execute
+        try:
+            responses = await super().generate(message, request_params)
+        finally:
+            self.executor.execute = original_execute
+
+        if not responses and captured:
+            raise_non_retryable_llm_error(captured[0])
+        return responses
+
+
+def _compress_tool_messages(
+    messages: list,
+    keep_recent: int = 2,
+    max_chars: int = 2500,
+) -> list:
+    """Truncate old tool-response messages to reduce re-sent tokens each iteration.
+
+    Keeps the last `keep_recent` tool messages intact; older ones are truncated
+    to `max_chars` per function_response part (old DOM snapshots are irrelevant
+    once the model has already acted on them).
+    """
+    tool_indices = [i for i, m in enumerate(messages) if getattr(m, "role", None) == "tool"]
+    cutoff = len(tool_indices) - keep_recent
+    if cutoff <= 0:
+        return messages
+
+    from google.genai import types as _gtypes
+
+    compressed = list(messages)
+    for idx in tool_indices[:cutoff]:
+        msg = compressed[idx]
+        new_parts = []
+        for part in (msg.parts or []):
+            fr = getattr(part, "function_response", None)
+            if fr is not None:
+                response_str = str(getattr(fr, "response", ""))
+                if len(response_str) > max_chars:
+                    new_parts.append(
+                        _gtypes.Part.from_function_response(
+                            name=getattr(fr, "name", "tool"),
+                            response={"result": response_str[:max_chars] + "...[truncated]"},
+                        )
+                    )
+                else:
+                    new_parts.append(part)
+            else:
+                new_parts.append(part)
+        compressed[idx] = _gtypes.Content(role="tool", parts=new_parts)
+    return compressed
+
+
+class CompressingGoogleAugmentedLLM(GoogleAugmentedLLM):
+    """GoogleAugmentedLLM that uses Vertex AI Express Mode and truncates old tool responses."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.provider = "Google (Vertex AI Express)"
+
+    async def _request_final_text_response(
+        self,
+        *,
+        model: str,
+        messages: list,
+        params: RequestParams,
+    ):
+        from google.genai import types as _gtypes
+
+        final_messages = list(messages)
+        final_messages.append(
+            _gtypes.Content(
+                role="user",
+                parts=[
+                    _gtypes.Part.from_text(
+                        text=(
+                            "Using the completed tool results above, return only the final answer "
+                            "requested by the original instruction. Do not call any more tools."
+                        )
+                    )
+                ],
+            )
+        )
+        final_config = _gtypes.GenerateContentConfig(
+            max_output_tokens=params.maxTokens,
+            temperature=0,
+            stop_sequences=params.stopSequences or [],
+            system_instruction=self.instruction or params.systemPrompt,
+            candidate_count=1,
+            tools=[],
+            automatic_function_calling=_gtypes.AutomaticFunctionCallingConfig(
+                disable=True
+            ),
+            **(params.metadata or {}),
+        )
+        return await request_google_generate_content(
+            self.context.config.google,
+            {
+                "model": model,
+                "contents": _compress_tool_messages(final_messages),
+                "config": final_config,
+            },
+        )
+
+    async def generate(self, message, request_params=None):
+        from google.genai import types as _gtypes
+        from mcp_agent.workflows.llm.augmented_llm_google import (
+            GoogleConverter,
+            transform_mcp_tool_schema,
+        )
+
+        messages: list = []
+        params = self.get_request_params(request_params)
+
+        if params.use_history:
+            messages.extend(self.history.get())
+
+        messages.extend(GoogleConverter.convert_mixed_messages_to_google(message))
+
+        tool_list = await self.agent.list_tools(tool_filter=params.tool_filter)
+        tools = [
+            _gtypes.Tool(
+                function_declarations=[
+                    _gtypes.FunctionDeclaration(
+                        name=tool.name,
+                        description=tool.description,
+                        parameters=transform_mcp_tool_schema(tool.inputSchema),
+                    )
+                ]
+            )
+            for tool in tool_list.tools
+        ]
+
+        responses = []
+        model = await self.select_model(params)
+        saw_tool_calls = False
+
+        for i in range(params.max_iterations):
+            inference_config = _gtypes.GenerateContentConfig(
+                max_output_tokens=params.maxTokens,
+                temperature=params.temperature,
+                stop_sequences=params.stopSequences or [],
+                system_instruction=self.instruction or params.systemPrompt,
+                tools=tools,
+                automatic_function_calling=_gtypes.AutomaticFunctionCallingConfig(disable=True),
+                candidate_count=1,
+                **(params.metadata or {}),
+            )
+
+            compressed = _compress_tool_messages(messages)
+            arguments = {"model": model, "contents": compressed, "config": inference_config}
+            self._log_chat_progress(chat_turn=(len(compressed) + 1) // 2, model=model)
+
+            try:
+                api_response = await request_google_generate_content(
+                    self.context.config.google,
+                    arguments,
+                )
+            except BaseException as api_error:
+                api_response = api_error
+
+            if isinstance(api_response, BaseException):
+                self.logger.error(f"Error: {api_response}")
+                raise_non_retryable_llm_error(api_response)
+                break
+
+            if not api_response.candidates:
+                break
+
+            candidate = api_response.candidates[0]
+            response_as_message = self.convert_message_to_message_param(candidate.content)
+            messages.append(response_as_message)
+
+            if not candidate.content or not candidate.content.parts:
+                break
+
+            responses.append(candidate.content)
+
+            function_calls = [
+                self.execute_tool_call(part.function_call)
+                for part in candidate.content.parts
+                if part.function_call
+            ]
+
+            if function_calls:
+                saw_tool_calls = True
+                results = await self.executor.execute_many(function_calls)
+                response_parts = []
+                for result in results:
+                    if result and not isinstance(result, BaseException) and result.parts:
+                        response_parts.extend(result.parts)
+                    else:
+                        response_parts.append(
+                            _gtypes.Part.from_text(text=f"Error executing tool: {result}")
+                        )
+                if response_parts:
+                    messages.append(_gtypes.Content(role="tool", parts=response_parts))
+            else:
+                break
+
+        has_text_response = any(
+            bool(getattr(part, "text", None))
+            for content in responses
+            for part in (content.parts or [])
+        )
+        if saw_tool_calls and not has_text_response:
+            try:
+                final_response = await self._request_final_text_response(
+                    model=model,
+                    messages=messages,
+                    params=params,
+                )
+            except BaseException as api_error:
+                self.logger.error(f"Error finalizing Google tool response: {api_error}")
+                raise_non_retryable_llm_error(api_error)
+            else:
+                if final_response and final_response.candidates:
+                    final_candidate = final_response.candidates[0]
+                    if final_candidate.content and final_candidate.content.parts:
+                        responses.append(final_candidate.content)
+                        messages.append(
+                            self.convert_message_to_message_param(
+                                final_candidate.content
+                            )
+                        )
+
+        if params.use_history:
+            self.history.set(messages)
+
+        self._log_chat_finished(model=model)
+        return responses
+
+    async def generate_structured(
+        self,
+        message,
+        response_model,
+        request_params: RequestParams | None = None,
+    ):
+        import json
+
+        from mcp_agent.workflows.llm.augmented_llm_google import GoogleConverter
+
+        params = self.get_request_params(request_params)
+        model = await self.select_model(params) or (params.model or "gemini-2.5-flash")
+
+        messages = GoogleConverter.convert_mixed_messages_to_google(message)
+
+        try:
+            schema = response_model.model_json_schema()
+        except Exception:
+            schema = None
+
+        config = _google_types.GenerateContentConfig(
+            max_output_tokens=params.maxTokens,
+            temperature=params.temperature,
+            stop_sequences=params.stopSequences or [],
+            system_instruction=self.instruction or params.systemPrompt,
+        )
+        config.response_mime_type = "application/json"
+        config.response_schema = schema if schema is not None else response_model
+
+        conversation: list[_google_types.Content] = []
+        if params.use_history:
+            conversation.extend(self.history.get())
+        if isinstance(messages, list):
+            conversation.extend(messages)
+        else:
+            conversation.append(messages)
+
+        try:
+            api_response = await request_google_generate_content(
+                self.context.config.google,
+                {
+                    "model": model,
+                    "contents": conversation,
+                    "config": config,
+                },
+            )
+        except BaseException as api_error:
+            raise_non_retryable_llm_error(api_error)
+            raise
+
+        text = None
+        if api_response and api_response.candidates:
+            cand = api_response.candidates[0]
+            if cand.content and cand.content.parts:
+                for part in cand.content.parts:
+                    if part.text:
+                        text = part.text
+                        break
+
+        if not text:
+            raise ValueError("No structured response returned by Gemini")
+
+        data = json.loads(text)
+        return response_model.model_validate(data)
+
+
 class PythonBrowserRuntime:
+    _llm_semaphore = asyncio.Semaphore(1)
+
     def __init__(self, agent: Agent | None, app: MCPApp | None = None):
         self.agent = agent
         self.app = app
@@ -1780,15 +2308,24 @@ class PythonBrowserRuntime:
         return parse_evaluate_result(result)
 
     async def wait_for_page_ready(self, page_id: int, timeout_ms: int = 15000) -> None:
+        # Wait for readyState === "complete" only — "interactive" fires before
+        # deferred scripts and React/Vue hydration, causing the agent to read
+        # an incomplete DOM and interact with elements that don't exist yet.
         deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
         while asyncio.get_running_loop().time() < deadline:
-            ready_state = await self.evaluate_on_page(
-                page_id=page_id,
-                function_source="() => document.readyState",
-            )
-            if ready_state in {"complete", "interactive"}:
-                return
-            await asyncio.sleep(0.2)
+            try:
+                ready_state = await self.evaluate_on_page(
+                    page_id=page_id,
+                    function_source="() => document.readyState",
+                )
+                if ready_state == "complete":
+                    # Extra settle for SPA frameworks (React, Vue) that render
+                    # content after readyState fires via async microtasks.
+                    await asyncio.sleep(1.5)
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(0.3)
         raise RuntimeError("Timed out waiting for the page to finish loading")
 
     async def capture_selected_page_state(self) -> dict[str, Any]:
@@ -1899,7 +2436,16 @@ class PythonBrowserRuntime:
     async def focus_or_open_page(self, page_url: str) -> dict[str, Any]:
         page = await self.find_page_by_url(page_url)
         if page:
-            await self.select_page(page["pageId"], True)
+            page_id = page["pageId"]
+            await self.select_page(page_id, True)
+            # Always wait for ready even on reused tabs — the tab may have
+            # navigated or be mid-load since we last touched it.
+            try:
+                await self.wait_for_page_ready(page_id, 10000)
+            except Exception:
+                # If the reused tab is stuck, open a fresh one instead.
+                page = await self.open_page(page_url)
+                await self.wait_for_page_ready(page["pageId"], 15000)
             return page
         page = await self.open_page(page_url)
         await self.wait_for_page_ready(page["pageId"], 15000)
@@ -1932,7 +2478,7 @@ class PythonBrowserRuntime:
                 default_model=model or None,
             )
             llm = await agent.attach_llm(
-                llm=OpenAIAugmentedLLM(agent=agent, context=agent_ctx)
+                llm=BrowserOpenAIAugmentedLLM(agent=agent, context=agent_ctx)
             )
         elif provider == "anthropic":
             agent_ctx.config.anthropic = AnthropicSettings(
@@ -1943,12 +2489,9 @@ class PythonBrowserRuntime:
                 llm=AnthropicAugmentedLLM(agent=agent, context=agent_ctx)
             )
         else:
-            agent_ctx.config.google = GoogleSettings(
-                api_key=api_key,
-                default_model=model or None,
-            )
+            agent_ctx.config.google = build_google_provider_settings(api_key, model)
             llm = await agent.attach_llm(
-                llm=GoogleAugmentedLLM(agent=agent, context=agent_ctx)
+                llm=CompressingGoogleAugmentedLLM(agent=agent, context=agent_ctx)
             )
 
         llm.instruction = instruction
@@ -2053,14 +2596,7 @@ class PythonBrowserRuntime:
         response_text = ""
         execution_mode = "direct_llm"
         plan_steps: list[dict[str, Any]] = []
-        request_params = RequestParams(
-            model=model or None,
-            max_iterations=max_iterations,
-            maxTokens=max_tokens,
-            temperature=0.1,
-            use_history=False,
-            reasoning_effort="medium" if provider == "openai" else None,
-        )
+        current_max_tokens = max_tokens
 
         # Always use direct LLM for browser tasks.  The orchestrator pattern
         # opened a fresh chrome-devtools MCP connection per sub-agent and made
@@ -2076,10 +2612,42 @@ class PythonBrowserRuntime:
         _rate_limit_wait = 75  # seconds — slightly over the 56 s max the API reports
         _max_llm_attempts = 4
         for _llm_attempt in range(1, _max_llm_attempts + 1):
-            response_text = await llm.generate_str(
-                user_prompt,
-                request_params,
+            request_params = RequestParams(
+                model=model or None,
+                max_iterations=max_iterations,
+                maxTokens=current_max_tokens,
+                temperature=0.1,
+                use_history=False,
+                reasoning_effort="medium" if provider == "openai" else None,
             )
+            try:
+                response_text = await llm.generate_str(
+                    user_prompt,
+                    request_params,
+                )
+            except WorkflowApplicationError as _exc:
+                if getattr(_exc, "non_retryable", False):
+                    if is_max_output_limit_error(_exc):
+                        next_budget = next_output_token_budget(current_max_tokens)
+                        if next_budget is not None:
+                            log_runtime(
+                                "[agent-task] output_limit_retry "
+                                f"label={task_label} "
+                                f"attempt={_llm_attempt}/{_max_llm_attempts} "
+                                f"max_tokens={current_max_tokens} "
+                                f"next_max_tokens={next_budget}"
+                            )
+                            current_max_tokens = next_budget
+                            response_text = ""
+                            continue
+                    log_runtime(
+                        f"[agent-task] non_retryable_error label={task_label} error={_exc}"
+                    )
+                    raise WorkflowApplicationError(
+                        f"LLM request failed with a permanent error (will not retry): {_exc}",
+                        non_retryable=True,
+                    ) from _exc
+                response_text = ""
             if response_text.strip():
                 break
             if _llm_attempt < _max_llm_attempts:
@@ -2098,7 +2666,7 @@ class PythonBrowserRuntime:
                 f"{_max_llm_attempts} attempts (rate-limited); Temporal will retry"
             )
         try:
-            parsed = extract_json_payload(response_text)
+            parsed = extract_json_payload(response_text, required_keys=("status",))
         except RuntimeError:
             page_state = await self.capture_selected_page_state()
             log_runtime(
@@ -2131,7 +2699,7 @@ class PythonBrowserRuntime:
             log_runtime(
                 f"[agent-task] finalize_json_complete label={task_label} response={truncate_text(repair_text, 400)}"
             )
-            parsed = extract_json_payload(repair_text)
+            parsed = extract_json_payload(repair_text, required_keys=("status",))
             response_text = repair_text
         if plan_steps:
             parsed["_planSteps"] = plan_steps
@@ -2165,18 +2733,27 @@ class PythonBrowserRuntime:
                 str(payload.get("systemPrompt") or "").strip() or None,
             ),
         )
-        response_text = await llm.generate_str(
-            build_work_item_discovery_prompt(payload),
-            RequestParams(
-                model=model or None,
-                max_iterations=8,
-                maxTokens=1400,
-                temperature=0.1,
-                use_history=False,
-                reasoning_effort="medium" if provider == "openai" else None,
-            ),
+        try:
+            response_text = await llm.generate_str(
+                build_work_item_discovery_prompt(payload),
+                RequestParams(
+                    model=model or None,
+                    max_iterations=8,
+                    maxTokens=1400,
+                    temperature=0.1,
+                    use_history=False,
+                    reasoning_effort="medium" if provider == "openai" else None,
+                ),
+            )
+        except WorkflowApplicationError as exc:
+            if getattr(exc, "non_retryable", False):
+                raise RuntimeError(
+                    f"Browser work-item discovery failed with a permanent provider error: {exc}"
+                ) from exc
+            raise
+        parsed = extract_json_payload(
+            response_text, required_keys=("mode", "workItems")
         )
-        parsed = extract_json_payload(response_text)
         summary = (
             str(parsed.get("summary") or "").strip()
             or "Analyzed the live page for repeated actionable items."
@@ -2210,17 +2787,18 @@ class PythonBrowserRuntime:
             focused_page = await self.focus_or_open_page(page_url)
             await self.wait_for_page_ready(focused_page["pageId"], 15000)
 
-        agent_result = await self.run_agent_json_task(
-            provider_config=provider_config,
-            task_label="generic_browser_task",
-            system_prompt=build_effective_system_prompt(
-                BASE_AGENT_SYSTEM_PROMPT,
-                str(payload.get("systemPrompt") or "").strip() or None,
-            ),
-            user_prompt=build_general_task_prompt(payload),
-            max_iterations=100,
-            max_tokens=1600,
-        )
+        async with PythonBrowserRuntime._llm_semaphore:
+            agent_result = await self.run_agent_json_task(
+                provider_config=provider_config,
+                task_label="generic_browser_task",
+                system_prompt=build_effective_system_prompt(
+                    BASE_AGENT_SYSTEM_PROMPT,
+                    str(payload.get("systemPrompt") or "").strip() or None,
+                ),
+                user_prompt=build_general_task_prompt(payload),
+                max_iterations=MAX_GENERIC_BROWSER_TASK_ITERATIONS,
+                max_tokens=1600,
+            )
 
         status = str(agent_result.get("status") or "").strip().lower() or "failed"
         summary = str(agent_result.get("summary") or "").strip()

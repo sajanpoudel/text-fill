@@ -51,6 +51,24 @@ function createRequestId(): string {
     : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function parseProcessArgs(
+  env: NodeJS.ProcessEnv,
+  jsonKey: string,
+  rawKey: string
+): string[] | null {
+  const rawJson = env[jsonKey]?.trim();
+  if (rawJson) {
+    const parsed = JSON.parse(rawJson);
+    if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
+      throw new Error(`${jsonKey} must be a JSON string array.`);
+    }
+    return parsed;
+  }
+
+  const rawArgs = env[rawKey]?.trim();
+  return rawArgs ? rawArgs.split(/\s+/u) : null;
+}
+
 export function buildMcpAgentBridgeProcessOptions(
   env: NodeJS.ProcessEnv = process.env,
   cwd = process.cwd()
@@ -61,9 +79,8 @@ export function buildMcpAgentBridgeProcessOptions(
 
   return {
     command: env.MCP_AGENT_BRIDGE_COMMAND?.trim() || "python3",
-    args: env.MCP_AGENT_BRIDGE_ARGS?.trim()
-      ? env.MCP_AGENT_BRIDGE_ARGS.trim().split(/\s+/u)
-      : [
+    args:
+      parseProcessArgs(env, "MCP_AGENT_BRIDGE_ARGS_JSON", "MCP_AGENT_BRIDGE_ARGS") ?? [
           "-m",
           "uv",
           "run",

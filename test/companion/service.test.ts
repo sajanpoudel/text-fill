@@ -789,6 +789,177 @@ describe("LocalAgentCompanionService", () => {
     });
   });
 
+  test("aligns explicit navigation goals with the requested destination before managed workflow planning", async () => {
+    const runtime = new FakeRuntime({
+      supportsManagedTaskWorkflows: true,
+      deriveBrowserWorkItems: async () => ({
+        mode: "single",
+        summary: "A single Google search is enough for this goal.",
+        workItems: [],
+      }),
+      startAgentTaskWorkflow: async () => ({
+        workflowId: "workflow-google-123",
+        runId: "run-google-abc",
+      }),
+      getAgentTaskWorkflowStatus: async () => ({
+        status: "completed",
+        running: false,
+        completed: true,
+        result: {
+          value: {
+            summary: "Opened Google and searched for sajan poudel.",
+            metadata: {
+              kind: "execute_agent_task",
+              finalUrl: "https://www.google.com/search?q=sajan+poudel",
+            },
+          },
+          metadata: {
+            workflowName: "GenericBrowserTaskWorkflow",
+            attempts: 1,
+            recovered: false,
+          },
+        },
+        state: {
+          metadata: {
+            attempts: 1,
+            latestPageUrl: "https://www.google.com/search?q=sajan+poudel",
+          },
+        },
+      }),
+    });
+    const { service } = await createTestService(runtime);
+
+    await service.startRun({
+      userScope: "user:explicit-google-goal",
+      goal: "go to google.com and search sajan poudel",
+      platformHint: "general",
+      pageUrl:
+        "https://www.cheatresume.com/jobs?sort=relevance&jobType=software-engineering",
+      pageContext: "Page: CheatResume\nVisible context: Auto-Apply Credits 0 / 500",
+      workItems: [
+        {
+          title: "Handle Associate Software Engineer",
+          pageUrl: "https://www.cheatresume.com/jobs/associate-software-engineer",
+          targetUrl: "https://www.cheatresume.com/jobs/associate-software-engineer",
+          targetName: "Associate Software Engineer",
+          itemContext: "Job card visible on CheatResume.",
+          sourceType: "page_link",
+        },
+        {
+          title: "Handle Junior Data Scientist",
+          pageUrl: "https://www.cheatresume.com/jobs/junior-data-scientist",
+          targetUrl: "https://www.cheatresume.com/jobs/junior-data-scientist",
+          targetName: "Junior Data Scientist",
+          itemContext: "Another job card visible on CheatResume.",
+          sourceType: "page_link",
+        },
+      ],
+      providerConfig: {
+        provider: "openai",
+        apiKey: "test-key",
+        model: "gpt-5-nano",
+      },
+    });
+
+    const completed = await waitForRunStatus(
+      service,
+      "user:explicit-google-goal",
+      "completed"
+    );
+
+    expect(runtime.workItemDiscoveryCalls).toHaveLength(1);
+    expect(runtime.workItemDiscoveryCalls[0]).toMatchObject({
+      goal: "go to google.com and search sajan poudel",
+      pageUrl: "https://www.google.com/",
+    });
+    expect(runtime.workItemDiscoveryCalls[0]?.pageContext).toBeUndefined();
+    expect(runtime.workItemDiscoveryCalls[0]?.workItems).toBeUndefined();
+    expect(runtime.queueWorkflowStartCalls).toHaveLength(0);
+    expect(runtime.workflowStartCalls).toHaveLength(1);
+    expect(runtime.workflowStartCalls[0]).toMatchObject({
+      goal: "go to google.com and search sajan poudel",
+      pageUrl: "https://www.google.com/",
+    });
+    expect(runtime.workflowStartCalls[0]?.pageContext).toBeUndefined();
+    expect(runtime.workflowStartCalls[0]?.workItems).toBeUndefined();
+    expect(completed.runs[0]?.status).toBe("completed");
+    expect(completed.runs[0]?.tasks?.[0]?.title).toBe(
+      "go to google.com and search sajan poudel"
+    );
+    expect(completed.runs[0]?.tasks?.[0]?.pageUrl).toBe(
+      "https://www.google.com/search?q=sajan+poudel"
+    );
+  });
+
+  test("does not reuse prior Google homepage context for a different search goal", async () => {
+    const { service, store, runtime } = await createTestService();
+
+    const priorRun = await store.createRun({
+      userScope: "user:google-bounded",
+      goal: "search sajan poudel northern kentucky university phone number on google",
+      platformHint: "general",
+      pageUrl: "https://www.google.com/",
+      siteMemory: {
+        host: "www.google.com",
+        pagePattern: "www.google.com/search",
+        workflowName: "GenericBrowserTaskWorkflow",
+        summary: "Expanded the search query with extra profile facts.",
+        terminalStatus: "failed",
+        updatedAt: Date.now(),
+      },
+      progress: {
+        totalTasks: 1,
+        completedTasks: 0,
+        skippedTasks: 0,
+        blockedTasks: 0,
+        retryingTasks: 0,
+        currentTaskIndex: 0,
+        latestPageUrl: "https://www.google.com/",
+      },
+      tasks: [
+        {
+          _id: "task_google_prior",
+          title: "search sajan poudel northern kentucky university phone number on google",
+          status: "failed",
+          retryCount: 2,
+          createdAt: Date.now() - 60_000,
+          updatedAt: Date.now() - 30_000,
+          completedAt: Date.now() - 30_000,
+          pageUrl: "https://www.google.com/",
+          lastError: "Expanded the query beyond the requested scope.",
+        },
+      ],
+    });
+    await store.updateRun("user:google-bounded", priorRun._id, {
+      status: "failed",
+      latestSummary: "Expanded the search query beyond the requested scope.",
+      lastError: "Expanded the search query beyond the requested scope.",
+    });
+
+    await service.startRun({
+      userScope: "user:google-bounded",
+      goal: "go to google.com and search sajan poudel",
+      platformHint: "general",
+      pageUrl: "https://www.google.com/",
+      providerConfig: {
+        provider: "openai",
+        apiKey: "test-key",
+        model: "gpt-5-nano",
+      },
+    });
+
+    const completed = await waitForRunStatus(
+      service,
+      "user:google-bounded",
+      "completed"
+    );
+
+    expect(runtime.agentTaskCalls).toHaveLength(1);
+    expect(runtime.agentTaskCalls[0]?.resumeContext).toBeUndefined();
+    expect(runtime.agentTaskCalls[0]?.siteExperienceContext).toBeUndefined();
+    expect(completed.runs[0]?.resumeSourceRunId).toBeUndefined();
+  });
+
   test("routes multi-target runs into the generic queue workflow and preserves item progress", async () => {
     let statusPollCount = 0;
     const runtime = new FakeRuntime({
@@ -932,6 +1103,66 @@ describe("LocalAgentCompanionService", () => {
         skipReason: "The second target was already completed earlier.",
       },
     ]);
+  });
+
+  test("fails managed runs immediately when work-item discovery hits a permanent provider error", async () => {
+    const runtime = new FakeRuntime({
+      supportsManagedTaskWorkflows: true,
+      deriveBrowserWorkItems: async () => {
+        throw new Error(
+          "LLM request failed with a permanent error (will not retry): 403 PERMISSION_DENIED. {'error': {'message': 'Gemini API has not been used in project 871197118306 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/generativelanguage.googleapis.com/overview?project=871197118306 then retry.', 'status': 'PERMISSION_DENIED', 'details': [{'reason': 'SERVICE_DISABLED'}]}}"
+        );
+      },
+    });
+    const { service } = await createTestService(runtime);
+
+    await service.startRun({
+      userScope: "user:managed-provider-failure",
+      goal: "go to google.com and search sajan poudel",
+      platformHint: "general",
+      pageUrl:
+        "https://www.cheatresume.com/jobs?sort=relevance&jobType=software-engineering",
+      pageContext: "Page: CheatResume\nVisible context: Auto-Apply Credits 0 / 500",
+      workItems: [
+        {
+          title: "Handle Associate Software Engineer",
+          pageUrl: "https://www.cheatresume.com/jobs/associate-software-engineer",
+          targetUrl: "https://www.cheatresume.com/jobs/associate-software-engineer",
+          targetName: "Associate Software Engineer",
+          itemContext: "Job card visible on CheatResume.",
+          sourceType: "page_link",
+        },
+        {
+          title: "Handle Junior Data Scientist",
+          pageUrl: "https://www.cheatresume.com/jobs/junior-data-scientist",
+          targetUrl: "https://www.cheatresume.com/jobs/junior-data-scientist",
+          targetName: "Junior Data Scientist",
+          itemContext: "Another job card visible on CheatResume.",
+          sourceType: "page_link",
+        },
+      ],
+      providerConfig: {
+        provider: "google",
+        apiKey: "test-key",
+        model: "gemini-2.5-flash",
+      },
+    });
+
+    const failed = await waitForRunStatus(
+      service,
+      "user:managed-provider-failure",
+      "failed"
+    );
+
+    expect(runtime.workItemDiscoveryCalls).toHaveLength(1);
+    expect(runtime.queueWorkflowStartCalls).toHaveLength(0);
+    expect(runtime.workflowStartCalls).toHaveLength(0);
+    expect(failed.runs[0]?.status).toBe("failed");
+    expect(failed.runs[0]?.lastError).toContain("PERMISSION_DENIED");
+    expect(failed.runs[0]?.tasks?.[0]?.status).toBe("failed");
+    expect(failed.runs[0]?.tasks?.[0]?.title).toBe(
+      "go to google.com and search sajan poudel"
+    );
   });
 
   test("can derive durable work items from the runtime before starting a queue workflow", async () => {

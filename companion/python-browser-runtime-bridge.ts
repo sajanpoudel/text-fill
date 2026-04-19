@@ -26,10 +26,12 @@ type BridgeMethod =
   | "execute_agent_task"
   | "shutdown";
 
+type BridgeArgs = Record<string, unknown>;
+
 type BridgeRequest = {
   id: string;
   method: BridgeMethod;
-  args?: Record<string, unknown>;
+  args?: BridgeArgs;
 };
 
 type BridgeResponse = {
@@ -44,6 +46,37 @@ type PendingBridgeRequest = {
   reject: (error: Error) => void;
 };
 
+type AgentTaskArgs = {
+  providerConfig: LocalCompanionProviderConfig;
+  goal: string;
+  pageUrl?: string;
+  platformHint?: string;
+  pageContext?: string;
+  resumeContext?: string;
+  siteExperienceContext?: string;
+  userContext?: string;
+  systemPrompt?: string;
+  fieldTarget?: LocalCompanionFieldTarget;
+  structured?: LocalCompanionStructuredExtraction | null;
+  scannedCandidates?: LocalCompanionCandidateScanItem[];
+  workItems?: LocalCompanionBrowserWorkItem[];
+};
+
+type ManagedWorkflowArgs = AgentTaskArgs & {
+  resumeFile?: ResumeFileData | null;
+};
+
+type LinkedInConnectBatchArgs = {
+  items: Array<{ targetUrl: string; targetName?: string; generatedText?: string }>;
+  dailyLimit: number;
+  providerConfig: LocalCompanionProviderConfig;
+};
+
+type WorkflowHandleArgs = {
+  workflowId?: string;
+  runId?: string;
+};
+
 export interface PythonBrowserRuntimeBridgeProcessOptions {
   command?: string;
   args?: string[];
@@ -54,85 +87,31 @@ export interface PythonBrowserRuntimeBridgeProcessOptions {
 
 export interface PythonBrowserRuntimeConnection {
   health(): Promise<{ connected: boolean; error?: string }>;
-  deriveBrowserWorkItems(args: {
-    providerConfig: LocalCompanionProviderConfig;
-    goal: string;
-    pageUrl?: string;
-    platformHint?: string;
-    pageContext?: string;
-    resumeContext?: string;
-    siteExperienceContext?: string;
-    userContext?: string;
-    systemPrompt?: string;
-    fieldTarget?: LocalCompanionFieldTarget;
-    structured?: LocalCompanionStructuredExtraction | null;
-    scannedCandidates?: LocalCompanionCandidateScanItem[];
-    workItems?: LocalCompanionBrowserWorkItem[];
-  }): Promise<{
+  deriveBrowserWorkItems(args: AgentTaskArgs): Promise<{
     mode: "single" | "queue";
     summary: string;
     workItems: LocalCompanionBrowserWorkItem[];
   }>;
-  startGenericBrowserTaskWorkflow(args: {
-    providerConfig: LocalCompanionProviderConfig;
-    goal: string;
-    pageUrl?: string;
-    platformHint?: string;
-    pageContext?: string;
-    resumeContext?: string;
-    siteExperienceContext?: string;
-    userContext?: string;
-    systemPrompt?: string;
-    fieldTarget?: LocalCompanionFieldTarget;
-    structured?: LocalCompanionStructuredExtraction | null;
-    scannedCandidates?: LocalCompanionCandidateScanItem[];
-    workItems?: LocalCompanionBrowserWorkItem[];
-    resumeFile?: ResumeFileData | null;
-  }): Promise<{
+  startGenericBrowserTaskWorkflow(args: ManagedWorkflowArgs): Promise<{
     workflowId: string;
     runId?: string;
   }>;
-  startGenericBrowserQueueWorkflow(args: {
-    providerConfig: LocalCompanionProviderConfig;
-    goal: string;
-    pageUrl?: string;
-    platformHint?: string;
-    pageContext?: string;
-    resumeContext?: string;
-    siteExperienceContext?: string;
-    userContext?: string;
-    systemPrompt?: string;
-    fieldTarget?: LocalCompanionFieldTarget;
-    structured?: LocalCompanionStructuredExtraction | null;
-    scannedCandidates?: LocalCompanionCandidateScanItem[];
+  startGenericBrowserQueueWorkflow(args: ManagedWorkflowArgs & {
     workItems: LocalCompanionBrowserWorkItem[];
-    resumeFile?: ResumeFileData | null;
   }): Promise<{
     workflowId: string;
     runId?: string;
   }>;
-  startLinkedInConnectBatchWorkflow(args: {
-    items: Array<{ targetUrl: string; targetName?: string; generatedText?: string }>;
-    dailyLimit: number;
-    providerConfig: LocalCompanionProviderConfig;
-  }): Promise<{
+  startLinkedInConnectBatchWorkflow(args: LinkedInConnectBatchArgs): Promise<{
     workflowId: string;
     runId?: string;
   }>;
-  getWorkflowStatus(args: {
-    workflowId?: string;
-    runId?: string;
-  }): Promise<Record<string, unknown> | null>;
-  resumeWorkflow(args: {
-    workflowId?: string;
-    runId?: string;
+  getWorkflowStatus(args: WorkflowHandleArgs): Promise<Record<string, unknown> | null>;
+  resumeWorkflow(args: WorkflowHandleArgs & {
     signalName?: string;
     payload?: unknown;
   }): Promise<boolean>;
-  cancelWorkflow(args: {
-    workflowId?: string;
-    runId?: string;
-  }): Promise<boolean>;
+  cancelWorkflow(args: WorkflowHandleArgs): Promise<boolean>;
   navigateToUrl(args: {
     targetUrl: string;
     currentPageUrl?: string;
@@ -152,30 +131,11 @@ export interface PythonBrowserRuntimeConnection {
     summary: string;
     metadata: Record<string, unknown>;
   }>;
-  executeLinkedInConnectBatch(args: {
-    items: Array<{ targetUrl: string; targetName?: string; generatedText?: string }>;
-    dailyLimit: number;
-    providerConfig: LocalCompanionProviderConfig;
-  }): Promise<{
+  executeLinkedInConnectBatch(args: LinkedInConnectBatchArgs): Promise<{
     summary: string;
     metadata: Record<string, unknown>;
   }>;
-    executeAgentTask(args: {
-    providerConfig: LocalCompanionProviderConfig;
-    goal: string;
-    pageUrl?: string;
-    platformHint?: string;
-    pageContext?: string;
-    resumeContext?: string;
-    siteExperienceContext?: string;
-    userContext?: string;
-    systemPrompt?: string;
-    fieldTarget?: LocalCompanionFieldTarget;
-    structured?: LocalCompanionStructuredExtraction | null;
-    scannedCandidates?: LocalCompanionCandidateScanItem[];
-    workItems?: LocalCompanionBrowserWorkItem[];
-    resumeFile?: ResumeFileData | null;
-  }): Promise<{
+  executeAgentTask(args: ManagedWorkflowArgs): Promise<{
     summary: string;
     metadata: Record<string, unknown>;
   }>;
@@ -187,6 +147,24 @@ function createRequestId(): string {
   return typeof randomUUID === "function"
     ? randomUUID()
     : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function parseProcessArgs(
+  env: NodeJS.ProcessEnv,
+  jsonKey: string,
+  rawKey: string
+): string[] | null {
+  const rawJson = env[jsonKey]?.trim();
+  if (rawJson) {
+    const parsed = JSON.parse(rawJson);
+    if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
+      throw new Error(`${jsonKey} must be a JSON string array.`);
+    }
+    return parsed;
+  }
+
+  const rawArgs = env[rawKey]?.trim();
+  return rawArgs ? rawArgs.split(/\s+/u) : null;
 }
 
 export function buildPythonBrowserRuntimeProcessOptions(
@@ -201,9 +179,12 @@ export function buildPythonBrowserRuntimeProcessOptions(
 
   return {
     command: env.MCP_AGENT_PYTHON_RUNTIME_COMMAND?.trim() || "python3",
-    args: env.MCP_AGENT_PYTHON_RUNTIME_ARGS?.trim()
-      ? env.MCP_AGENT_PYTHON_RUNTIME_ARGS.trim().split(/\s+/u)
-      : [
+    args:
+      parseProcessArgs(
+        env,
+        "MCP_AGENT_PYTHON_RUNTIME_ARGS_JSON",
+        "MCP_AGENT_PYTHON_RUNTIME_ARGS"
+      ) ?? [
           "-m",
           "uv",
           "run",
@@ -348,9 +329,9 @@ export async function createPythonBrowserRuntimeConnection(
     );
   });
 
-  const request = async <TResult>(
+  const request = async <TResult, TArgs extends BridgeArgs = BridgeArgs>(
     method: BridgeMethod,
-    args?: Record<string, unknown>
+    args?: TArgs
   ): Promise<TResult> => {
     if (closed) {
       throw new Error("python browser runtime is not running");
@@ -390,76 +371,84 @@ export async function createPythonBrowserRuntimeConnection(
         mode: "single" | "queue";
         summary: string;
         workItems: LocalCompanionBrowserWorkItem[];
-      }>("derive_browser_work_items", args as unknown as Record<string, unknown>);
+      }, AgentTaskArgs>("derive_browser_work_items", args);
     },
     async startGenericBrowserTaskWorkflow(args) {
       return request<{
         workflowId: string;
         runId?: string;
-      }>(
-        "start_generic_browser_task_workflow",
-        args as unknown as Record<string, unknown>
-      );
+      }, ManagedWorkflowArgs>("start_generic_browser_task_workflow", args);
     },
     async startGenericBrowserQueueWorkflow(args) {
       return request<{
         workflowId: string;
         runId?: string;
-      }>(
+      }, ManagedWorkflowArgs & { workItems: LocalCompanionBrowserWorkItem[] }>(
         "start_generic_browser_queue_workflow",
-        args as unknown as Record<string, unknown>
+        args
       );
     },
     async startLinkedInConnectBatchWorkflow(args) {
       return request<{
         workflowId: string;
         runId?: string;
-      }>(
-        "start_linkedin_connect_batch_workflow",
-        args as unknown as Record<string, unknown>
-      );
+      }, LinkedInConnectBatchArgs>("start_linkedin_connect_batch_workflow", args);
     },
     async getWorkflowStatus(args) {
-      return request<Record<string, unknown> | null>(
+      return request<Record<string, unknown> | null, WorkflowHandleArgs>(
         "get_workflow_status",
-        args as unknown as Record<string, unknown>
+        args
       );
     },
     async resumeWorkflow(args) {
-      return request<boolean>(
+      return request<boolean, WorkflowHandleArgs & {
+        signalName?: string;
+        payload?: unknown;
+      }>(
         "resume_workflow",
-        args as unknown as Record<string, unknown>
+        args
       );
     },
     async cancelWorkflow(args) {
-      return request<boolean>(
+      return request<boolean, WorkflowHandleArgs>(
         "cancel_workflow",
-        args as unknown as Record<string, unknown>
+        args
       );
     },
     async navigateToUrl(args) {
       return request<{
         summary: string;
         metadata: Record<string, unknown>;
-      }>("navigate_to_url", args as unknown as Record<string, unknown>);
+      }, {
+        targetUrl: string;
+        currentPageUrl?: string;
+        targetLabel?: string;
+      }>("navigate_to_url", args);
     },
     async insertDraft(args) {
       return request<{
         summary: string;
         metadata: Record<string, unknown>;
-      }>("insert_draft", args as unknown as Record<string, unknown>);
+      }, {
+        pageUrl: string;
+        fieldTarget: LocalCompanionFieldTarget;
+        generatedText: string;
+        verifyText: string;
+        targetName?: string;
+        providerConfig: LocalCompanionProviderConfig;
+      }>("insert_draft", args);
     },
     async executeLinkedInConnectBatch(args) {
       return request<{
         summary: string;
         metadata: Record<string, unknown>;
-      }>("execute_linkedin_connect_batch", args as unknown as Record<string, unknown>);
+      }, LinkedInConnectBatchArgs>("execute_linkedin_connect_batch", args);
     },
     async executeAgentTask(args) {
       return request<{
         summary: string;
         metadata: Record<string, unknown>;
-      }>("execute_agent_task", args as unknown as Record<string, unknown>);
+      }, ManagedWorkflowArgs>("execute_agent_task", args);
     },
     async close() {
       if (closed || shuttingDown) {

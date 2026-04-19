@@ -209,6 +209,96 @@ function isResumeLikeGoal(goal: string): boolean {
   return RESUME_GOAL_PATTERN.test(goal.trim());
 }
 
+function normalizeGoalForImplicitContinuation(goal: string): string | null {
+  const normalized = goal
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized || null;
+}
+
+function normalizeHttpUrlCandidate(value: string): string | null {
+  const trimmed = value.trim().replace(/[),.;!?]+$/u, "");
+  if (!trimmed) return null;
+  const raw = /^https?:\/\//iu.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/iu.test(parsed.protocol)) {
+      return null;
+    }
+    if (parsed.hostname.toLowerCase() === "google.com") {
+      parsed.hostname = "www.google.com";
+    }
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function extractExplicitGoalStartUrl(goal: string): string | null {
+  const trimmedGoal = goal.trim();
+  if (!trimmedGoal) {
+    return null;
+  }
+
+  const navigationMatch = trimmedGoal.match(
+    /\b(?:go to|goto|open|visit|navigate to|head to|load)\s+((?:https?:\/\/|www\.)?[a-z0-9.-]+\.[a-z]{2,}(?:\/[^\s]*)?)/iu
+  );
+  if (navigationMatch?.[1]) {
+    return normalizeHttpUrlCandidate(navigationMatch[1]);
+  }
+
+  if (
+    /\b(?:go to|goto|open|visit|navigate to|head to|load|search)\b[\s\S]{0,80}\bgoogle(?:\.com)?\b/iu.test(
+      trimmedGoal
+    ) ||
+    /\bgoogle(?:\.com)?\b[\s\S]{0,80}\bsearch\b/iu.test(trimmedGoal)
+  ) {
+    return "https://www.google.com/";
+  }
+
+  return null;
+}
+
+function alignStartParamsWithGoal(
+  params: LocalCompanionStartRunParams
+): LocalCompanionStartRunParams {
+  const explicitStartUrl = extractExplicitGoalStartUrl(params.goal);
+  if (!explicitStartUrl) {
+    return params;
+  }
+
+  const currentComparableUrl = normalizeComparableUrl(params.pageUrl);
+  const explicitComparableUrl = normalizeComparableUrl(explicitStartUrl);
+  const shouldResetPageScopedContext =
+    !currentComparableUrl ||
+    !explicitComparableUrl ||
+    currentComparableUrl !== explicitComparableUrl;
+
+  if (!shouldResetPageScopedContext) {
+    return params.pageUrl?.trim() === explicitStartUrl
+      ? params
+      : {
+          ...params,
+          pageUrl: explicitStartUrl,
+        };
+  }
+
+  return {
+    ...params,
+    pageUrl: explicitStartUrl,
+    pageContext: undefined,
+    fieldTarget: undefined,
+    scannedCandidates: undefined,
+    workItems: undefined,
+    nextPageUrl: undefined,
+    structured: undefined,
+  };
+}
+
 function buildResumeContext(run: StoredRunRecord): string {
   const lines = [
     "Continuation context from the previous interrupted run:",
@@ -798,6 +888,27 @@ function buildRunProgressPatch(
 
 const MAX_AGENT_TASK_RETRIES = 2;
 
+function isPermanentProviderErrorMessage(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) return false;
+  const markers = [
+    "llm request failed with a permanent error",
+    "resource_exhausted",
+    "prepayment credits are depleted",
+    "manage your project and billing",
+    "insufficient_quota",
+    "permission_denied",
+    "service_disabled",
+    "gemini api has not been used",
+    "vertex ai api has not been used",
+    "enable it by visiting",
+    "aiplatform.googleapis.com",
+    "api key not valid",
+    "invalid api key",
+  ];
+  return markers.some((marker) => normalized.includes(marker));
+}
+
 function isRetryableAgentError(message: string): boolean {
   const normalized = message.trim().toLowerCase();
   if (!normalized) return true;
@@ -806,7 +917,8 @@ function isRetryableAgentError(message: string): boolean {
     normalized.includes("providerconfig is required") ||
     normalized.includes("goal is required") ||
     normalized.includes("approval not found") ||
-    normalized.includes("unsupported")
+    normalized.includes("unsupported") ||
+    isPermanentProviderErrorMessage(normalized)
   ) {
     return false;
   }
@@ -1025,7 +1137,9 @@ export class LocalAgentCompanionService {
       resumeSourceRun?: StoredRunRecord | null;
     }
   ): Promise<LocalCompanionStartRunResult> {
-    if (!params.providerConfig?.apiKey) {
+    const effectiveParams = alignStartParamsWithGoal(params);
+
+    if (!effectiveParams.providerConfig?.apiKey) {
       throw new Error(
         "Missing API key for the configured provider. Add it in Settings to run Chrome MCP agent tasks."
       );
@@ -1034,32 +1148,32 @@ export class LocalAgentCompanionService {
     const resumeSourceRun =
       options?.resumeSourceRun !== undefined
         ? options.resumeSourceRun
-        : await this.findResumeSourceRun(params);
+        : await this.findResumeSourceRun(effectiveParams);
     const resumeContext = resumeSourceRun
       ? buildResumeContext(resumeSourceRun)
       : undefined;
     const siteExperienceContext = await this.findSiteExperienceContext(
-      params,
+      effectiveParams,
       resumeSourceRun?._id
     );
     const initialTasks = createInitialRunTasks(
-      params,
-      shouldUseManagedQueueWorkflow(params, this.runtime)
+      effectiveParams,
+      shouldUseManagedQueueWorkflow(effectiveParams, this.runtime)
     );
-    const initialWorkItems = deriveGenericBrowserWorkItems(params);
+    const initialWorkItems = deriveGenericBrowserWorkItems(effectiveParams);
     const initialTask = initialTasks[0];
     const initialProgress = buildRunProgressPatch(initialTasks, {
-      latestPageUrl: params.pageUrl,
+      latestPageUrl: effectiveParams.pageUrl,
       resumeCursor: initialTask?._id,
     });
 
     const run = await this.store.createRun({
-      userScope: params.userScope,
-      goal: params.goal,
-      platformHint: params.platformHint,
-      pageUrl: params.pageUrl,
-      pageContext: params.pageContext,
-      fieldTarget: params.fieldTarget,
+      userScope: effectiveParams.userScope,
+      goal: effectiveParams.goal,
+      platformHint: effectiveParams.platformHint,
+      pageUrl: effectiveParams.pageUrl,
+      pageContext: effectiveParams.pageContext,
+      fieldTarget: effectiveParams.fieldTarget,
       resumeSourceRunId: resumeSourceRun?._id,
       ...(initialWorkItems.length > 0 ? { workItems: initialWorkItems } : {}),
       tasks: initialTasks,
@@ -1069,12 +1183,12 @@ export class LocalAgentCompanionService {
     try {
       this.logger.event("info", "service", "start_run", {
         runId: run._id,
-        goal: params.goal,
-        platformHint: params.platformHint,
-        pageUrl: params.pageUrl,
+        goal: effectiveParams.goal,
+        platformHint: effectiveParams.platformHint,
+        pageUrl: effectiveParams.pageUrl,
         ...(resumeSourceRun ? { resumeSourceRunId: resumeSourceRun._id } : {}),
-        provider: params.providerConfig.provider,
-        model: params.providerConfig.model,
+        provider: effectiveParams.providerConfig.provider,
+        model: effectiveParams.providerConfig.model,
       });
       const runningTasks = run.tasks?.map((task) =>
         task._id === initialTask?._id
@@ -1097,14 +1211,14 @@ export class LocalAgentCompanionService {
             "Handing the task to the local Chrome MCP agent for tool-driven execution.",
         tasks: runningTasks,
         progress: buildRunProgressPatch(runningTasks, {
-          latestPageUrl: params.pageUrl,
+          latestPageUrl: effectiveParams.pageUrl,
           resumeCursor: initialTask._id,
         }),
       });
       this.startAgentTaskExecution(
-        params.userScope,
+        effectiveParams.userScope,
         run._id,
-        params,
+        effectiveParams,
         resumeContext,
         siteExperienceContext
       );
@@ -2446,6 +2560,12 @@ export class LocalAgentCompanionService {
         goal: params.goal,
         message: error instanceof Error ? error.message : String(error),
       });
+      if (
+        error instanceof Error &&
+        !isRetryableAgentError(error.message)
+      ) {
+        throw error;
+      }
       const fallbackWorkItems = deriveGenericBrowserWorkItems(params);
       if (fallbackWorkItems.length > 1) {
         runtimeArgs = {
@@ -2620,12 +2740,20 @@ export class LocalAgentCompanionService {
       return null;
     }
 
+    const normalizedGoal = normalizeGoalForImplicitContinuation(params.goal);
+    if (!normalizedGoal) {
+      return null;
+    }
+
     return (
       incompleteRuns.find((run) => {
         const runPageUrl = normalizeComparableUrl(
           run.progress?.latestPageUrl ?? run.pageUrl
         );
-        return runPageUrl === currentPageUrl;
+        if (runPageUrl !== currentPageUrl) {
+          return false;
+        }
+        return normalizeGoalForImplicitContinuation(run.goal) === normalizedGoal;
       }) ?? null
     );
   }
@@ -2638,7 +2766,13 @@ export class LocalAgentCompanionService {
     if (!currentHost) {
       return undefined;
     }
+    if (currentHost === "google.com" || currentHost === "www.google.com") {
+      return undefined;
+    }
     const currentPathFamily = extractPathFamily(params.pageUrl);
+    if (!currentPathFamily) {
+      return undefined;
+    }
     const recentRuns = await this.store.listRuns(params.userScope, 16);
     const matchingRuns = recentRuns.filter((run) => {
       if (excludeRunId && run._id === excludeRunId) {
@@ -2658,13 +2792,7 @@ export class LocalAgentCompanionService {
         currentPathFamily &&
         runPathFamily &&
         currentPathFamily === runPathFamily;
-      if (sameHost && samePathFamily) {
-        return true;
-      }
-      if (sameHost && !currentPathFamily && !runPathFamily) {
-        return true;
-      }
-      return false;
+      return Boolean(sameHost && samePathFamily);
     });
 
     const context = buildSiteExperienceContext(matchingRuns);
