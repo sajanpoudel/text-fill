@@ -60,6 +60,27 @@ type MemoryItem = {
   score?: number;
 };
 
+type TraceStats = {
+  total: number;
+  withOutcome: number;
+  avgLatency: number;
+  outcomes: Record<string, number>;
+};
+
+type TraceItem = {
+  traceId: string;
+  platform: string;
+  modelId: string;
+  userAction?: string;
+  editFraction?: number;
+  hadLiveContext: boolean;
+  retrievedPatternCount: number;
+  episodeExampleCount: number;
+  latencyMs: number;
+  presentedOutput: string;
+  createdAt: number;
+};
+
 const CATEGORY_LABELS: Record<CategoryFilter, string> = {
   all: "All",
   work: "Work",
@@ -144,6 +165,13 @@ function MemoryList() {
   const updateStatus = useMutation(api.memories.updateStatus);
   const updateText = useMutation(api.memories.updateText);
   const remove = useMutation(api.memories.remove);
+  const traceStats = useQuery(api.traces.getTraceStats, {}) as
+    | TraceStats
+    | null
+    | undefined;
+  const recentBadCases = useQuery(api.traces.getRecentBadCases, {}) as
+    | TraceItem[]
+    | undefined;
 
   async function handleSearch(e: FormEvent) {
     e.preventDefault();
@@ -329,6 +357,92 @@ function MemoryList() {
               {searchResults.length} semantic matches for "{searchQuery}". Filters and sort apply.
             </div>
           )}
+        </div>
+
+        <div className="mb-6 rounded-md border border-border bg-surface p-5 shadow-sm">
+          <div className="mb-4 flex items-center gap-2">
+            <BarChart3 className="h-4 w-4 text-primary" />
+            <h2 className="text-sm font-bold uppercase tracking-wider text-text">
+              Trace Review
+            </h2>
+          </div>
+
+          <div className="mb-4 grid gap-3 md:grid-cols-4">
+            <div className="rounded-md border border-border bg-bg px-4 py-3">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-text-muted">
+                Total traces
+              </div>
+              <div className="mt-1 text-2xl font-extrabold text-text">
+                {traceStats?.total ?? 0}
+              </div>
+            </div>
+            <div className="rounded-md border border-border bg-bg px-4 py-3">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-text-muted">
+                With outcome
+              </div>
+              <div className="mt-1 text-2xl font-extrabold text-text">
+                {traceStats?.withOutcome ?? 0}
+              </div>
+            </div>
+            <div className="rounded-md border border-border bg-bg px-4 py-3">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-text-muted">
+                Avg latency
+              </div>
+              <div className="mt-1 text-2xl font-extrabold text-text">
+                {traceStats?.avgLatency ?? 0}ms
+              </div>
+            </div>
+            <div className="rounded-md border border-border bg-bg px-4 py-3">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-text-muted">
+                Rewrites
+              </div>
+              <div className="mt-1 text-2xl font-extrabold text-text">
+                {traceStats?.outcomes?.rewritten ?? 0}
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {(recentBadCases ?? []).length === 0 ? (
+              <div className="rounded-md border border-dashed border-border bg-bg px-4 py-6 text-sm text-text-muted">
+                No heavily edited or rewritten traces yet.
+              </div>
+            ) : (
+              (recentBadCases ?? []).map((trace) => (
+                <div
+                  key={trace.traceId}
+                  className="rounded-md border border-border bg-bg px-4 py-3"
+                >
+                  <div className="mb-1 flex flex-wrap items-center gap-2 text-xs font-semibold text-text-muted">
+                    <span>{trace.platform}</span>
+                    <span>•</span>
+                    <span>{trace.modelId}</span>
+                    <span>•</span>
+                    <span>{trace.userAction ?? "pending"}</span>
+                    <span>•</span>
+                    <span>{formatRelativeTime(trace.createdAt)}</span>
+                  </div>
+                  <div className="mb-2 text-sm font-semibold text-text">
+                    {trace.presentedOutput}
+                  </div>
+                  <div className="flex flex-wrap gap-3 text-xs text-text-muted">
+                    <span>Latency: {trace.latencyMs}ms</span>
+                    <span>
+                      Edit rate:{" "}
+                      {typeof trace.editFraction === "number"
+                        ? formatPercent(trace.editFraction)
+                        : "n/a"}
+                    </span>
+                    <span>Patterns: {trace.retrievedPatternCount}</span>
+                    <span>Episodes: {trace.episodeExampleCount}</span>
+                    <span>
+                      Live context: {trace.hadLiveContext ? "yes" : "no"}
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
         </div>
 
         <div className="space-y-4">

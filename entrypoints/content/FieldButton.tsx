@@ -1,4 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  type CSSProperties,
+} from "react";
 import {
   autoUpdate,
   computePosition,
@@ -9,9 +15,14 @@ import {
 } from "@floating-ui/dom";
 import { GenerateModal } from "./GenerateModal.tsx";
 import { getVisibleFieldAnchor } from "../../src/lib/platform.ts";
-import { extractPageContext } from "../../src/lib/context.ts";
+import {
+  extractAudienceNameFromContext,
+  extractPageContext,
+} from "../../src/lib/context.ts";
 import type { PlatformKey } from "../../src/lib/platform.ts";
 import { insertText } from "../../src/lib/insert-text.ts";
+import { sessionObserver, getFieldText } from "../../src/lib/session-observer.ts";
+import { getLinkedInRecipientProfileUrl } from "../../src/lib/platforms/linkedin.ts";
 
 interface Props {
   field: Element;
@@ -55,6 +66,7 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [logoBroken, setLogoBroken] = useState(false);
+  const [voiceMode, setVoiceMode] = useState(false);
   const [floating, setFloating] = useState<{
     x: number;
     y: number;
@@ -170,6 +182,11 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
     setLoading(true);
     try {
       const pageContext = opts.pageContext ?? extractPageContext(field);
+      const recipientName = extractAudienceNameFromContext(pageContext);
+      sessionObserver.onGenerationStart(field, recipientName);
+      // Layer 3: extract recipient profile URL for live lookup in service worker
+      const recipientProfileUrl =
+        platform === "linkedin" ? getLinkedInRecipientProfileUrl() : null;
       const response = await chrome.runtime.sendMessage({
         type: "GENERATE",
         action: "generate",
@@ -180,11 +197,18 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
           fieldMaxLength: opts.fieldMaxLength,
           tone: opts.tone,
           domain: opts.domain,
+          ...(recipientProfileUrl ? { recipientProfileUrl } : {}),
         },
       });
       if (response?.error) throw new Error(response.error);
       if (response?.text) {
-        setTimeout(() => insertText(field, response.text, platform), 80);
+        const traceId: string | undefined = typeof response.traceId === "string" ? response.traceId : undefined;
+        setTimeout(() => {
+          insertText(field, response.text, platform);
+          setTimeout(() => {
+            sessionObserver.onGenerationComplete(field, getFieldText(field), traceId);
+          }, 120);
+        }, 80);
         setSuccess(true);
         showToast("✓ Text inserted");
         setTimeout(() => setSuccess(false), 1500);
@@ -203,6 +227,21 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
     field.addEventListener("tfa-quick-generate", handler);
     return () => field.removeEventListener("tfa-quick-generate", handler);
   }, [field, loading, handleGenerate]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      if (!loading) {
+        const detail = (event as CustomEvent<{ instruction?: string }>).detail;
+        if (typeof detail?.instruction === "string") {
+          setInstruction(detail.instruction);
+        }
+        setVoiceMode(true);
+        setShowModal(true);
+      }
+    };
+    field.addEventListener("tfa-open-voice-modal", handler);
+    return () => field.removeEventListener("tfa-open-voice-modal", handler);
+  }, [field, loading]);
 
   const handleClick = useCallback(() => {
     if (loading) return;
@@ -224,7 +263,7 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
   const isVisible = floating?.visible ?? false;
   const isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
 
-  const btnStyle: React.CSSProperties = {
+  const btnStyle: CSSProperties = {
     position: "fixed",
     top: floating?.y ?? -9999,
     left: floating?.x ?? -9999,
@@ -284,6 +323,7 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
                 objectFit: "cover",
                 borderRadius: "50%",
                 display: "block",
+                opacity: 0.85,
               }}
             />
           ) : (
@@ -335,7 +375,7 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
               top: 0, left: 0,
               width: BUTTON_SIZE, height: BUTTON_SIZE,
               borderRadius: "50%",
-              background: isDark ? "#ffffff" : "#000000",
+              background: isDark ? "#fcfcfb" : "#1c1917",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -351,8 +391,8 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
               position: "absolute",
               bottom: -2, right: -2,
               minWidth: 10, height: 10,
-              background: isDark ? "#ffffff" : "#000000",
-              border: `2px solid ${isDark ? "#000" : "#fff"}`,
+              background: isDark ? "#fcfcfb" : "#7f1d1d",
+              border: `2px solid ${isDark ? "#44403c" : "#fcfcfb"}`,
               borderRadius: 6,
               pointerEvents: "none",
               zIndex: 1,
@@ -379,9 +419,10 @@ export function FieldButton({ field, platform, activeContextCount, showToast }: 
           activeContextCount={activeContextCount}
           instruction={instruction}
           onInstructionChange={setInstruction}
-          onClose={() => setShowModal(false)}
+          onClose={() => { setShowModal(false); setVoiceMode(false); }}
           onGenerate={handleGenerate}
           showToast={showToast}
+          voiceMode={voiceMode}
         />
       )}
 

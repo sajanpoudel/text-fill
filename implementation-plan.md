@@ -20,6 +20,7 @@
 12. [Convex Schema — Full Addition](#12-convex-schema--full-addition)
 13. [Phased Implementation Order](#13-phased-implementation-order)
 14. [Key Constraints & Guardrails](#14-key-constraints--guardrails)
+15. [Layer 8 — Agentic Task Orchestration](#15-layer-8--agentic-task-orchestration)
 
 ---
 
@@ -34,11 +35,26 @@ The end state is not a text box helper. It is a **personal browser-layer AI** th
 - **Listens**: responds to voice commands ("write an email to this person, look at the attached context"), dictates text, and optionally wakes on a trigger phrase.
 - **Learns over time**: every session is an episode. Episodes feed into procedural rules. Rules improve future generation prompts automatically.
 
-The core constraint: the extension must be **production-safe** — no `chrome.debugger` warning bar, no native messaging install friction for core features. All core functionality uses `chrome.scripting`, `chrome.tabs`, `chrome.webNavigation`, and an offscreen document for audio/voice.
+The core constraint: core writing features must stay **production-safe** and extension-native, but full agentic browser automation no longer needs to stay inside MV3 alone. The new default path is a **local companion runtime on the user's device** that handles long-running browser control, while the extension remains the UI, observer, and approval surface. We will not rely on `chrome.debugger` for production automation, and we will not assume Chrome allows transparent CDP attachment to the user's stock default profile: on modern Chrome, remote debugging requires a non-standard profile directory, so the companion must own the automation-capable browser/profile setup while keeping user data on-device.
 
 ---
 
 ## 2. Current State Audit
+
+### Verified status snapshot (2026-04-05)
+
+| Phase | Verified status | Notes |
+|---|---|---|
+| Phase 0 — Permissions | ✅ Complete | `scripting`, `tabs`, `webNavigation`, and `offscreen` are in [wxt.config.ts](wxt.config.ts) |
+| Phase 1 — Session Observation | ✅ Implemented in code | Session capture, send heuristics, `recipientName`, `traceId`, and all action paths are wired |
+| Phase 2 — Multi-Tier Retrieval | ✅ Implemented in code | Semantic + procedural + episodic retrieval is unified across `generate`, `rewrite`, `shorten`, and `expand` |
+| Phase 3 — Procedural Pattern Promotion | ✅ Implemented in code | Pattern supports, promotion checks, and weekly decay cron exist |
+| Phase 4 — Entity Graph | ✅ Implemented in code | Temporal entities/edges, lexical dedup, and embedding-backed fuzzy resolution are wired |
+| Phase 5 — Browser Control | ⚠️ Core flow implemented | LinkedIn task queue, auth-scoped queue storage, and shared MAIN-world helpers exist; broader multi-platform automation is still pending |
+| Phase 6 — Voice | ✅ Implemented in code | Offscreen recognition + intent parsing + explicit runtime state sync are wired end to end |
+| Phase 7 — Proactive Scanning | ✅ Implemented in code | `ChangeThreshold`, LinkedIn scanning, suggestion chip, and queue preview are wired |
+| Phase 8 — Evaluation & Tracing | ⚠️ Core tracing implemented | Trace tables, queries, and review UI exist; dev-only CDP/DevTools tooling is still not built |
+| Phase 9 — Agentic Task Orchestration | ⚠️ Local companion path implemented; legacy compatibility still being reduced | The production companion run path now uses a local companion on the user's device, with `mcp-agent` orchestrating Chrome DevTools MCP browser control. Convex durable state, legacy command-bus pieces, and approval resume compatibility still exist, but the TypeScript planner is no longer the primary run loop for new companion tasks |
 
 ### What already exists and is good
 
@@ -55,20 +71,28 @@ The core constraint: the extension must be **production-safe** — no `chrome.de
 | Memory extraction post-generation | [convex/memoryExtract.ts:194](convex/memoryExtract.ts#L194) | Semantic facts only, no episodic or procedural |
 | Background service worker | [entrypoints/background.ts](entrypoints/background.ts) | Handles GENERATE, CAPTURE_CONTEXT, auth refresh |
 
-### What is missing
+### What is now built (verified snapshot — 2026-04-05)
+
+| Component | Location | Notes |
+|---|---|---|
+| `SessionObserver` class | [src/lib/session-observer.ts](src/lib/session-observer.ts) | Full session lifecycle, multi-signal send detection |
+| Multi-signal send detection | [src/lib/session-observer.ts:345](src/lib/session-observer.ts#L345) | Signal A = form submit, B = Enter/Ctrl+Enter, C = mousedown + XHR confirm |
+| Per-field composite snapshot | [src/lib/session-observer.ts:421](src/lib/session-observer.ts#L421) | Debounced `input` (300ms) + `compositionend` → `_settledText` map |
+| MAIN-world XHR/fetch interceptor | [entrypoints/send-interceptor.content.ts](entrypoints/send-interceptor.content.ts) | Dedicated MAIN-world content script, posts `__TF_SEND__` on send-like POSTs |
+| Bounded Levenshtein + trigram diff | [src/lib/session-observer.ts:61](src/lib/session-observer.ts#L61) | O(n) space, bails at 5000 ops; trigram fallback for texts > 1500 chars |
+| `interactionSessions` + `sessionArtifacts` tables | [convex/schema.ts:68](convex/schema.ts#L68) | With `recipientName`, soft-deleted artifact, 3 indexes each |
+| `recordSession` mutation | [convex/interactions.ts:7](convex/interactions.ts#L7) | Inserts session row + optional artifact in one transaction |
+| `OBSERVE_SESSION` routing | [entrypoints/background.ts:103](entrypoints/background.ts#L103) | Fire-and-forget to Convex; never blocks generation |
+| Generation hooks — all paths | [entrypoints/content/FieldButton.tsx:173](entrypoints/content/FieldButton.tsx#L173), [GenerateModal.tsx:289](entrypoints/content/GenerateModal.tsx#L289) | `onGenerationStart` + `onGenerationComplete(getFieldText(field))` after 80+120ms |
+| `scripting`, `tabs`, `webNavigation` permissions | [wxt.config.ts](wxt.config.ts) | Added for Layer 1; `offscreen` deferred to Layer 5 (voice) |
+
+### What is still missing
 
 | Gap | Impact |
 |---|---|
-| No session observation (before/after AI, diffs, outcomes) | No behavioral data to learn from |
-| No episodic memory (what happened when) | Cannot inject past similar sessions as examples |
-| No procedural memory (what rules does user follow) | Cannot adapt generation prompts to user style |
-| No entity graph (people, companies, relations) | Cannot track "user works at X" with temporal validity |
-| No live retrieval (recipient profile at generation time) | Volatile data leaks into long-term memory |
-| No browser control (click, navigate, fill fields) | Cannot act on user's behalf |
-| No proactive scanning (find opportunities, suggest) | Always reactive — waits for user to ask |
-| No voice input | Cannot listen to commands |
-| No offscreen document | No long-running audio or persistent JS |
-| Permissions too narrow | `activeTab` but no `tabs`, `scripting`, `webNavigation`, `offscreen` |
+| Legacy extension-native automation is still implemented mainly for the LinkedIn connect flow | The new companion path is generic through Chrome DevTools MCP, but older extension-side queue code is still LinkedIn-heavy and should continue to be demoted |
+| Dev-only tracing extras (`chrome.debugger`, DevTools panel, network replay tooling) are still absent | Deep local debugging remains limited to current trace tables and manual DevTools use |
+| Agentic runtime target architecture has changed | The current Convex-first runtime is usable as a transitional path, but the forward plan is a local companion with extension UI/observation plus Convex-backed memory, traces, and review state, using Chrome DevTools MCP as the browser-control backend |
 
 ---
 
@@ -118,127 +142,162 @@ The core constraint: the extension must be **production-safe** — no `chrome.de
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Planned extension for long-running agentic tasks
+
+The current architecture is enough for deterministic queued actions, but not for open-ended agentic jobs like:
+
+- "Find 20 recruiters in software engineering in Cincinnati and draft connection requests"
+- "Go through these job applications, answer the short-answer questions, and stop for approval before submit"
+- "Review this Gmail thread, summarize the asks, draft replies, and queue follow-ups"
+
+To support those safely, the system now pivots to a **local browser-automation companion** instead of continuing to grow a Convex-first in-extension executor:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  USER'S MACHINE                                                 │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  CHROME EXTENSION                                        │  │
+│  │  • Field/session observation                             │  │
+│  │  • Context extraction + lightweight compose helpers      │  │
+│  │  • Approval UI, queue review UI, run status UI           │  │
+│  │  • Voice + proactive suggestions                         │  │
+│  └────────────────┬─────────────────────────────────────────┘  │
+│                   │ localhost WebSocket / future native msg    │
+│  ┌────────────────▼─────────────────────────────────────────┐  │
+│  │  LOCAL COMPANION RUNTIME (new default)                   │  │
+│  │  • `mcp-agent` orchestration framework                   │  │
+│  │  • Chrome DevTools MCP backend for running Chrome mode   │  │
+│  │  • Chrome DevTools MCP launched-Chrome fallback mode     │  │
+│  │  • Long-running planner + browser execution bridge       │  │
+│  │  • Long-running task loop, retries, tab/session recovery │  │
+│  │  • Uses a companion-managed automation-capable profile   │  │
+│  └────────────────┬─────────────────────────────────────────┘  │
+│                   │ HTTPS                                       │
+└───────────────────┼─────────────────────────────────────────────┘
+                    │
+┌───────────────────▼─────────────────────────────────────────────┐
+│  CONVEX BACKEND                                                 │
+│  • memories / entities / procedural patterns                    │
+│  • traces / reviews / deterministic task batches                │
+│  • auth, settings, syncable run metadata                        │
+│  • retrieval + generation support                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+This keeps browser execution on the user's device and close to their real browsing data, but stops requiring the extension team to hand-build every browser automation primitive for every site. The extension remains the product surface. The local companion becomes the primary agent executor.
+
 ---
 
 ## 4. Layer 1 — Observation
 
-### Goal
-Record what the user actually does around every AI generation: what text existed before, what AI generated, what user changed, whether they sent or abandoned.
+> **Status: IMPLEMENTED IN CODE** (verified 2026-04-05). The capture path is wired end to end. Remaining risk is real-site validation on CSP-heavy pages and send-button DOM variants.
 
-### Integration point
-Extend the existing `focusin` handler at [App.tsx:763](entrypoints/content/App.tsx#L763). Do **not** build a second observer. Add session state alongside the existing `focusedField` React state.
+### What was built
 
-### Session lifecycle
+| File | Role |
+|---|---|
+| [src/lib/session-observer.ts](src/lib/session-observer.ts) | `SessionObserver` singleton — full session lifecycle |
+| [convex/interactions.ts](convex/interactions.ts) | `recordSession` mutation — one transaction for session + artifact |
+| [convex/schema.ts:68](convex/schema.ts#L68) | `interactionSessions` + `sessionArtifacts` tables |
+| [entrypoints/content/App.tsx:770](entrypoints/content/App.tsx#L770) | `onFieldFocus` / `onFieldBlur` hooks into existing focusin/focusout handlers |
+| [entrypoints/content/FieldButton.tsx:173](entrypoints/content/FieldButton.tsx#L173) | `onGenerationStart` + `onGenerationComplete` for generate path |
+| [entrypoints/content/GenerateModal.tsx:289](entrypoints/content/GenerateModal.tsx#L289) | `onGenerationStart` + `onGenerationComplete` for rewrite/shorten/expand paths |
+| [entrypoints/background.ts:103](entrypoints/background.ts#L103) | `OBSERVE_SESSION` case → `handleObserveSession` → Convex mutation |
+| [entrypoints/send-interceptor.content.ts](entrypoints/send-interceptor.content.ts) | MAIN-world send interceptor runs as a dedicated content script in the MAIN world |
+
+### Session lifecycle (as implemented)
 
 ```
-focusin  → SESSION_OPEN   (snapshot preText, record timestamp, sessionId)
-AI inject→ AI_GENERATED   (snapshot aiText right after inject, record genTimestamp)  
-input    → (debounced 300ms, track settled value only)
-blur     → SESSION_CLOSE  (snapshot finalText, compute diff, classify outcome)
-XHR send → SENT           (correlate with active session, mark outcome = 'sent')
+focusin        → onFieldFocus(field, platform)   — opens session, attaches per-field listeners
+generation call → onGenerationStart(field)        — snapshots preText
+post-insert    → onGenerationComplete(field, getFieldText(field))  — 80ms + 120ms after insert
+input/IME      → debounced 300ms / compositionend — updates _settledText map
+focusout       → onFieldBlur(field)              — computes diff, classifies, emits to SW
 ```
 
-### Composite text snapshot model
+### Composite text snapshot model (as implemented)
 
-`beforeinput` alone is not a complete baseline. Use this sequence:
+1. `onGenerationStart(field)` — captures `getFieldText(field)` as `preText` baseline
+2. Per-field `input` listener, debounced 300ms — updates `_settledText` after framework normalization
+3. Per-field `compositionend` listener — immediate update for IME input completion
+4. `onGenerationComplete(field, getFieldText(field))` — called 200ms after `insertText`, captures what actually landed in the editor (not the raw API response — `insertText` may truncate/normalize)
+5. `onFieldBlur` — uses `_settledText` preferentially over sync snapshot
 
-1. `beforeinput` — capture `element.textContent` as early pre-edit candidate
-2. `input` debounced 300ms — capture settled value after framework normalization
-3. `compositionend` — capture after IME input completes
-4. `blur` — final snapshot for diff
+### Diff computation (as implemented)
 
-### Diff computation
+No external dependency. Inline in `session-observer.ts`:
 
-Use `fast-myers-diff` (4KB, O(ND), same algorithm as Git):
+- **Bounded Levenshtein** — O(n) space, bails out at `maxDist=5000` for speed. Sufficient for texts up to ~1500 chars.
+- **Trigram similarity fallback** — for texts > 1500 chars. Returns `1 - similarity` as edit fraction.
 
 ```typescript
-// src/lib/diff.ts  (new file)
-import { diff } from 'fast-myers-diff';
-
-export type DiffOp = [number, number, number, number, number]; // [op, os, oe, ns, ne]
-
-export function computeDiff(before: string, after: string): DiffOp[] {
-  return [...diff(before, after)];
-}
-
-export function classifyOutcome(
-  aiGenerated: string,
-  userFinal: string
-): 'accepted' | 'lightly_edited' | 'heavily_edited' | 'rewritten' | 'abandoned' {
-  if (!userFinal || userFinal.trim().length === 0) return 'abandoned';
-  if (userFinal.trim() === aiGenerated.trim()) return 'accepted';
-  const editFraction = levenshtein(aiGenerated, userFinal) / Math.max(aiGenerated.length, 1);
-  if (editFraction < 0.15) return 'lightly_edited';
-  if (editFraction < 0.5) return 'heavily_edited';
+export function classifyOutcome(aiText: string, finalText: string): SessionOutcome {
+  if (!finalText.trim()) return 'abandoned';
+  if (finalText.trim() === aiText.trim()) return 'accepted';
+  const frac = editFraction(aiText, finalText);
+  if (frac < 0.15) return 'lightly_edited';
+  if (frac < 0.5) return 'heavily_edited';
   return 'rewritten';
 }
-
-export function charDelta(before: string, after: string): number {
-  return after.length - before.length; // negative = shortened
-}
 ```
 
-### Send detection — correlated, not raw XHR
+### Send detection — three independent signals (as implemented)
 
-Raw XHR intercept produces false positives (autosave, typing indicators, analytics). Correlate two signals:
+Signal C alone (mousedown without XHR confirmation) is **not sufficient**. All three are independent:
 
-**Signal A**: Button click near compose field:
+**Signal A — form `submit` event** (self-confirming):
 ```typescript
-// Content script: track send-button clicks in active session
-document.addEventListener('click', (e) => {
-  const target = e.target as Element;
-  const isSendAction =
-    target.matches('[data-testid*="send"], [aria-label*="Send"], [aria-label*="send"]') ||
-    target.closest('[data-testid*="send"], [aria-label*="Send"]');
-  if (isSendAction && activeSession) {
-    pendingSendSignal = Date.now();
-  }
+document.addEventListener('submit', (e) => {
+  if (form.contains(activeField)) _formSubmitPending = { field, at: Date.now() };
 }, { capture: true, passive: true });
 ```
 
-**Signal B**: XHR/fetch intercept from MAIN world (inject via `chrome.scripting.executeScript`):
+**Signal B — keyboard Enter** (self-confirming):
+- Single-line `<input>`: plain Enter
+- `contenteditable` (LinkedIn, Gmail): Ctrl/Cmd+Enter only
+
+**Signal C — mousedown on enabled send button, confirmed by XHR** (requires both):
+- `mousedown` on element matching `[aria-label*="Send"]`, `[data-testid*="send"]`, etc., AND `disabled` check on element + ancestors
+- XHR/fetch POST to send-like URL must arrive within 3 seconds via `window.postMessage`
+- The MAIN-world interceptor now lives in [entrypoints/send-interceptor.content.ts](entrypoints/send-interceptor.content.ts) as a dedicated MAIN-world content script, which avoids CSP issues from inline injection
+
 ```typescript
-// Injected into MAIN world from service worker on tab focus
-window.fetch = async (...args) => {
-  const res = await origFetch(...args);
-  const url = typeof args[0] === 'string' ? args[0] : (args[0] as Request)?.url ?? '';
-  if (/\/(message|send|reply|inmail|compose)/i.test(url) && res.ok) {
-    window.postMessage({ type: '__TF_SEND__', url, ts: Date.now() }, '*');
-  }
-  return res;
-};
-// Content script (ISOLATED) listens: window.addEventListener('message', ...)
+private _checkSentSignals(field: Element, now: number): boolean {
+  const WINDOW_MS = 2000;
+  // Signal A
+  if (this._formSubmitPending?.field === field && now - this._formSubmitPending.at < WINDOW_MS) return true;
+  // Signal B
+  if (this._enterPending?.field === field && now - this._enterPending.at < WINDOW_MS) return true;
+  // Signal C
+  if (this._mousedownPending?.field === field &&
+      this._xhrConfirmedAt > this._mousedownPending.at &&
+      this._xhrConfirmedAt - this._mousedownPending.at < 3000) return true;
+  return false;
+}
 ```
 
-**Correlation**: emit `SENT` only when XHR signal fires within 3 seconds of button-click signal AND the active compose field was non-empty.
+### Session event emission (as implemented)
 
-### Session event emission
-
-On session close, content script sends one message to service worker:
+On field blur, `SessionObserver` calls `chrome.runtime.sendMessage` with:
 
 ```typescript
-chrome.runtime.sendMessage({
+{
   type: 'OBSERVE_SESSION',
   payload: {
-    sessionId: crypto.randomUUID(),
-    platform,
-    contextType,           // 'recruiter_dm' | 'connection_req' | 'cold_email' | etc.
-    recipientName,         // from existing extractPageContext()
-    openedAt,
-    aiGeneratedAt,
-    closedAt: Date.now(),
-    outcome,               // 'accepted' | 'lightly_edited' | 'heavily_edited' | 'rewritten' | 'abandoned' | 'sent'
-    charDelta,
-    editFraction,
-    // Text blobs go in sessionArtifacts (separate Convex table)
-    aiPreText: aiPreText?.slice(0, 4000),
-    aiGeneratedText: aiGeneratedText?.slice(0, 4000),
-    userFinalText: userFinalText?.slice(0, 4000),
+    sessionId,      // crypto.randomUUID()
+    platform,       // "linkedin" | "gmail" | etc.
+    contextType,    // "connection_req" | "dm" | "inmail" | "email" | "post" | undefined
+    recipientName,  // from onGenerationStart optional param
+    openedAt, aiGeneratedAt, closedAt,
+    outcome,        // "accepted" | "lightly_edited" | "heavily_edited" | "rewritten" | "abandoned" | "sent"
+    charDelta, editFraction,
+    aiPreText, aiGeneratedText, userFinalText,  // capped at 4000 chars each in Convex
   }
-});
+}
 ```
 
-Service worker writes to Convex via `convex.mutation(api.interactions.recordSession, payload)`.
+Service worker routes to `handleObserveSession` → `convex.mutation(api.interactions.recordSession, ...)`. Fire-and-forget — never blocks generation.
 
 ---
 
@@ -481,16 +540,18 @@ class PersistentTaskQueue {
   private running = false;
 
   async enqueue(tasks: Task[]) {
-    const { queue = [] } = await chrome.storage.local.get('taskQueue');
-    await chrome.storage.local.set({ taskQueue: [...queue, ...tasks] });
+    const queueKey = getTaskQueueStorageKey(currentUserScope);
+    const { [queueKey]: queue = [] } = await chrome.storage.local.get(queueKey);
+    await chrome.storage.local.set({ [queueKey]: [...queue, ...tasks] });
     void this.process();
   }
 
   private async dequeue(): Promise<Task | null> {
-    const { queue = [] } = await chrome.storage.local.get('taskQueue');
+    const queueKey = getTaskQueueStorageKey(currentUserScope);
+    const { [queueKey]: queue = [] } = await chrome.storage.local.get(queueKey);
     if (!queue.length) return null;
     const [task, ...rest] = queue;
-    await chrome.storage.local.set({ taskQueue: rest });
+    await chrome.storage.local.set({ [queueKey]: rest });
     return task;
   }
 
@@ -536,10 +597,10 @@ Gating pattern in `wxt.config.ts`:
 ...(process.env.NODE_ENV === 'development' ? ['debugger', 'nativeMessaging'] : [])
 ```
 
-#### Tier 5 — Native messaging sidecar (Playwright/Puppeteer, local power users)
+#### Tier 5 — Native messaging sidecar (local companion, advanced mode)
 
 For full agent-level browser control beyond what `chrome.scripting` can do:
-- Playwright (`chromium.connectOverCDP('http://localhost:9222')`) can connect to Chrome launched with `--remote-debugging-port`
+- a local companion can expose higher-level browser control through Chrome DevTools Protocol tooling
 - `chrome.runtime.connectNative('com.yourapp.sidecar')` opens a persistent pipe to a local Node/Python process
 
 **Requires OS-level install** (manifest JSON file placement in OS-specific location). This is appropriate for a "power mode" offered to developers and advanced users, not general distribution.
@@ -573,10 +634,10 @@ User speaks
 
 ### Setup
 
-`entrypoints/offscreen.html` + `entrypoints/offscreen.ts` (new files):
+`entrypoints/offscreen.html` + `entrypoints/offscreen/main.ts`:
 
 ```typescript
-// entrypoints/offscreen.ts
+// entrypoints/offscreen/main.ts
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.target !== 'offscreen') return;
   if (msg.type === 'START_VOICE') startRecognition();
@@ -600,7 +661,7 @@ async function ensureOffscreen() {
 ### Web Speech API (continuous recognition)
 
 ```typescript
-// offscreen.ts
+// offscreen/main.ts
 const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
 const recognition = new SR() as SpeechRecognition;
 recognition.continuous = true;
@@ -630,7 +691,7 @@ recognition.onend = () => {
 For commands needing higher accuracy or non-English support, stream audio to OpenAI's Realtime API or Whisper:
 
 ```typescript
-// offscreen.ts — OpenAI Realtime API option
+// offscreen/main.ts — OpenAI Realtime API option
 const ws = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview', [
   'realtime',
   `openai-insecure-api-key.${OPENAI_KEY}`, // use session token in production
@@ -663,7 +724,7 @@ case 'VOICE_COMMAND': {
 Porcupine Web SDK (`@picovoice/porcupine-web`) runs WASM in the offscreen document. No audio leaves the device until wake word is detected. Built-in keywords available (e.g., "Jarvis", "Hey Siri"-style); custom keywords require Picovoice account.
 
 ```typescript
-// offscreen.ts
+// offscreen/main.ts
 import { Porcupine, BuiltInKeyword } from '@picovoice/porcupine-web';
 const porcupine = await Porcupine.create(PICOVOICE_KEY, [BuiltInKeyword.Jarvis], () => {
   chrome.runtime.sendMessage({ target: 'background', type: 'WAKE_WORD' });
@@ -782,7 +843,7 @@ Service worker executes with rate limiting
 | Profile view time before connect | 2–5s | `setTimeout` before clicking Connect |
 | Daily profile visits | 100 max | Counter in storage |
 
-Your extension runs in the user's **real Chrome session** with their real cookies and residential IP. This is inherently less detectable than Puppeteer/Playwright (which uses a separate browser with detectable fingerprint). Still: respect LinkedIn's Terms of Service and communicate limits clearly to users.
+Your extension runs in the user's **real Chrome session** with their real cookies and residential IP. This is inherently less detectable than external owned-browser automation that launches a separate browser context. Still: respect LinkedIn's Terms of Service and communicate limits clearly to users.
 
 ---
 
@@ -879,7 +940,7 @@ host_permissions: [
 permissions: [
   ...productionPermissions,
   "debugger",         // CDP access — shows warning bar, dev only
-  "nativeMessaging",  // Playwright/Puppeteer sidecar — dev only
+  "nativeMessaging",  // local companion sidecar — dev/advanced mode only
 ],
 ```
 
@@ -887,7 +948,7 @@ permissions: [
 
 ```
 entrypoints/offscreen.html   — voice runtime
-entrypoints/offscreen.ts     — SpeechRecognition, MediaRecorder, Porcupine
+entrypoints/offscreen/main.ts — SpeechRecognition, MediaRecorder, Porcupine
 entrypoints/devtools.html    — DevTools panel (dev builds only)
 entrypoints/devtools.ts      — chrome.devtools.network + trace viewer
 ```
@@ -1085,32 +1146,35 @@ taskItems: defineTable({
 
 ## 13. Phased Implementation Order
 
-### Phase 0 — Permissions (1–2 hours)
+### Phase 0 — Permissions ✅ VERIFIED COMPLETE
 **Files**: [wxt.config.ts](wxt.config.ts)
 
-- Add `scripting`, `tabs`, `webNavigation`, `offscreen` to production permissions
-- Add `https://www.linkedin.com/*` and `https://mail.google.com/*` to `host_permissions`
-- Add `debugger`, `nativeMessaging` behind `NODE_ENV === 'development'` guard
+- ✅ Added `scripting`, `tabs`, `webNavigation` to production permissions
+- ✅ Added `https://www.linkedin.com/*` and `https://mail.google.com/*` to `host_permissions`
+- `offscreen` deferred to Phase 6 (voice). `debugger`/`nativeMessaging` deferred to Phase 8 (eval).
 
 ---
 
-### Phase 1 — Session Observation (highest ROI, zero extra LLM calls)
-**Files**: [entrypoints/content/App.tsx](entrypoints/content/App.tsx), [entrypoints/background.ts](entrypoints/background.ts), [convex/schema.ts](convex/schema.ts), new `convex/interactions.ts`
+### Phase 1 — Session Observation ✅ IMPLEMENTED (verified 2026-04-05)
+**Files**: [entrypoints/content/App.tsx](entrypoints/content/App.tsx), [entrypoints/content/FieldButton.tsx](entrypoints/content/FieldButton.tsx), [entrypoints/content/GenerateModal.tsx](entrypoints/content/GenerateModal.tsx), [entrypoints/content/index.ts](entrypoints/content/index.ts), [entrypoints/background.ts](entrypoints/background.ts), [convex/schema.ts](convex/schema.ts), [convex/interactions.ts](convex/interactions.ts), [src/lib/session-observer.ts](src/lib/session-observer.ts)
 
-1. Add `interactionSessions` + `sessionArtifacts` tables to schema
-2. Add `src/lib/diff.ts` with `computeDiff`, `classifyOutcome`, `charDelta`
-3. Extend `focusin` handler at [App.tsx:764](entrypoints/content/App.tsx#L764) to open a session record
-4. Record AI text snapshot when generation result is received
-5. Add `beforeinput` + debounced `input` listeners on focused fields for settled-value tracking
-6. Add MAIN world XHR intercept (via `chrome.scripting.executeScript`) for send detection
-7. Compute diff + outcome on `focusout`, emit `OBSERVE_SESSION` to service worker
-8. Service worker writes to Convex `interactions.recordSession` mutation
+- ✅ `interactionSessions` + `sessionArtifacts` tables in schema (with `recipientName`, 3 indexes each)
+- ✅ Inline bounded Levenshtein + trigram diff in `session-observer.ts` (no external dep)
+- ✅ `onFieldFocus` / `onFieldBlur` hooks in App.tsx `focusin`/`focusout` handlers
+- ✅ Per-field composite snapshot: debounced `input` (300ms) + immediate `compositionend` → `_settledText`
+- ✅ `onGenerationStart` + `onGenerationComplete(getFieldText(field))` in FieldButton + GenerateModal (all action paths: generate, rewrite, shorten, expand)
+- ✅ Post-insert text contract: callers snapshot field text at 80ms+120ms after `insertText` (not raw API response)
+- ✅ Three-signal send detection: Signal A (form submit), Signal B (Enter/Ctrl+Enter), Signal C (mousedown+XHR confirm)
+- ✅ MAIN-world XHR/fetch interceptor runs as a dedicated MAIN-world content script
+- ✅ `OBSERVE_SESSION` routing in service worker → Convex `recordSession` mutation
+- ✅ Build: zero errors, zero warnings (`npx wxt build` clean)
 
-**Outcome**: Raw behavioral data starts accumulating. No pattern extraction yet.
+**Outcome**: Raw behavioral data accumulates on every AI-assisted compose session across all action types.
+**Remaining risk**: live validation is still needed on unusual send-button DOM variants, but the CSP-specific inline-script risk is removed.
 
 ---
 
-### Phase 2 — Multi-Tier Retrieval in generate.ts (zero extra LLM calls)
+### Phase 2 — Multi-Tier Retrieval in generate.ts ✅ IMPLEMENTED
 **Files**: [convex/generate.ts](convex/generate.ts), new `convex/retrieval.ts`
 
 1. Add `proceduralPatterns` table (empty to start)
@@ -1120,11 +1184,12 @@ taskItems: defineTable({
    - `RECENT EXAMPLES`: query last 3 sessions with same `platform + contextType` where `outcome != 'abandoned'`, inject as anonymized edit summaries (not raw messages)
 3. Pass `recipientContext` as a new parameter — injected as `RECIPIENT CONTEXT` block, never stored
 
-**Outcome**: Generation now uses all three memory tiers, even though procedural patterns are empty at first.
+**Outcome**: Generation now uses semantic memory, procedural rules, episodic summaries, and transient recipient context across all text actions.
+**Remaining work**: prompt-quality tuning and live-provider evaluation, not missing wiring.
 
 ---
 
-### Phase 3 — Procedural Pattern Promotion
+### Phase 3 — Procedural Pattern Promotion ✅ IMPLEMENTED
 **Files**: new `convex/patterns.ts`, [convex/crons.ts](convex/crons.ts), [convex/schema.ts](convex/schema.ts)
 
 1. Add `patternSupports` junction table
@@ -1135,23 +1200,25 @@ taskItems: defineTable({
 4. Weekly cron: `confidence *= 0.9` for patterns not triggered in 7 days; soft-delete at `confidence < 0.1`
 
 **Outcome**: The system learns behavioral rules automatically from observed edit patterns.
+**Remaining work**: tune promotion thresholds/confidence decay from real user data.
 
 ---
 
-### Phase 4 — Entity Graph
+### Phase 4 — Entity Graph ✅ IMPLEMENTED IN CODE
 **Files**: [convex/schema.ts](convex/schema.ts), new `convex/entities.ts`, [convex/memoryExtract.ts](convex/memoryExtract.ts)
 
 1. Add `entities`, `entityEmbeddings`, `entityEdges`, `edgeSupports` tables
 2. In `memoryExtract.ts`, extract entity mentions alongside fact extraction
-3. Entity resolution: embedding cosine similarity ≥ 0.85 for dedup; async LLM confirmation for 0.75–0.85 range
+3. Entity resolution: canonical-name dedup first, then embedding-backed fuzzy matching with conservative ambiguity handling
 4. Contradiction handling: when new `works_at` edge conflicts with existing, set `invalidAt = now` on old edge, insert new edge
 5. Upgrade `memories` table: add `validAt`, `invalidAt` fields, update soft-delete index
 
-**Outcome**: Temporal entity relationships tracked. "User currently works at X" never gets confused with "User previously worked at Y."
+**Outcome**: Temporal entity relationships are now extracted and tracked, including contradiction invalidation for exclusive relations like `works_at`.
+**Remaining work**: richer human-review / LLM-confirmation workflows for ambiguous entity merges are optional future work, but the core fuzzy-resolution path is now wired.
 
 ---
 
-### Phase 5 — Browser Control + Batch Operations
+### Phase 5 — Browser Control + Batch Operations ⚠️ CORE FLOW IMPLEMENTED
 **Files**: [entrypoints/background.ts](entrypoints/background.ts), [entrypoints/content/App.tsx](entrypoints/content/App.tsx), new `src/lib/browser-control.ts`, new `convex/tasks.ts`
 
 1. Add `taskBatches` + `taskItems` tables
@@ -1165,12 +1232,13 @@ taskItems: defineTable({
    - Service worker batch executor with `humanDelay`
    - Daily limit enforcement (`chrome.storage.local`)
 
-**Outcome**: Extension can find and message 20+ recruiters with one user click.
+**Outcome**: Extension can scan LinkedIn search results, queue connection tasks, generate notes, and execute a controlled LinkedIn connect flow.
+**Remaining work**: expand the shared browser-control layer to more platforms and finish broader live-site E2E validation.
 
 ---
 
-### Phase 6 — Voice
-**Files**: new `entrypoints/offscreen.html`, new `entrypoints/offscreen.ts`, [entrypoints/background.ts](entrypoints/background.ts), new `convex/voice.ts`
+### Phase 6 — Voice ✅ IMPLEMENTED IN CODE
+**Files**: new `entrypoints/offscreen.html`, [entrypoints/offscreen/main.ts](entrypoints/offscreen/main.ts), [entrypoints/background.ts](entrypoints/background.ts), new `convex/voice.ts`
 
 1. Create offscreen document entrypoint
 2. Add `ensureOffscreen()` to service worker startup
@@ -1181,11 +1249,12 @@ taskItems: defineTable({
 7. Optional: add Porcupine wake word detection (behind feature flag, adds ~1MB WASM bundle)
 8. Optional: upgrade to OpenAI Realtime API for lower latency (behind user-selectable setting)
 
-**Outcome**: User can say "write a connection note to this recruiter" and the extension generates and fills it.
+**Outcome**: User can trigger offscreen speech recognition, parse intent, and route compose/search/connect actions back into the extension with explicit runtime-state acknowledgements reflected in the FAB.
+**Remaining work**: wake word support and optional Realtime/Porcupine upgrades remain future work.
 
 ---
 
-### Phase 7 — Proactive AI-First Scanning
+### Phase 7 — Proactive AI-First Scanning ✅ IMPLEMENTED
 **Files**: [entrypoints/content/App.tsx](entrypoints/content/App.tsx), [src/lib/platforms/linkedin.ts](src/lib/platforms/linkedin.ts), new `src/lib/scanner.ts`
 
 1. Add `ChangeThreshold` scanner class alongside existing `MutationObserver`
@@ -1195,11 +1264,12 @@ taskItems: defineTable({
 5. Build queue preview panel with per-item edit capability
 6. Connect to batch execution in Phase 5
 
-**Outcome**: Extension proactively surfaces batch action opportunities without user having to ask.
+**Outcome**: Extension proactively surfaces LinkedIn batch opportunities without the user having to ask.
+**Remaining work**: expand the dispatcher beyond LinkedIn and tune thresholds from live usage.
 
 ---
 
-### Phase 8 — Evaluation & Tracing
+### Phase 8 — Evaluation & Tracing ⚠️ CORE TRACING IMPLEMENTED
 **Files**: new `convex/traces.ts`, [convex/schema.ts](convex/schema.ts), [entrypoints/background.ts](entrypoints/background.ts)
 
 1. Add `traces` + `traceArtifacts` tables
@@ -1207,6 +1277,49 @@ taskItems: defineTable({
 3. Update trace on session close with `userAction` + `editDistance`
 4. Build simple query page in options app: "show last 50 rejected/heavily-edited generations"
 5. Local debug mode (dev build only): attach `chrome.debugger` + CDP Network, add DevTools panel
+
+**Outcome**: Every generation can be traced, linked back to observed user outcomes, and reviewed from the memory app.
+**Remaining work**: the dev-only `chrome.debugger` / DevTools-panel tooling is still not implemented.
+
+---
+
+### Phase 9 — Agentic Task Orchestration ⚠️ DURABLE WORKFLOW MIGRATION IN PROGRESS
+**Files**: [entrypoints/background.ts](entrypoints/background.ts), [src/lib/local-agent-protocol.ts](src/lib/local-agent-protocol.ts), [companion/server.ts](companion/server.ts), [companion/service.ts](companion/service.ts), [companion/state-store.ts](companion/state-store.ts), [companion/chrome-devtools-mcp-runtime.ts](companion/chrome-devtools-mcp-runtime.ts), [companion/python-browser-runtime-bridge.ts](companion/python-browser-runtime-bridge.ts), [companion/python_browser_runtime.py](companion/python_browser_runtime.py), [entrypoints/content/AgentFAB.tsx](entrypoints/content/AgentFAB.tsx)
+
+1. Keep the **extension** as UI, observation, approval surface, and lightweight compose helper
+2. Keep the **local companion** as the only production agent runtime entrypoint
+3. Keep **Chrome DevTools MCP** as the only endorsed browser-control backend
+4. Keep **Python `mcp-agent`** as the only endorsed orchestration framework
+5. Replace the current single-call asyncio execution model with **durable workflow execution**
+6. Add explicit workflow state for:
+   - task list
+   - current task index
+   - completed tasks
+   - retry counts
+   - skip reasons
+   - resume pointer / last safe checkpoint
+   - current page and last verified page state
+7. Preserve goal + user context + system prompt + page observations across navigation for the full life of the run
+8. Keep human-in-the-loop gates before irreversible actions (`send`, `submit`, `connect`, `apply`, `delete`)
+9. Reuse deterministic task batches where helpful, but stop treating them as the primary long-run execution model
+10. Keep `chrome.debugger` and any direct low-level CDP experimentation out of the production core path; use them only for dev tooling, CI, or isolated research work
+
+**Outcome target**: the extension can start a long-running browser task, show user-visible progress, retry intelligently when pages drift or actions fail, resume after interruption, skip blocked items after bounded retries, and continue through the rest of the queue without requiring the user to manually restart from scratch.
+
+**Current progress**:
+- the local companion path already owns the primary run loop for new companion tasks
+- the extension already forwards goal, observed page context, provider config, saved user context, and saved system prompt to the companion
+- the companion already routes new runs into the Python `mcp-agent` runtime
+- Chrome DevTools MCP is already the primary browser-control backend
+- panel state, live logs, and approval resume compatibility are already wired
+
+**Current limitation**:
+- the Python runtime still runs on `mcp-agent`'s **`asyncio` execution engine**
+- each run is still mostly a **single browser-agent call**, not a durable workflow with checkpoints
+- current state storage only tracks top-level run status and summary, not per-step durable progress
+- `continue` works opportunistically from the live browser state, not from first-class workflow checkpoints
+
+**Next required step**: move from "single-call agent execution" to "workflow-driven durable execution" so self-healing, resume, retries, and long-range task progress become part of the runtime itself rather than ad hoc recovery behavior.
 
 ---
 
@@ -1238,4 +1351,418 @@ A single power-user session with many identical sends must not immediately creat
 
 ---
 
-*Last updated: 2026-04-05. Research basis: three passes covering Chrome MV3 APIs, LangMem/Mem0/Graphiti memory systems, OCEL process mining, rrweb vs hand-rolled observation, Convex schema design, browser-use/Playwright/Puppeteer, Web Speech API in MV3, Porcupine WASM wake detection, LinkedIn automation safety, and ActivityWatch heartbeat architecture.*
+## 15. Layer 8 — Agentic Task Orchestration
+
+> **Goal**: turn the current local companion into a durable, self-healing browser agent that can keep working across navigation, recover from partial failures, and finish long task queues without forcing the user to manually restart from scratch.
+
+### What we are actually running today
+
+The active production path is already:
+
+- **extension** = UI, observation, approvals, status polling
+- **local companion** = only production agent entrypoint
+- **Python `mcp-agent` runtime** = active browser-agent layer
+- **Chrome DevTools MCP** = only endorsed browser-control backend
+
+This is the correct base architecture and should remain the base architecture.
+
+### What is still missing
+
+The current runtime is still missing the part that makes long-running browser work truly durable:
+
+- the Python runtime still uses **`mcp-agent` on the `asyncio` engine**
+- each run is still mostly a **single-call agent execution**
+- current stored state is still mostly:
+  - run status
+  - latest summary
+  - approvals
+- there is **no first-class task graph**
+- there is **no durable checkpoint after each completed subtask**
+- there is **no retry budget or skip policy per item**
+- there is **no formal resume pointer** for "continue from where you left off"
+
+This means the current agent can sometimes recover if the browser is still on the right page, but that is **opportunistic recovery**, not real self-healing.
+
+### Library-backed direction
+
+The official `mcp-agent` documentation already gives the right primitives:
+
+- **Temporal execution engine** for durable workflows, automatic state persistence, retries, and pause/resume semantics
+- **signals** for resume / continue / approval flows
+- **queries / describe / list** helpers for workflow status and dashboards
+- **planner / orchestrator** pattern for iterative multi-step planning
+- **elicitation** for structured user input when a tool genuinely needs it
+
+That means the right next step is **not** inventing more custom retry logic in TypeScript. The right next step is to start using more of the durable workflow features already provided by `mcp-agent`.
+
+### Active design decision
+
+Keep exactly one endorsed runtime stack:
+
+- **browser-control backend**: Chrome DevTools MCP
+- **agent/orchestration framework**: Python `mcp-agent`
+- **durability engine for long runs**: `mcp-agent` workflow execution, upgraded to **Temporal** when the run needs durable resume/retry behavior
+
+The following are **not** part of the active plan anymore:
+
+- Browser Use
+- Stagehand
+- raw Playwright as a first-class product runtime
+- OpenAI Agents SDK JS as a parallel orchestrator
+- LangGraph as a parallel workflow layer
+- a TypeScript-first planner as the primary production run loop
+
+### Product requirements for durable runs
+
+For long-running work like "apply to 100 jobs" or "continue sending outreach across many profiles", the runtime must:
+
+1. Understand the user goal and break it into explicit tasks or steps
+2. Mark each task as:
+   - pending
+   - running
+   - completed
+   - retrying
+   - blocked
+   - skipped
+3. Checkpoint progress after every meaningful step or item
+4. Preserve goal + context + current plan while navigating between pages
+5. Retry transient failures without user intervention
+6. Re-evaluate browser state after failure before deciding whether to continue, retry, or skip
+7. Bound retries so a stuck item does not stall the entire run forever
+8. Continue with the next item when the current one is irrecoverably blocked
+9. Surface progress and failures clearly in the extension UI
+10. Resume from the last durable checkpoint when the user clicks continue
+
+### Target workflow model
+
+#### One durable workflow per user run
+
+Each started run should become one durable workflow with workflow state that includes:
+
+- normalized goal
+- planning summary
+- workflow status
+- task list
+- task ordering
+- current task index
+- current page / last verified page
+- carried-forward task context
+- retry counters per task
+- last error per task
+- skip reason per task
+- approval wait state
+- completion summary
+
+#### Checkpoint model
+
+After each meaningful subtask, persist:
+
+- what was attempted
+- what succeeded
+- what remains
+- what page the agent ended on
+- the next task to execute
+
+Examples:
+
+- after opening a LinkedIn search page: checkpoint that the search step is complete
+- after extracting 20 candidate profiles: checkpoint that candidate collection is complete
+- after applying to job 30 of 100: checkpoint that items 1–30 are complete and 31 is next
+
+#### Self-healing policy
+
+For each task item:
+
+1. Try the planned action
+2. If it fails, inspect the live page state
+3. Retry the task when the error looks transient
+4. If the page drifted, re-anchor to the correct page or URL
+5. If the original tactic is no longer valid, replan that item
+6. After a bounded number of failed attempts, mark the item skipped and continue
+
+This is where `mcp-agent` workflows, retries, signals, and durable state should be used instead of ad hoc "continue from here" behavior.
+
+### Planning model
+
+Use the **planner/orchestrator** pattern only where it helps:
+
+- for ambiguous or open-ended goals
+- for multi-step goals that need replanning as context changes
+
+Do **not** overuse planner loops for deterministic queues. For repetitive queues, use:
+
+- explicit item state
+- explicit progress counters
+- explicit retry/skip rules
+
+The right structure is therefore:
+
+- **iterative orchestrator** for open-ended browsing work
+- **durable task loop** for repeated items like many job applications or many outreach actions
+
+### Human interaction model
+
+The current product already needs approvals and "continue" behavior. This should move onto `mcp-agent` primitives:
+
+- **approval** = workflow pauses for signal / elicitation
+- **continue** = workflow resume signal, not a fresh run
+- **blocked input** = elicitation only when the workflow genuinely needs extra user input
+
+This keeps the local companion as the runtime owner while the extension remains the UI owner.
+
+### UI requirements
+
+The extension should show workflow progress instead of only top-level run summaries.
+
+Minimum required UI state:
+
+- overall run status
+- current task number / total
+- completed count
+- retrying count
+- skipped count
+- blocked item
+- latest verified page
+- latest summary
+- actionable continue / approve / cancel controls
+
+The user should be able to see where the run currently is without opening logs.
+
+### Implementation phases for the durable runtime
+
+#### Phase 9A — Replace single-call execution with workflow state
+
+- define durable run state and task state structures
+- add per-task progress fields instead of only run-level summary
+- stop treating a whole browser run as one opaque execution blob
+
+#### Phase 9B — Introduce workflow checkpoints
+
+- checkpoint after each completed subtask or queue item
+- persist current task index and next task pointer
+- keep carried-forward context attached to the run instead of rebuilding it ad hoc
+
+#### Phase 9C — Add self-healing and bounded retries
+
+- classify transient vs blocking failures
+- retry transient failures
+- re-read page state after failure
+- re-anchor to the correct page when possible
+- skip after bounded failed attempts
+
+#### Phase 9D — Move continue / approval onto workflow signals
+
+- "continue" resumes the same workflow
+- approvals pause the workflow and then resume the same workflow
+- avoid turning approval continuation into a fresh top-level run
+
+#### Phase 9E — Upgrade long-running runs to Temporal
+
+- move durable browser workflows from `asyncio` to `temporal`
+- use Temporal-backed workflow state for:
+  - pause / resume
+  - retries
+  - restart resilience
+  - workflow inspection
+
+#### Phase 9F — Surface workflow progress to the extension UI
+
+- show completed / running / retrying / skipped tasks
+- show current item index
+- show resumable state
+- show last error and last verified checkpoint
+
+#### Phase 9G — Retire legacy extension-side executor paths
+
+- keep only compatibility bridges that are still necessary
+- stop building new browser tactics into the old MV3 executor path
+- keep the production browser-control path centered on Chrome DevTools MCP
+
+### Constraints
+
+1. We should use **existing `mcp-agent` workflow features** as much as possible before inventing custom orchestration
+2. We should keep **one production browser-control backend**
+3. We should keep **one production orchestration framework**
+4. We should not promise "self-healing" unless the runtime can prove completed vs remaining work with real checkpoints
+5. We should not let a single blocked item stall a long task queue forever
+6. We should preserve context across navigation for the full life of the workflow
+
+### Success criteria
+
+Phase 9 is successful when all of the following are true:
+
+- the agent can run a long multi-page task without losing goal/context after navigation
+- failures trigger retry / re-check / re-anchor logic automatically
+- after bounded retries, blocked items are skipped and the run continues
+- `continue` resumes the same workflow from the last checkpoint
+- the UI shows what is complete, what is running, what is blocked, and what is skipped
+- the implementation uses `mcp-agent` durability features rather than rebuilding the workflow layer from scratch
+
+- field/session observation
+- captured page/thread context
+- send interception
+- user approvals
+- queue preview and review UI
+- voice entry and proactive suggestion surfaces
+- light fallback helpers such as inserting approved drafts into the active field
+
+#### Local companion responsibilities
+
+- own the long-running planner loop through `mcp-agent`
+- connect to Chrome DevTools MCP
+- execute browser actions, waits, extraction, and retries
+- keep transient run-local state that does not belong in Convex
+- stream status updates back to the extension
+
+#### Convex responsibilities
+
+- memory, traces, entities, procedural patterns
+- deterministic send queues and approval records
+- user settings, auth, and syncable run metadata
+- optional durable run summaries and audit trails
+
+### Transport and trust boundary
+
+Initial transport:
+
+- **extension ↔ local companion**: localhost WebSocket
+- **local companion ↔ Convex**: HTTPS
+- **local companion ↔ browser**: Chrome DevTools MCP
+
+Hardening path:
+
+- add **native messaging** later if localhost process management or packaging becomes fragile
+
+The extension should not be responsible for speaking MCP directly. The local companion should own that integration and present the extension with a narrow application-specific protocol.
+
+### Reuse plan
+
+#### Keep and continue investing in
+
+- [src/lib/session-observer.ts](src/lib/session-observer.ts)
+- [entrypoints/send-interceptor.content.ts](entrypoints/send-interceptor.content.ts)
+- [src/lib/context.ts](src/lib/context.ts)
+- [src/lib/platform.ts](src/lib/platform.ts) and [src/lib/platforms](src/lib/platforms)
+- [convex/generate.ts](convex/generate.ts), [convex/memories.ts](convex/memories.ts), [convex/entities.ts](convex/entities.ts)
+- [convex/traces.ts](convex/traces.ts)
+- [convex/tasks.ts](convex/tasks.ts)
+
+#### Keep only as transitional / fallback path
+
+- site-specific extension-side browser automation beyond deterministic reviewed sends
+
+#### Stop treating as the main investment path
+
+- building every new multi-step browser capability directly inside MV3
+- expanding Convex actions/workflows into the main browser executor
+- building a parallel non-MCP browser-control stack before exhausting the Chrome DevTools MCP route
+
+### Example execution model
+
+1. User starts an agentic task from the extension.
+2. Extension captures active-tab context, field context, and any selected text.
+3. Extension sends a run request to the local companion.
+4. Local companion chooses a browser backend:
+   - Chrome DevTools MCP running-Chrome mode if available and appropriate
+   - otherwise Chrome DevTools MCP launched-Chrome mode
+5. Local companion performs the browser work and streams intermediate status back.
+6. When an irreversible action is reached, the companion emits an approval request.
+7. Extension shows the approval UI.
+8. On approval, the companion either:
+   - completes the action itself, or
+   - hands off to the deterministic reviewed-send path on Convex where appropriate
+9. Extension and Convex store the final trace and user outcome.
+
+### Approval policy
+
+Every irreversible action still requires explicit approval:
+
+- `send`
+- `submit`
+- `connect`
+- `apply`
+- `delete`
+- any multi-recipient batch handoff
+
+Auto-approved actions can include:
+
+- observation
+- reading page state
+- scanning candidates
+- generating drafts
+- non-destructive navigation within the active run
+
+### Recommended phased rollout
+
+#### Phase 9A — Companion foundation
+
+- create the local companion process
+- embed `mcp-agent` as the orchestration framework
+- define the extension ↔ companion localhost protocol
+- move planner-loop ownership out of Convex and out of the extension
+
+**Target outcome**: one local process owns long-running agent runs.
+
+#### Phase 9B — Chrome DevTools MCP backend
+
+- add a browser backend that wraps Chrome DevTools MCP
+- implement running-Chrome mode for Chrome 144+ `--autoConnect`
+- add explicit opt-out for Chrome DevTools MCP usage statistics
+- validate live-profile tasks on real Gmail, LinkedIn, and job-application flows
+
+**Target outcome**: the agent can operate on a user-started Chrome session when supported.
+
+#### Phase 9C — Chrome DevTools MCP launched-Chrome fallback
+
+- implement the companion-managed Chrome fallback mode
+- define how persistent profile data is stored, migrated, and upgraded safely on-device
+- validate that the same task contracts work in both running-Chrome and launched-Chrome modes
+
+**Target outcome**: the agent still works when running-Chrome mode is unavailable, without introducing a second browser-control framework.
+
+#### Phase 9D — Product boundary simplification
+
+- demote the current Convex-first browser command bus to fallback status
+- keep the extension focused on UI, observation, approvals, and compose insertion
+- keep Convex focused on backend state, not primary browser execution
+
+**Target outcome**: responsibilities are clean and the product is easier to maintain.
+
+#### Phase 9E — Multi-platform tactics
+
+- LinkedIn recruiter search and connection review
+- Gmail / Outlook thread summarization and draft review
+- generic application-form assistance
+- safe multi-recipient outreach queues
+
+**Target outcome**: real product flows work through the local companion, not through hand-built MV3 automation.
+
+#### Phase 9F — Fallback and dev tooling
+
+- retain dev-only `chrome.debugger` tooling where it helps local debugging
+- keep screenshot/vision fallback as an escalation path, not the default execution path
+
+### Implementation rules for this phase
+
+1. The **primary production agent loop** must run in the **local companion**, not in Convex and not in the extension.
+2. The extension must remain the **product UI, observer, and approval surface**.
+3. Convex remains the **backend of record**, but not the main browser executor.
+4. Keep only **one active production agent loop** at a time; do not run the legacy Convex-first planner in parallel with the local companion for the same run.
+5. Use **Chrome DevTools MCP** as the only endorsed browser-control backend in the plan unless new evidence forces a change.
+6. Use **`mcp-agent`** as the default orchestration framework unless we explicitly decide to move to a TS-only local companion.
+7. Keep all browser execution on the **user's device**.
+8. Do not let platform-specific prompt text replace real browser-control capability.
+
+### Success criteria
+
+Phase 9 is successful when all of the following are true:
+
+- the user can start a run from the extension and have it continue through a local companion
+- the agent can operate on more than one platform
+- the product has a credible path to using the user's real Chrome state when available
+- browser execution no longer depends on expanding bespoke MV3 automation for every site
+- current memory, traces, approvals, and task queues are reused rather than rebuilt
+
+---
+
+*Last updated: 2026-04-16. Research basis: official Chrome DevTools MCP README, official Chrome remote debugging guidance, official `mcp-agent` documentation on planner/orchestrator, elicitation, and durable Temporal workflows, plus the current repository architecture and runtime behavior.*

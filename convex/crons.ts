@@ -14,4 +14,15 @@ crons.weekly(
   {}
 );
 
+crons.weekly(
+  "pattern-confidence-decay",
+  {
+    dayOfWeek: "sunday",
+    hourUTC: 5,
+    minuteUTC: 30,
+  },
+  internal.patterns.decayConfidence,
+  {}
+);
+
 export default crons;

@@ -3,6 +3,7 @@ import {
   useEffect,
   useRef,
   useCallback,
+  type RefObject,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -81,7 +82,7 @@ interface PanelProps {
   onToggle: (id: string) => void;
   onDelete: (id: string) => void;
   onDeleteAll: () => void;
-  fabRef: React.RefObject<HTMLButtonElement | null>;
+  fabRef: RefObject<HTMLButtonElement | null>;
 }
 
 function ContextPanel({ contexts, dark, onClose, onAdd, onToggle, onDelete, onDeleteAll, fabRef }: PanelProps) {
@@ -368,9 +369,11 @@ export function ContextFAB({ visible, contexts, onContextsChange, showToast }: F
           width: 32,
           height: 32,
           padding: 0,
-          border: `1px solid ${dark ? "#333" : "#e5e5e5"}`,
+          border: `1px solid ${dark ? "rgba(68, 64, 60, 0.5)" : "rgba(231, 229, 228, 0.5)"}`,
           borderRadius: "50%",
-          background: dark ? "#000" : "#fff",
+          background: dark ? "rgba(28, 25, 23, 0.7)" : "rgba(252, 252, 251, 0.7)",
+          backdropFilter: "blur(8px)",
+          WebkitBackdropFilter: "blur(8px)",
           cursor: adding ? "wait" : "pointer",
           display: "flex",
           alignItems: "center",
@@ -388,7 +391,7 @@ export function ContextFAB({ visible, contexts, onContextsChange, showToast }: F
             src={logoUrl}
             alt="Context"
             onError={() => setLogoBroken(true)}
-            style={{ width: 32, height: 32, borderRadius: "50%", objectFit: "cover", display: "block" }}
+            style={{ width: 32, height: 32, borderRadius: "50%", objectFit: "cover", display: "block", opacity: 0.85 }}
           />
         ) : (
           <span

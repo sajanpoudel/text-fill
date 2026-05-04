@@ -26,6 +26,7 @@ function Accordion({
   chips,
   open,
   onToggle,
+  onChipClick,
   children,
 }: {
   title: string;
@@ -33,6 +34,7 @@ function Accordion({
   chips: string[];
   open: boolean;
   onToggle: () => void;
+  onChipClick?: (chip: string) => void;
   children: React.ReactNode;
 }) {
   return (
@@ -58,25 +60,33 @@ function Accordion({
           <div>
             <span style={{ display: "block", fontSize: 15, fontWeight: 700, color: "var(--color-text)" }}>{title}</span>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-              {chips.map((c) => (
-                <span
-                  key={c}
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 600,
-                    color: "#666",
-                    background: "#f5f5f5",
-                    border: "1px solid #e5e5e5",
-                    borderRadius: 4,
-                    padding: "2px 8px",
-                    whiteSpace: "nowrap",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.5px"
-                  }}
-                >
-                  {c}
-                </span>
-              ))}
+              {chips.map((c) => {
+                const clickable = onChipClick != null;
+                return (
+                  <span
+                    key={c}
+                    onClick={clickable ? (e) => { e.stopPropagation(); onChipClick(c); } : undefined}
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: clickable ? "#000" : "#666",
+                      background: "#f5f5f5",
+                      border: `1px solid ${clickable ? "#ccc" : "#e5e5e5"}`,
+                      borderRadius: 4,
+                      padding: "2px 8px",
+                      whiteSpace: "nowrap",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.5px",
+                      cursor: clickable ? "pointer" : "default",
+                      transition: "background 0.15s, border-color 0.15s",
+                    }}
+                    onMouseEnter={clickable ? (e) => { (e.currentTarget as HTMLElement).style.background = "#000"; (e.currentTarget as HTMLElement).style.color = "#fff"; } : undefined}
+                    onMouseLeave={clickable ? (e) => { (e.currentTarget as HTMLElement).style.background = "#f5f5f5"; (e.currentTarget as HTMLElement).style.color = "#000"; } : undefined}
+                  >
+                    {c}
+                  </span>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -540,6 +550,11 @@ function SettingsPage() {
           chips={["LinkedIn", "Job boards", "Gmail", "Slack", "Notion"]}
           open={openAccordion === "work"}
           onToggle={() => setOpenAccordion((v) => v === "work" ? null : "work")}
+          onChipClick={(chip) => {
+            if (chip === "Job boards") {
+              chrome.tabs.create({ url: chrome.runtime.getURL("job-profile.html") });
+            }
+          }}
         >
           <FileUpload id="workFile" label="Work" value={workContext} onChange={setWorkContext} />
           <textarea

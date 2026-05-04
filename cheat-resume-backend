@@ -1,0 +1,424 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+DATA_DIR="${ROOT_DIR}/companion/.data"
+DEFAULT_PID_FILE="${DATA_DIR}/local-companion.pid"
+DEFAULT_TEMPORAL_PID_FILE="${DATA_DIR}/local-temporal.pid"
+TARGET_PIDS=()
+TEMPORAL_PID=""
+TEMPORAL_STARTED_BY_LAUNCHER="0"
+
+show_help() {
+  cat <<'EOF'
+Usage:
+  ./cheat-resume-backend
+  ./cheat-resume-backend exit
+  ./cheat-resume-backend doctor
+  ./cheat-resume-backend logs
+  ./cheat-resume-backend --help
+
+Starts the local CheatResume companion backend.
+Requires Node.js, Python 3, npm, and uv. If uv is missing, the launcher will
+install it with `python3 -m pip install --user uv`, falling back to
+`--break-system-packages` when needed.
+
+Optional environment variables:
+  LOCAL_COMPANION_HOST   Host to bind the backend to. Default: 127.0.0.1
+  LOCAL_COMPANION_PORT   Port to bind the backend to. Default: 4315
+  LOCAL_COMPANION_LOG_FILE  Live log file path. Default: companion/.data/live.log
+  LOCAL_COMPANION_PID_FILE  PID file path. Default: companion/.data/local-companion.pid
+  LOCAL_COMPANION_MCP_AGENT_EXECUTION_ENGINE  Runtime engine. Default: temporal
+  LOCAL_COMPANION_TEMPORAL_HOST  Temporal bind host. Default: 127.0.0.1
+  LOCAL_COMPANION_TEMPORAL_PORT  Temporal bind port. Default: 7233
+  LOCAL_COMPANION_TEMPORAL_NAMESPACE  Temporal namespace. Default: default
+  LOCAL_COMPANION_TEMPORAL_TASK_QUEUE  Temporal task queue. Default: cheatresume-browser-agent
+EOF
+}
+
+append_unique_pid() {
+  local candidate="${1:-}"
+  [[ "$candidate" =~ ^[0-9]+$ ]] || return 0
+  local existing=""
+  for existing in "${TARGET_PIDS[@]:-}"; do
+    [[ "$existing" == "$candidate" ]] && return 0
+  done
+  TARGET_PIDS+=("$candidate")
+}
+
+collect_descendant_pids() {
+  local parent_pid="${1:-}"
+  local child_pid=""
+  while IFS= read -r child_pid; do
+    [[ -n "$child_pid" ]] || continue
+    append_unique_pid "$child_pid"
+    collect_descendant_pids "$child_pid"
+  done < <(pgrep -P "$parent_pid" 2>/dev/null || true)
+}
+
+is_port_listening() {
+  local host="${1:-127.0.0.1}"
+  local port="${2:-}"
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -tiTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+
+  python3 - "$host" "$port" <<'PY' >/dev/null 2>&1
+import socket
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(0.25)
+try:
+    raise SystemExit(0 if sock.connect_ex((host, port)) == 0 else 1)
+finally:
+    sock.close()
+PY
+}
+
+wait_for_port() {
+  local host="${1:-127.0.0.1}"
+  local port="${2:-}"
+  local max_attempts="${3:-300}"
+  local attempt=0
+  while [[ "$attempt" -lt "$max_attempts" ]]; do
+    if is_port_listening "$host" "$port"; then
+      return 0
+    fi
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+cleanup_temporal_server() {
+  if [[ "$TEMPORAL_STARTED_BY_LAUNCHER" != "1" ]]; then
+    return 0
+  fi
+
+  local temporal_pid_file="${LOCAL_COMPANION_TEMPORAL_PID_FILE:-$DEFAULT_TEMPORAL_PID_FILE}"
+  if [[ -n "$TEMPORAL_PID" ]] && kill -0 "$TEMPORAL_PID" 2>/dev/null; then
+    kill -TERM "$TEMPORAL_PID" 2>/dev/null || true
+    wait "$TEMPORAL_PID" 2>/dev/null || true
+  fi
+  rm -f "$temporal_pid_file"
+}
+
+ensure_temporal_server() {
+  local execution_engine="${LOCAL_COMPANION_MCP_AGENT_EXECUTION_ENGINE:-temporal}"
+  if [[ "$execution_engine" != "temporal" ]]; then
+    return 0
+  fi
+
+  local temporal_host="${LOCAL_COMPANION_TEMPORAL_HOST:-127.0.0.1}"
+  local temporal_port="${LOCAL_COMPANION_TEMPORAL_PORT:-7233}"
+  local temporal_namespace="${LOCAL_COMPANION_TEMPORAL_NAMESPACE:-default}"
+  local temporal_pid_file="${LOCAL_COMPANION_TEMPORAL_PID_FILE:-$DEFAULT_TEMPORAL_PID_FILE}"
+  local temporal_db_file="${LOCAL_COMPANION_TEMPORAL_DB_FILE:-${DATA_DIR}/temporal/dev-server.db}"
+
+  if is_port_listening "$temporal_host" "$temporal_port"; then
+    echo "Using existing local Temporal dev server on ${temporal_host}:${temporal_port}"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$temporal_db_file")"
+  echo "Starting local Temporal dev server on ${temporal_host}:${temporal_port}"
+  env \
+    LOCAL_COMPANION_TEMPORAL_HOST="$temporal_host" \
+    LOCAL_COMPANION_TEMPORAL_PORT="$temporal_port" \
+    LOCAL_COMPANION_TEMPORAL_NAMESPACE="$temporal_namespace" \
+    LOCAL_COMPANION_TEMPORAL_DB_FILE="$temporal_db_file" \
+    LOCAL_COMPANION_TEMPORAL_UI="${LOCAL_COMPANION_TEMPORAL_UI:-0}" \
+    LOCAL_COMPANION_TEMPORAL_UI_PORT="${LOCAL_COMPANION_TEMPORAL_UI_PORT:-8233}" \
+    LOCAL_COMPANION_TEMPORAL_LOG_LEVEL="${LOCAL_COMPANION_TEMPORAL_LOG_LEVEL:-warn}" \
+    python3 -m uv run --with temporalio python companion/temporal_dev_server.py &
+  TEMPORAL_PID="$!"
+  TEMPORAL_STARTED_BY_LAUNCHER="1"
+  echo "$TEMPORAL_PID" > "$temporal_pid_file"
+
+  if ! wait_for_port "$temporal_host" "$temporal_port" 600; then
+    echo "Error: local Temporal dev server did not start on ${temporal_host}:${temporal_port}." >&2
+    cleanup_temporal_server
+    exit 1
+  fi
+}
+
+run_exit() {
+  local port="${LOCAL_COMPANION_PORT:-4315}"
+  local pid_file="${LOCAL_COMPANION_PID_FILE:-$DEFAULT_PID_FILE}"
+  local temporal_pid_file="${LOCAL_COMPANION_TEMPORAL_PID_FILE:-$DEFAULT_TEMPORAL_PID_FILE}"
+  local temporal_port="${LOCAL_COMPANION_TEMPORAL_PORT:-7233}"
+  TARGET_PIDS=()
+  local ROOT_PIDS=()
+
+  if [[ -f "$pid_file" ]]; then
+    local recorded_pid=""
+    recorded_pid="$(tr -dc '0-9' < "$pid_file" | head -c 32)"
+    append_unique_pid "$recorded_pid"
+    ROOT_PIDS=("${TARGET_PIDS[@]}")
+  fi
+
+  if [[ -f "$temporal_pid_file" ]]; then
+    local temporal_recorded_pid=""
+    temporal_recorded_pid="$(tr -dc '0-9' < "$temporal_pid_file" | head -c 32)"
+    append_unique_pid "$temporal_recorded_pid"
+    ROOT_PIDS=("${TARGET_PIDS[@]}")
+  fi
+
+  if command -v lsof >/dev/null 2>&1; then
+    local listener_pid=""
+    while IFS= read -r listener_pid; do
+      [[ -n "$listener_pid" ]] || continue
+      append_unique_pid "$listener_pid"
+    done < <(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+
+    local temporal_listener_pid=""
+    while IFS= read -r temporal_listener_pid; do
+      [[ -n "$temporal_listener_pid" ]] || continue
+      append_unique_pid "$temporal_listener_pid"
+    done < <(lsof -tiTCP:"$temporal_port" -sTCP:LISTEN 2>/dev/null || true)
+    ROOT_PIDS=("${TARGET_PIDS[@]}")
+  fi
+
+  local root_pids=("${ROOT_PIDS[@]:-}")
+  local root_pid=""
+  for root_pid in "${root_pids[@]:-}"; do
+    collect_descendant_pids "$root_pid"
+  done
+
+  if [[ "${#TARGET_PIDS[@]}" -eq 0 ]]; then
+    rm -f "$pid_file" "$temporal_pid_file"
+    echo "No running CheatResume backend was found."
+    return 0
+  fi
+
+  echo "Stopping CheatResume backend: ${root_pids[*]}"
+
+  local pid=""
+  for pid in "${root_pids[@]}"; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+
+  local remaining=()
+  local attempts=0
+  while [[ "$attempts" -lt 20 ]]; do
+    remaining=()
+    for pid in "${root_pids[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        remaining+=("$pid")
+      fi
+    done
+    if [[ "${#remaining[@]}" -eq 0 ]]; then
+      rm -f "$pid_file" "$temporal_pid_file"
+      echo "CheatResume backend stopped."
+      return 0
+    fi
+    sleep 0.1
+    attempts=$((attempts + 1))
+  done
+
+  if [[ "${#TARGET_PIDS[@]}" -gt 0 ]]; then
+    for pid in "${TARGET_PIDS[@]}"; do
+      kill -TERM "$pid" 2>/dev/null || true
+    done
+  fi
+
+  attempts=0
+  while [[ "$attempts" -lt 10 ]]; do
+    remaining=()
+    for pid in "${TARGET_PIDS[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        remaining+=("$pid")
+      fi
+    done
+    if [[ "${#remaining[@]}" -eq 0 ]]; then
+      rm -f "$pid_file" "$temporal_pid_file"
+      echo "CheatResume backend stopped."
+      return 0
+    fi
+    sleep 0.1
+    attempts=$((attempts + 1))
+  done
+
+  echo "Force killing remaining backend processes: ${remaining[*]}"
+  for pid in "${remaining[@]}"; do
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+
+  rm -f "$pid_file" "$temporal_pid_file"
+  echo "CheatResume backend force stopped."
+}
+
+run_doctor() {
+  local browser_url="${CHROME_DEVTOOLS_MCP_BROWSER_URL:-http://127.0.0.1:9222}"
+  local execution_engine="${LOCAL_COMPANION_MCP_AGENT_EXECUTION_ENGINE:-temporal}"
+  local temporal_host="${LOCAL_COMPANION_TEMPORAL_HOST:-127.0.0.1}"
+  local temporal_port="${LOCAL_COMPANION_TEMPORAL_PORT:-7233}"
+  local chrome_version="unknown"
+  local chrome_profile_dir=""
+  local devtools_active_port=""
+
+  case "$(uname -s)" in
+    Darwin)
+      chrome_profile_dir="$HOME/Library/Application Support/Google/Chrome"
+      chrome_version="$(defaults read "/Applications/Google Chrome.app/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo unknown)"
+      ;;
+    Linux)
+      chrome_profile_dir="${HOME}/.config/google-chrome"
+      chrome_version="$(google-chrome --version 2>/dev/null | awk '{print $3}' || echo unknown)"
+      ;;
+    *)
+      chrome_version="unknown"
+      ;;
+  esac
+
+  if [[ -n "$chrome_profile_dir" ]]; then
+    devtools_active_port="${chrome_profile_dir}/DevToolsActivePort"
+  fi
+
+  echo "CheatResume backend doctor"
+  echo "Execution engine: ${execution_engine}"
+  echo "Chrome version: ${chrome_version}"
+
+  if pgrep -x "Google Chrome" >/dev/null 2>&1; then
+    echo "Chrome process: running"
+  else
+    echo "Chrome process: not running"
+  fi
+
+  if [[ -n "$devtools_active_port" && -f "$devtools_active_port" ]]; then
+    echo "DevToolsActivePort: present at ${devtools_active_port}"
+  elif [[ -n "$devtools_active_port" ]]; then
+    echo "DevToolsActivePort: missing at ${devtools_active_port}"
+  else
+    echo "DevToolsActivePort: not checked on this platform"
+  fi
+
+  if curl -sf "${browser_url}/json/version" >/dev/null 2>&1; then
+    echo "Remote debugging endpoint: reachable at ${browser_url}"
+  else
+    echo "Remote debugging endpoint: not reachable at ${browser_url}"
+  fi
+
+  if [[ "$execution_engine" == "temporal" ]]; then
+    if is_port_listening "$temporal_host" "$temporal_port"; then
+      echo "Temporal endpoint: reachable at ${temporal_host}:${temporal_port}"
+    else
+      echo "Temporal endpoint: not reachable at ${temporal_host}:${temporal_port}"
+    fi
+  fi
+
+  echo
+
+  if [[ "$execution_engine" == "temporal" ]] && ! is_port_listening "$temporal_host" "$temporal_port"; then
+    echo "Diagnosis: the durable Temporal engine is not running locally yet."
+    echo "Next step:"
+    echo "  Start the backend with ./cheat-resume-backend so it can launch the local Temporal dev server."
+    echo
+  fi
+
+  if [[ -n "$devtools_active_port" && -f "$devtools_active_port" ]]; then
+    echo "Diagnosis: Chrome auto-connect should be available for Chrome DevTools MCP."
+    return 0
+  fi
+
+  if curl -sf "${browser_url}/json/version" >/dev/null 2>&1; then
+    echo "Diagnosis: Manual remote-debugging connection is available."
+    echo "If the app still fails, keep CHROME_DEVTOOLS_MCP_BROWSER_URL=${browser_url} in the backend environment."
+    return 0
+  fi
+
+  echo "Diagnosis: Chrome is running, but Chrome DevTools MCP has nothing to attach to yet."
+  echo "Next step for the default auto-connect path:"
+  echo "  1. Open chrome://inspect/#remote-debugging in Chrome."
+  echo "  2. Enable remote debugging."
+  echo "  3. Allow incoming debugging connections when Chrome prompts."
+  echo
+  echo "Alternative manual port path:"
+  echo "  Start Chrome with --remote-debugging-port=9222 and a non-default --user-data-dir,"
+  echo "  then set CHROME_DEVTOOLS_MCP_BROWSER_URL=http://127.0.0.1:9222 before running this script."
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  show_help
+  exit 0
+fi
+
+if [[ "${1:-}" == "doctor" ]]; then
+  run_doctor
+  exit 0
+fi
+
+if [[ "${1:-}" == "exit" ]]; then
+  run_exit
+  exit 0
+fi
+
+if [[ "${1:-}" == "logs" ]]; then
+  LOG_FILE="${LOCAL_COMPANION_LOG_FILE:-companion/.data/live.log}"
+  mkdir -p "$(dirname "$LOG_FILE")"
+  touch "$LOG_FILE"
+  echo "Tailing ${LOG_FILE}"
+  exec tail -n 200 -f "$LOG_FILE"
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "Error: Node.js is required to run the local backend." >&2
+  exit 1
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "Error: Python 3 is required for the mcp-agent bridge runtime." >&2
+  exit 1
+fi
+
+if ! command -v npm >/dev/null 2>&1; then
+  echo "Error: npm is required to run the local backend." >&2
+  exit 1
+fi
+
+if ! python3 -m uv --version >/dev/null 2>&1; then
+  echo "Installing uv for the mcp-agent bridge runtime..."
+  if ! python3 -m pip install --user uv; then
+    python3 -m pip install --user --break-system-packages uv
+  fi
+fi
+
+if [[ ! -d node_modules || ! -x node_modules/.bin/tsx ]]; then
+  echo "Installing project dependencies for the local backend..."
+  npm install
+fi
+
+HOST="${LOCAL_COMPANION_HOST:-127.0.0.1}"
+PORT="${LOCAL_COMPANION_PORT:-4315}"
+PID_FILE="${LOCAL_COMPANION_PID_FILE:-$DEFAULT_PID_FILE}"
+TEMPORAL_PID_FILE="${LOCAL_COMPANION_TEMPORAL_PID_FILE:-$DEFAULT_TEMPORAL_PID_FILE}"
+TEMPORAL_HOST="${LOCAL_COMPANION_TEMPORAL_HOST:-127.0.0.1}"
+TEMPORAL_PORT="${LOCAL_COMPANION_TEMPORAL_PORT:-7233}"
+TEMPORAL_NAMESPACE="${LOCAL_COMPANION_TEMPORAL_NAMESPACE:-default}"
+TEMPORAL_TASK_QUEUE="${LOCAL_COMPANION_TEMPORAL_TASK_QUEUE:-cheatresume-browser-agent}"
+EXECUTION_ENGINE="${LOCAL_COMPANION_MCP_AGENT_EXECUTION_ENGINE:-temporal}"
+
+mkdir -p "$DATA_DIR"
+trap cleanup_temporal_server EXIT INT TERM
+ensure_temporal_server
+
+echo "Starting CheatResume backend on ws://${HOST}:${PORT}/ws"
+env \
+  LOCAL_COMPANION_HOST="$HOST" \
+  LOCAL_COMPANION_PORT="$PORT" \
+  LOCAL_COMPANION_PID_FILE="$PID_FILE" \
+  LOCAL_COMPANION_MCP_AGENT_EXECUTION_ENGINE="$EXECUTION_ENGINE" \
+  LOCAL_COMPANION_TEMPORAL_HOST="$TEMPORAL_HOST" \
+  LOCAL_COMPANION_TEMPORAL_PORT="$TEMPORAL_PORT" \
+  LOCAL_COMPANION_TEMPORAL_NAMESPACE="$TEMPORAL_NAMESPACE" \
+  LOCAL_COMPANION_TEMPORAL_TASK_QUEUE="$TEMPORAL_TASK_QUEUE" \
+  LOCAL_COMPANION_TEMPORAL_PID_FILE="$TEMPORAL_PID_FILE" \
+  npm run companion:dev

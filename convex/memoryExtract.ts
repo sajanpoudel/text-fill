@@ -376,6 +376,7 @@ export const extractAndSave = internalAction({
     provider: v.string(),
     apiKey: v.string(),
     model: v.string(),
+    sessionId: v.optional(v.id("interactionSessions")),
   },
   handler: async (
     ctx,
@@ -389,6 +390,7 @@ export const extractAndSave = internalAction({
       provider,
       apiKey,
       model,
+      sessionId,
     }
   ) => {
     try {
@@ -409,6 +411,25 @@ export const extractAndSave = internalAction({
       });
     } catch {
       // Silently fail — memory extraction is non-critical background work
+    }
+
+    // Phase 4: Entity extraction — fire-and-forget, never blocks memory extraction
+    // Only runs for platforms where user facts are likely (skip canvas/generic)
+    if (platform !== "canvas" && generatedText.trim().length >= 60) {
+      try {
+        await ctx.scheduler.runAfter(0, internal.entities.extractEntities, {
+          userId,
+          generatedText,
+          pageContext,
+          platform,
+          provider,
+          apiKey,
+          model,
+          sessionId,
+        });
+      } catch {
+        // Non-fatal
+      }
     }
   },
 });

@@ -3,4 +3,6 @@
 *node_modules
 *.wxt
 *.output
-
+companion/.data
+companion/__pycache__
+*.pyc
