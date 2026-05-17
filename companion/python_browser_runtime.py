@@ -1316,20 +1316,36 @@ Current page: {page_header}
    • Click/UI:   "On the current checkout page, click the 'Confirm Purchase' button. Verify the
                   page shows a success message or redirects to /order-confirmed."
 
-2. BOUNDED — Each step = one focused action + verification. ~15 tool calls max. Don't bundle
-   unrelated actions in one step.
+2. ONE ACTION PER STEP — A step must contain exactly ONE distinct action. An "action" is a
+   single navigation, a single click, a single form submission, or reading/extracting info.
+   NEVER combine actions like "filter then apply", "find then click", "navigate then fill and submit".
+
+   ✗ BAD (too bundled):
+     "Click 'Software Engineering' filter, then click Apply Now for the first job"  ← 2 actions
+     "Navigate to checkout, fill name/email, and submit the form"  ← navigation + fill + submit
+     "Find the recruiter and send a connection request"  ← find + send
+
+   ✓ GOOD (properly split):
+     Step N:   "Click the 'Software Engineering' filter button. Verify filtered results appear."
+     Step N+1: "Click 'Apply Now' for the first job listing. Verify application page opens."
+     Step N+2: "Fill the application form fields. Verify fields are populated."
+     Step N+3: "Click 'Submit Application'. Verify confirmation message appears."
 
 3. CRITICAL — critical:true if failure should abort the task; critical:false for optional steps.
 
 4. OBSTACLES FIRST — If the snapshot shows a cookie banner, login wall, or modal overlay,
    the FIRST step must handle it before any other action.
 
-5. FORM GROUPING — Group related fields into one step (name + email + phone = one step).
+5. FORM GROUPING — Filling multiple fields of the SAME form = ONE step. But submitting that
+   form is a SEPARATE step. And navigating to the form is ANOTHER separate step.
 
 6. BATCH ITEMS — For lists of items (e.g. send 5 connection requests), one step per item.
    Collect all URLs first in one step, then process each item in its own step.
 
-7. STEP COUNT — Simple task: 1–3 steps. Multi-page: 4–6. Complex batch: up to 8. Max 8.
+7. STEP COUNT — Use as many steps as the task genuinely requires. Do NOT artificially compress
+   steps to hit a lower count. A job application typically needs 5+ steps. A multi-site
+   research+write task needs 6+. Only truly single-action tasks have 1–2 steps.
+   Hard cap: 8 steps. If more are needed, batch the remainder into "process remaining items".
 
 8. RESUME AWARENESS — If PREVIOUS RUN CONTEXT is present, skip already-completed steps.
 
