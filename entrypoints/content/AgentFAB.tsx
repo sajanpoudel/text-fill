@@ -148,7 +148,18 @@ function AgentComposer({
 }) {
   const composerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  
+  const [tasksCollapsed, setTasksCollapsed] = useState(false);
+
+  // Auto-expand when a run becomes active; auto-collapse when it finishes.
+  const runStatus = latestRun?.status;
+  useEffect(() => {
+    if (runStatus === "planning" || runStatus === "executing") {
+      setTasksCollapsed(false);
+    } else if (runStatus === "completed" || runStatus === "failed" || runStatus === "cancelled") {
+      setTasksCollapsed(true);
+    }
+  }, [runStatus]);
+
   // ── Theme Colours (Matched to GenerateModal) ──────────────────────────────
   const bg        = dark ? "#0A0A0A" : "#ffffff";
   const border    = dark ? "#333333" : "#e5e5e5";
@@ -357,19 +368,31 @@ function AgentComposer({
 
         {/* Full Task List — Claude-Code style step-by-step plan */}
         {latestRun?.tasks && latestRun.tasks.length > 0 && (
-          <div
-            style={{
-              padding: "4px 14px 6px",
-              borderBottom: `1px solid ${divider}`,
-              maxHeight: 260,
-              overflowY: "auto",
-            }}
-          >
-            {progressSummary && (
-              <div style={{ fontSize: 10, color: textMuted, paddingTop: 4, paddingBottom: 2, fontWeight: 600 }}>
-                {progressSummary}
-              </div>
-            )}
+          <div style={{ borderBottom: `1px solid ${divider}` }}>
+            {/* Header row with progress summary + collapse toggle */}
+            <div
+              data-tfa-ui="task-list-header"
+              onClick={() => setTasksCollapsed(c => !c)}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "5px 14px 4px", cursor: "pointer",
+              }}
+            >
+              <span style={{ fontSize: 10, color: textMuted, fontWeight: 600 }}>
+                {progressSummary || `${latestRun.tasks.length} steps`}
+              </span>
+              <span style={{ fontSize: 10, color: textMuted, lineHeight: 1, paddingLeft: 6 }}>
+                {tasksCollapsed ? "▼" : "▲"}
+              </span>
+            </div>
+            {!tasksCollapsed && (
+            <div
+              style={{
+                padding: "0 14px 6px",
+                maxHeight: 220,
+                overflowY: "auto",
+              }}
+            >
             {latestRun.tasks.map((task, i) => {
               const isActive = task.status === "running" || task.status === "retrying";
               const icon =
@@ -472,6 +495,8 @@ function AgentComposer({
                 </div>
               );
             })}
+            </div>
+            )}
           </div>
         )}
 
@@ -479,6 +504,7 @@ function AgentComposer({
         <div style={{ position: "relative" }}>
           <textarea
             ref={inputRef}
+            data-tfa-ui="agent-input"
             value={goal}
             onChange={(e) => onGoalChange(e.target.value)}
             onKeyDown={(e) => {

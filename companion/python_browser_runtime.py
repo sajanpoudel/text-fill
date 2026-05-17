@@ -325,6 +325,41 @@ _SITE_URL_MAP: dict[str, str] = {
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _DOMAIN_RE = re.compile(r"\b([\w-]+\.(?:com|org|net|io|co|gov|edu|app|dev))\b", re.IGNORECASE)
+_LINKEDIN_PROFILE_RE = re.compile(
+    r"https://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9_%-]+)/?", re.IGNORECASE
+)
+
+
+def _extract_linkedin_profile_urls(text: str) -> list[str]:
+    """Return deduplicated LinkedIn profile URLs found in text, preserving order."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for m in _LINKEDIN_PROFILE_RE.finditer(text):
+        url = m.group(0).rstrip("/") + "/"
+        if url not in seen:
+            seen.add(url)
+            result.append(url)
+    return result
+
+
+def _infer_name_from_linkedin_url(url: str) -> str:
+    """Convert 'https://www.linkedin.com/in/john-doe/' → 'John Doe'."""
+    slug = url.rstrip("/").rsplit("/", 1)[-1]
+    return " ".join(part.capitalize() for part in slug.replace("-", " ").split())
+
+
+def _build_connect_step(profile_url: str, goal: str, count_label: str = "") -> dict[str, Any]:
+    name = _infer_name_from_linkedin_url(profile_url)
+    title_suffix = f" {count_label}" if count_label else ""
+    return {
+        "title": f"Send Connection to {name}{title_suffix}",
+        "description": (
+            f"Navigate to {profile_url} and send a LinkedIn connection request "
+            f"with a personalized note based on the goal: {goal}"
+        ),
+        "critical": False,
+        "_injected": True,
+    }
 
 
 def _extract_step_target_url(step: dict[str, Any], current_url: str) -> str | None:
@@ -333,8 +368,24 @@ def _extract_step_target_url(step: dict[str, Any], current_url: str) -> str | No
     NOT already there, return the target URL so _execute_step can pre-navigate.
     Returns None when no pre-navigation is needed.
     """
+    from urllib.parse import urlparse
     title = str(step.get("title") or "").strip().lower()
     description = str(step.get("description") or "").strip()
+    desc_lower = description.lower()
+
+    # Guard: if a step targets LinkedIn people search but the browser is on
+    # linkedin.com/jobs, pre-navigate to the people search URL so the executor
+    # does not waste iterations searching within Jobs postings.
+    if "linkedin.com/jobs" in current_url and (
+        "people" in title or "people" in desc_lower
+        or "recruiter" in title or "recruiter" in desc_lower
+        or "search/results/people" in description
+    ):
+        url_match = _URL_RE.search(description)
+        if url_match and "linkedin.com/search" in url_match.group(0):
+            return url_match.group(0).rstrip(".,)")
+        # Fall back to base people search; executor will fill keywords.
+        return "https://www.linkedin.com/search/results/people/"
 
     # Only activate for navigation-intent steps.
     nav_keywords = ("navigate to", "go to", "open ", "visit ")
@@ -347,10 +398,13 @@ def _extract_step_target_url(step: dict[str, Any], current_url: str) -> str | No
     if url_match:
         target = url_match.group(0).rstrip(".,)")
         try:
-            from urllib.parse import urlparse
             parsed_target = urlparse(target)
             parsed_current = urlparse(current_url)
-            if parsed_target.netloc and parsed_target.netloc != parsed_current.netloc:
+            # Same-domain navigation (e.g. jobs → people search) is also valid.
+            if parsed_target.netloc and (
+                parsed_target.netloc != parsed_current.netloc
+                or parsed_target.path != parsed_current.path
+            ):
                 return target
         except Exception:
             pass
@@ -359,7 +413,6 @@ def _extract_step_target_url(step: dict[str, Any], current_url: str) -> str | No
     for site_name, site_url in _SITE_URL_MAP.items():
         if site_name in title:
             try:
-                from urllib.parse import urlparse
                 if urlparse(current_url).netloc not in site_url:
                     return site_url
             except Exception:
@@ -371,7 +424,6 @@ def _extract_step_target_url(step: dict[str, Any], current_url: str) -> str | No
     if domain_match:
         domain = domain_match.group(1)
         try:
-            from urllib.parse import urlparse
             if domain not in urlparse(current_url).netloc:
                 return f"https://www.{domain}"
         except Exception:
@@ -599,6 +651,39 @@ def build_insert_draft_prompt(payload: dict[str, Any]) -> str:
     )
 
 
+def is_linkedin_profile_connect_goal(payload: dict[str, Any]) -> bool:
+    goal = str(payload.get("goal") or "").strip().lower()
+    platform_hint = str(payload.get("platformHint") or "").strip().lower()
+    page_url = str(payload.get("pageUrl") or "").strip().lower()
+    if not goal:
+        return False
+    is_linkedin = platform_hint == "linkedin" or "linkedin.com" in page_url
+    is_profile = "linkedin.com/in/" in page_url
+    wants_connect = any(
+        phrase in goal
+        for phrase in ("connect", "connection request", "invite", "add a note", "connection note")
+    )
+    return is_linkedin and is_profile and wants_connect
+
+
+def extract_linkedin_target_name(payload: dict[str, Any]) -> str | None:
+    structured = payload.get("structured")
+    if isinstance(structured, dict):
+        data = structured.get("data")
+        if isinstance(data, dict):
+            for key in ("name", "title"):
+                value = str(data.get(key) or "").strip()
+                if value:
+                    return value
+    page_context = str(payload.get("pageContext") or "").strip()
+    match = re.search(r"Page:\s*([^\n]+)", page_context)
+    if match:
+        value = match.group(1).strip()
+        if value:
+            return value
+    return None
+
+
 def build_linkedin_connect_prompt(item: dict[str, Any]) -> str:
     note_text = str(item.get("generatedText") or "").strip()
     target_url = str(item.get("targetUrl") or "").strip()
@@ -621,6 +706,14 @@ def build_linkedin_connect_prompt(item: dict[str, Any]) -> str:
             "- When drafting a note, use only the provided user context plus visible profile information. Do not invent personal facts that are not in the supplied context.",
             "- After acting, verify the final page state from the live browser before returning.",
             "- If the flow becomes ambiguous or blocked, stop and report failure instead of guessing.",
+            "",
+            "CRITICAL — typing the note:",
+            "- After clicking 'Add a note', LinkedIn opens a MODAL DIALOG (role=dialog) in the CENTER of the page.",
+            "- That modal contains the textarea where you must type the note.",
+            "- The textarea you must type into will be INSIDE the dialog/modal — NOT at the bottom of the page.",
+            "- NEVER type into any textarea at the bottom center of the page.",
+            "- NEVER interact with any element that has a data-tfa-ui attribute (those are part of the browser extension UI, not LinkedIn).",
+            "- Before filling any textarea, confirm its UID is inside a dialog element by checking the snapshot tree.",
             "",
             f"Target profile URL: {target_url}",
             f"Target name: {target_name}",
@@ -1181,6 +1274,18 @@ Current page: {page_header}
 8. BATCH ITEMS — For work item lists, create one step per item (up to 8 max). Remaining items continue via progress.
 9. RESUME AWARENESS — If PREVIOUS RUN CONTEXT is present, check what was already completed and skip those steps.
 10. STEP COUNT — Simple task: 1–3 steps. Multi-page task: 4–6 steps. Complex batch: up to 8 steps. Never exceed 8.
+11. LINKEDIN PEOPLE vs JOBS — CRITICAL: LinkedIn has two SEPARATE sections:
+    • PEOPLE SEARCH (linkedin.com/search/results/people/) — finds individual PEOPLE: recruiters, employees, contacts.
+    • JOBS (linkedin.com/jobs/) — finds JOB POSTINGS, NOT people.
+    When the task asks to FIND PEOPLE (recruiters, employees, contacts), ALWAYS use People search. NEVER go to linkedin.com/jobs for this.
+    To search for people: navigate to https://www.linkedin.com/search/results/people/?keywords=<encoded+query>
+    Include the company name IN the keywords (e.g. "early technology recruiter Microsoft" → ?keywords=early+technology+recruiter+Microsoft).
+    Do NOT add a separate "filter by company" step — including the company in keywords is sufficient and more reliable.
+12. LINKEDIN BATCH CONNECT WORKFLOW — For "find N people at Company and send connection requests":
+    Step 1: Navigate to https://www.linkedin.com/search/results/people/?keywords=role+company
+    Step 2: From the results page, collect the full profile URLs of the first N people visible (list them in the result observations)
+    Steps 3 to N+2: For each profile URL — "Send connection to [Name]": navigate to that specific profile URL, click Connect, add note, send.
+    Each connect step must have the EXACT profile URL in its description so the executor navigates directly.
 
 === RETURN FORMAT ===
 Return ONLY valid JSON — no markdown, no explanation:
@@ -1195,6 +1300,7 @@ Return ONLY valid JSON — no markdown, no explanation:
         index: int,
         current_url: str,
         resume_tmp_path: str | None = None,
+        live_snapshot: str = "",
     ) -> str:
         goal = str(payload.get("goal") or "").strip()
         user_context = str(payload.get("userContext") or "").strip()
@@ -1265,6 +1371,12 @@ Return ONLY valid JSON — no markdown, no explanation:
 
         extra_context = ("\n\n" + "\n\n".join(extra_parts)) if extra_parts else ""
 
+        snapshot_section = (
+            f"\n\n=== CURRENT PAGE STATE (live DOM snapshot) ===\n{live_snapshot[:4000]}"
+            if live_snapshot
+            else ""
+        )
+
         return f"""Execute ONLY this one step. Use Chrome DevTools MCP tools.
 
 === YOUR STEP ===
@@ -1273,17 +1385,18 @@ Step {index + 1} of {len(all_steps)}: {step.get("title", "")}
 
 === CONTEXT ===
 Overall goal: {goal}
-Current browser URL: {current_url or "(call take_snapshot to confirm)"}{extra_context}{completed_section}{remaining_section}
+Current browser URL: {current_url or "(unknown)"}{extra_context}{completed_section}{remaining_section}{snapshot_section}
 
 === EXECUTION RULES ===
 1. NAVIGATE FIRST (most important) — If this step requires going to a specific URL or site (e.g., "Navigate to Amazon", "Open google.com"), call navigate_page IMMEDIATELY as your very first action. Do NOT call take_snapshot or list_pages first — the current page is irrelevant and looking at it wastes iterations. After navigate_page completes, then take a snapshot to verify you arrived.
-2. SNAPSHOT BEFORE INTERACTION — For steps that interact with a page (click, fill, search), call take_snapshot first to see the live DOM before acting.
+2. ACT DIRECTLY — The CURRENT PAGE STATE above shows the live DOM. Use the element UIDs shown there to click/fill/type immediately. Do NOT call take_snapshot or list_pages before acting — you already have the snapshot. Call take_snapshot only AFTER an action to verify the result.
 3. OBSTACLES — If you see a cookie banner, GDPR dialog, or modal overlay: dismiss it first, then continue.
 4. FORM FILLING — Use fill() for input fields and textareas; fall back to type_text() only if fill() has no effect.
 5. VERIFY — After every action, call take_snapshot to confirm the change took effect.
-6. RETRY — If an element isn't found: scroll down, re-snapshot, look for alternative selectors.
+6. RETRY — If an element isn't found in the snapshot: call take_snapshot to refresh, scroll down, look for alternative selectors.
 7. SINGLE STEP — Do NOT proceed to the next step. Execute only what is described above.
-8. NO INFINITE LOOPS — If you've called take_snapshot or list_pages more than 3 times without performing a navigation or click, STOP observing and ACT: navigate to the correct URL or return status "failed".
+8. NO INFINITE LOOPS — If you've called take_snapshot or list_pages more than 3 times without performing a navigation, click, or fill, STOP and return status "failed".
+9. LINKEDIN PEOPLE vs JOBS — If the step requires finding PEOPLE (recruiters, employees, contacts) and you are on linkedin.com/jobs or any Jobs page, navigate_page immediately to linkedin.com/search/results/people/?keywords=<query> — do NOT search within Jobs.
 
 === RETURN ===
 Return ONLY valid JSON (no markdown):
@@ -1364,6 +1477,45 @@ If this step cannot be completed on the current page: return status "failed" wit
         if not isinstance(provider_config, dict):
             raise RuntimeError("providerConfig is required")
 
+        # LinkedIn connect step: route to the specialized handler that knows
+        # the Connect button → Add a note modal → Send flow and all edge cases.
+        step_title_lower = str(step.get("title") or "").lower()
+        step_description = str(step.get("description") or "")
+        is_connect_step = (
+            ("connect" in step_title_lower or "connection request" in step_title_lower)
+            and "linkedin.com/in/" in step_description
+        )
+        if is_connect_step:
+            profile_url_match = _URL_RE.search(step_description)
+            profile_url = (
+                profile_url_match.group(0).rstrip(".,)") if profile_url_match else ""
+            )
+            if profile_url and "linkedin.com/in/" in profile_url:
+                # Extract name from step title: "Send Connection to John Doe" → "John Doe"
+                raw_name = step.get("title", "")
+                for prefix in ("Send Connection to ", "Send connection to ", "Send connection request to ",
+                               "Send Connection Request to ", "Connect with ", "connect with "):
+                    if raw_name.lower().startswith(prefix.lower()):
+                        raw_name = raw_name[len(prefix):]
+                        break
+                connect_result = await self.execute_linkedin_connect_item(
+                    {
+                        **payload,
+                        "targetUrl": profile_url,
+                        "targetName": raw_name.strip() or None,
+                    },
+                    provider_config,
+                )
+                if connect_result["outcome"] == "failed":
+                    raise RuntimeError(connect_result["summary"])
+                return {
+                    "summary": connect_result["summary"],
+                    "status": "completed",
+                    "verified": connect_result["outcome"] in {"sent", "skipped"},
+                    "observations": f"finalState={connect_result['finalState']}",
+                    "finalUrl": profile_url,
+                }
+
         # Ground truth URL from Chrome — more reliable than tracked current_url,
         # which may be stale if the previous step navigated without setting finalUrl.
         actual_url = await self._get_actual_selected_url() or current_url
@@ -1384,6 +1536,15 @@ If this step cannot be completed on the current page: return status "failed" wit
                 except Exception as nav_err:
                     log_runtime(f"[step] pre-navigate failed: {nav_err}")
 
+        # Capture the live DOM snapshot once here and embed it in the step prompt.
+        # This lets the LLM act on visible element UIDs immediately without wasting
+        # iterations on list_pages / select_page / take_snapshot before every action.
+        live_snapshot = ""
+        try:
+            live_snapshot = await self._take_planning_snapshot()
+        except Exception:
+            pass
+
         llm, _provider, model = await self.attach_augmented_llm(
             provider_config,
             build_effective_system_prompt(
@@ -1391,12 +1552,10 @@ If this step cannot be completed on the current page: return status "failed" wit
                 str(payload.get("systemPrompt") or "").strip() or None,
             ),
         )
-        # The executor is responsible for ALL navigation via tool calls.
-        # We do NOT pre-navigate here — a previous step may have intentionally
-        # landed on a different domain (e.g., LinkedIn → Amazon).
         prompt = self._build_step_prompt(
             step, payload, completed, all_steps, index, actual_url,
             resume_tmp_path=resume_tmp_path,
+            live_snapshot=live_snapshot,
         )
 
         response = await llm.generate_str(
@@ -1528,6 +1687,48 @@ If this step cannot be completed on the current page: return status "failed" wit
                     "verified": verified,
                     "observations": observations,
                 })
+
+                # Dynamic plan injection: if this step collected LinkedIn profile URLs,
+                # replace any remaining generic "send connection" placeholders with one
+                # concrete step per URL so all N targets get processed.
+                if step_result:
+                    result_text = observations + " " + str(step_result.get("summary") or "")
+                    # For collect/search/find steps, also scan the live page snapshot
+                    # because the LLM may only mention a subset of URLs in its summary.
+                    step_title_lower = str(step.get("title") or "").lower()
+                    if any(kw in step_title_lower for kw in ("collect", "gather", "find", "search", "list", "scrape")):
+                        try:
+                            fresh_snap = await self._take_planning_snapshot()
+                            result_text += " " + fresh_snap
+                        except Exception:
+                            pass
+                    collected_urls = _extract_linkedin_profile_urls(result_text)
+                    if collected_urls:
+                        goal = str(payload.get("goal") or "")
+                        # Remove any not-yet-started generic connect placeholder steps.
+                        remaining_generic = [
+                            j for j, s in enumerate(plan_steps)
+                            if j > i and not s.get("_injected")
+                            and ("connect" in str(s.get("title") or "").lower()
+                                 or "connection" in str(s.get("title") or "").lower())
+                            and "linkedin.com/in/" not in str(s.get("description") or "")
+                        ]
+                        for j in sorted(remaining_generic, reverse=True):
+                            plan_steps.pop(j)
+                        # Inject one step per collected URL after current position.
+                        inject_at = i + 1
+                        for k, url in enumerate(collected_urls):
+                            label = f"({k + 1}/{len(collected_urls)})"
+                            plan_steps.insert(inject_at + k, _build_connect_step(url, goal, label))
+                        if collected_urls:
+                            self._emit_progress({
+                                "event": "plan_updated",
+                                "runId": run_id,
+                                "steps": [
+                                    {"title": s.get("title", ""), "description": s.get("description", "")}
+                                    for s in plan_steps
+                                ],
+                            })
 
             completed.append({"step": step, "result": step_result})
 
@@ -1741,6 +1942,7 @@ If this step cannot be completed on the current page: return status "failed" wit
         provider_config: dict[str, Any],
     ) -> dict[str, Any]:
         target_url = str(item.get("targetUrl") or "").strip()
+        target_name = str(item.get("targetName") or "").strip()
         if not target_url:
             raise RuntimeError("LinkedIn batch item targetUrl is required")
 
@@ -1749,6 +1951,56 @@ If this step cannot be completed on the current page: return status "failed" wit
 
         try:
             await self.wait_for_page_ready(page["pageId"], 15000)
+
+            # Detect 404 / profile-not-found before spending LLM iterations.
+            # LinkedIn 404 pages have "Page Not Found" in the title or redirect to
+            # linkedin.com/404 or linkedin.com/in/*/recent-activity/... with a
+            # profile-unavailable message.
+            try:
+                page_title_raw = await self.evaluate_on_page(
+                    page_id=page["pageId"],
+                    function_source="() => document.title || ''",
+                )
+                page_title_lower = str(page_title_raw or "").strip().lower()
+                pages_list = await self.list_pages()
+                actual_url = next(
+                    (p.get("url", "") for p in pages_list if p.get("pageId") == page["pageId"]),
+                    "",
+                )
+                is_404 = (
+                    "page not found" in page_title_lower
+                    or "/404" in str(actual_url)
+                    or "unavailable" in page_title_lower
+                )
+                if is_404:
+                    # Fall back: search for the person by name on LinkedIn
+                    if target_name:
+                        search_url = (
+                            "https://www.linkedin.com/search/results/people/?keywords="
+                            + "+".join(target_name.split())
+                        )
+                        log_runtime(f"[connect] profile 404, falling back to name search: {search_url}")
+                        await self.navigate_page(page["pageId"], search_url)
+                        await self.wait_for_page_ready(page["pageId"], 12000)
+                        item = {
+                            **item,
+                            "targetUrl": search_url,
+                            "pageContext": (
+                                f"Profile URL was not found (404). "
+                                f"Now showing LinkedIn search results for '{target_name}'. "
+                                f"Find this person in the results and click their profile, "
+                                f"then send the connection request from their profile page."
+                            ),
+                        }
+                    else:
+                        return {
+                            "outcome": "skipped",
+                            "finalState": "profile_not_found",
+                            "summary": f"Profile page returned 404 and no name was available to search.",
+                            "preservedPage": False,
+                        }
+            except Exception as e404:
+                log_runtime(f"[connect] 404 check error (ignored): {e404}")
             agent_result = await self.run_agent_json_task(
                 provider_config=provider_config,
                 task_label="linkedin_connect",
@@ -1800,6 +2052,32 @@ If this step cannot be completed on the current page: return status "failed" wit
         provider_config = payload.get("providerConfig")
         if not isinstance(provider_config, dict):
             raise RuntimeError("providerConfig is required")
+
+        # LinkedIn profile connect: use the specialized flow that knows how to
+        # handle the Connect → Add a note modal, already-connected, already-pending,
+        # and connect-button-not-found edge cases reliably.
+        if is_linkedin_profile_connect_goal(payload):
+            target_url = str(payload.get("pageUrl") or "").strip()
+            if not target_url:
+                raise RuntimeError("A LinkedIn profile URL is required for connect tasks.")
+            connect_result = await self.execute_linkedin_connect_item(
+                {
+                    **payload,
+                    "targetUrl": target_url,
+                    "targetName": extract_linkedin_target_name(payload),
+                },
+                provider_config,
+            )
+            if connect_result["outcome"] == "failed":
+                raise RuntimeError(connect_result["summary"])
+            return {
+                "summary": connect_result["summary"],
+                "status": "completed",
+                "taskType": "linkedin_profile_connect",
+                "finalState": connect_result["finalState"],
+                "preservedPage": connect_result["preservedPage"],
+            }
+
         return await self.execute_with_explicit_plan(payload)
 
 

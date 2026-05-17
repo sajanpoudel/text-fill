@@ -2037,6 +2037,49 @@ export class LocalAgentCompanionService {
         }
         break;
       }
+
+      case "plan_updated": {
+        // Dynamic plan injection: the Python runtime discovered new items (e.g.
+        // LinkedIn profile URLs) mid-execution and spliced new steps into the plan.
+        // Rebuild the task list from the updated step array, preserving the status
+        // of any tasks that have already completed/failed/been skipped.
+        const rawSteps = Array.isArray(event.steps) ? event.steps : [];
+        const now = Date.now();
+        const run = await this.store.getRun(userScope, runId);
+        const existingTasks = run?.tasks ?? [];
+        const updatedTasks: LocalCompanionRunTask[] = rawSteps.map((step, i) => {
+          const existing = existingTasks[i];
+          if (existing && existing.status !== "pending") {
+            // Keep already-executed tasks unchanged.
+            return existing;
+          }
+          return {
+            _id: `task_${i}`,
+            title:
+              typeof (step as Record<string, unknown>).title === "string"
+                ? String((step as Record<string, unknown>).title)
+                : `Step ${i + 1}`,
+            status: "pending" as const,
+            retryCount: 0,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+          };
+        });
+        await this.store.updateRun(userScope, runId, {
+          tasks: updatedTasks,
+          progress: {
+            ...(run?.progress ?? {
+              completedTasks: 0,
+              skippedTasks: 0,
+              blockedTasks: 0,
+              retryingTasks: 0,
+              currentTaskIndex: 0,
+            }),
+            totalTasks: updatedTasks.length,
+          },
+        });
+        break;
+      }
     }
   }
 
