@@ -78,11 +78,6 @@ You are a planning agent. Your ONLY job is to produce a JSON task plan.
 Do NOT call any tools. Do NOT navigate, click, or take snapshots.
 The live page snapshot is already embedded in the user prompt — read it there.
 Return ONLY valid JSON. No markdown, no explanation, no code blocks.
-IMPORTANT: You CAN plan steps that require generating text content (essays, emails, cover letters,
-summaries). Writing content is within scope. The executor that runs each step will generate the
-content itself and type it. NEVER refuse or say "I cannot write creative content".
-For document-writing tasks: plan a step like "Write personal essay in document" — the executor
-will compose the text and type it directly. Do NOT plan to click AI-assist buttons inside apps.
 """.strip()
 
 
@@ -1421,15 +1416,38 @@ Return ONLY valid JSON (no markdown):
 
 If this step cannot be completed on the current page: return status "failed" with a clear reason in summary."""
 
-    _WRITING_KEYWORDS = frozenset([
-        "write", "draft", "compose", "type", "essay", "email", "letter",
-        "article", "paragraph", "blog", "post", "summary", "cover letter",
-        "personal statement", "statement of purpose",
-    ])
-
-    def _is_content_writing_goal(self, goal: str) -> bool:
-        goal_lower = goal.lower()
-        return any(kw in goal_lower for kw in self._WRITING_KEYWORDS)
+    async def _is_content_writing_goal(
+        self,
+        goal: str,
+        page_url: str,
+        provider_config: dict[str, Any],
+    ) -> bool:
+        """Use the LLM to decide whether this goal requires generating text content
+        into a document editor (essay, letter, article, email body, etc.).
+        Fast single-turn yes/no call — adds ~1 LLM round-trip before planning."""
+        llm, _, model = await self.attach_augmented_llm(
+            provider_config,
+            "You classify user intent. Answer only 'yes' or 'no'. No explanation.",
+        )
+        response = await llm.generate_str(
+            (
+                "Does this task require generating and typing substantial text content "
+                "(essay, letter, article, email body, report, etc.) into a document editor "
+                "or text field on the current page?\n\n"
+                f"Task: {goal}\n"
+                f"Current page: {page_url}\n\n"
+                "Answer 'yes' only if the primary job is composing original text content. "
+                "Answer 'no' for navigation, form-filling, searching, clicking, or social actions."
+            ),
+            RequestParams(
+                model=model or None,
+                max_iterations=1,
+                maxTokens=5,
+                temperature=0,
+                use_history=False,
+            ),
+        )
+        return response.strip().lower().startswith("yes")
 
     async def _pre_generate_writing_content(
         self,
@@ -1469,41 +1487,6 @@ If this step cannot be completed on the current page: return status "failed" wit
             raise RuntimeError("providerConfig is required")
 
         goal = str(payload.get("goal") or "").strip()
-        page_url = str(payload.get("pageUrl") or "").strip()
-        user_context = str(payload.get("userContext") or "").strip()
-
-        # Content writing fast path: pre-generate the text and embed it verbatim
-        # in the step description. The executor then just navigates + types — no
-        # content generation needed during execution (avoids LLM refusals).
-        if self._is_content_writing_goal(goal):
-            try:
-                content = await self._pre_generate_writing_content(
-                    goal, user_context, provider_config
-                )
-                if content:
-                    log_runtime(f"[plan] content_writing path, pre_generated len={len(content)}")
-                    # IMPORTANT: do NOT use navigate_page — the document is already open.
-                    # Reloading the page while Google Docs is live causes "An error occurred".
-                    # Instead: find the tab via list_pages + select_page, then click and type.
-                    write_step = {
-                        "title": "Type content into document",
-                        "description": (
-                            f"The document is already open. Do NOT call navigate_page — that "
-                            f"would reload and crash the document. Instead:\n"
-                            f"1. Call list_pages to find the tab with URL containing '{page_url[:60]}'\n"
-                            f"2. Call select_page with bringToFront=true to focus that tab\n"
-                            f"3. Call take_snapshot to confirm the document editor is visible\n"
-                            f"4. Click the document body area (the main content canvas) to place cursor\n"
-                            f"5. Call type_text to type the following content:\n\n"
-                            f"{content}\n\n"
-                            f"6. Take a screenshot to verify the text appears in the document."
-                        ),
-                        "critical": True,
-                        "_pre_generated_content": content,
-                    }
-                    return [write_step]
-            except Exception as e:
-                log_runtime(f"[plan] content_writing pre-generate failed: {e}")
 
         live_snapshot = await self._take_planning_snapshot()
         log_runtime(f"[plan] snapshot={'yes' if live_snapshot else 'no'} len={len(live_snapshot)}")
@@ -1641,7 +1624,52 @@ If this step cannot be completed on the current page: return status "failed" wit
         except Exception:
             pass
 
-        llm, _provider, model = await self.attach_augmented_llm(
+        # Writing-step interception: if this step requires typing content into a
+        # document editor, pre-generate the text using all available context
+        # (goal + user profile + completed step observations) and embed it verbatim
+        # in the step description. The executor then only needs to click + type_text.
+        # This avoids LLM refusals ("I cannot generate creative content") at execution
+        # time and works for multi-step research→write workflows because completed
+        # step observations are available here.
+        if await self._is_content_writing_goal(
+            str(step.get("title", "")) + " " + str(step.get("description", "")),
+            actual_url,
+            provider_config,
+        ):
+            try:
+                goal_str = str(payload.get("goal") or "").strip()
+                user_context = str(payload.get("userContext") or "").strip()
+                prior_observations = "\n".join(
+                    str(c.get("result", {}).get("observations") or "")
+                    + " " + str(c.get("result", {}).get("summary") or "")
+                    for c in completed
+                    if c.get("result")
+                ).strip()
+                research_context = (
+                    f"\n\nResearch from previous steps:\n{prior_observations[:3000]}"
+                    if prior_observations else ""
+                )
+                content = await self._pre_generate_writing_content(
+                    goal_str + research_context, user_context, provider_config
+                )
+                if content:
+                    log_runtime(f"[step] writing interception, pre_generated len={len(content)}")
+                    step = {
+                        **step,
+                        "description": (
+                            f"The document editor is on this page. Do NOT call navigate_page.\n"
+                            f"1. Call take_snapshot to confirm the editor is visible\n"
+                            f"2. Click the document body area to place the cursor\n"
+                            f"3. Call type_text to type the following content:\n\n"
+                            f"{content}\n\n"
+                            f"4. Take a screenshot to verify the text appears."
+                        ),
+                        "_pre_generated_content": content,
+                    }
+            except Exception as write_err:
+                log_runtime(f"[step] writing interception failed, falling back: {write_err}")
+
+        llm, _, model = await self.attach_augmented_llm(
             provider_config,
             build_effective_system_prompt(
                 BASE_AGENT_SYSTEM_PROMPT,
