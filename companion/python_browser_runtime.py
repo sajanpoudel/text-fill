@@ -1303,6 +1303,9 @@ Current page: {page_header}
      with <value>, type_text <content>, scroll to element, etc.
    • VERIFY: what the executor should see/confirm to know the step succeeded
 
+   IMPORTANT: Step descriptions must NEVER contain DOM UIDs (uid=XX_XX). UIDs are ephemeral
+   and expire between planning and execution. Reference elements by text label only.
+
    Examples by step type:
    • Research:    "Navigate to https://www.google.com/search?q=nepal+prime+minister. Click the
                    Wikipedia or official result. Read the page and extract: PM name, ruling party,
@@ -1315,9 +1318,11 @@ Current page: {page_header}
                    use type_text to type the essay. Verify the text appears in the document."
    • Click/UI:    "On the current checkout page, click the 'Confirm Purchase' button. Verify the
                    page shows a success message or redirects to /order-confirmed."
-   • Reveal + Act: "On https://jobs.site.com/jobs, click the '[Job Title]' listing to load the
-                   detail panel on the right. Then click the 'Apply' button (NOT 'Auto Apply') in
-                   the panel. Verify the application page or form opens."
+   • Job board apply (Reveal + Act pattern):
+     "On https://www.cheatresume.com/jobs, click the job card titled '[Job Title]' in the
+      left list. Verify the right detail panel appears showing job title and buttons. Then
+      click the 'Apply' button in the right panel (NOT 'Auto Apply'). Verify a new page or
+      external application site loads. This is ONE step — do NOT split click and apply."
 
 2. ONE ACTION PER STEP — Each step must achieve ONE logical user goal. A goal may involve
    sequential clicks that are mechanically linked (e.g. click to reveal → click to act).
@@ -1467,7 +1472,7 @@ Current browser URL: {current_url or "(unknown)"}{extra_context}{completed_secti
 
 === EXECUTION RULES ===
 1. NAVIGATE FIRST (most important) — If this step requires going to a specific URL or site (e.g., "Navigate to Amazon", "Open google.com"), call navigate_page IMMEDIATELY as your very first action. Do NOT call take_snapshot or list_pages first — the current page is irrelevant and looking at it wastes iterations. After navigate_page completes, then take a snapshot to verify you arrived.
-2. ACT DIRECTLY — The CURRENT PAGE STATE above shows the live DOM. Use the element UIDs shown there to click/fill/type immediately. Do NOT call take_snapshot or list_pages before acting — you already have the snapshot. Call take_snapshot only AFTER an action to verify the result.
+2. ACT DIRECTLY — The CURRENT PAGE STATE above shows the live DOM. Use the element UIDs shown in CURRENT PAGE STATE (not any UIDs mentioned in the step description — those may be stale). Click/fill/type immediately using those UIDs. Call take_snapshot only AFTER an action to verify the result.
 3. OBSTACLES — If you see a cookie banner, GDPR dialog, or modal overlay: dismiss it first, then continue.
 4. FORM FILLING — Use fill() for input fields and textareas; fall back to type_text() only if fill() has no effect.
 5. VERIFY — After every action, call take_snapshot to confirm the change took effect.
@@ -1477,7 +1482,13 @@ Current browser URL: {current_url or "(unknown)"}{extra_context}{completed_secti
 9. LINKEDIN PEOPLE vs JOBS — If the step requires finding PEOPLE (recruiters, employees, contacts) and you are on linkedin.com/jobs or any Jobs page, navigate_page immediately to linkedin.com/search/results/people/?keywords=<query> — do NOT search within Jobs.
 10. GOOGLE DOCS / CONTENTEDITABLE — Google Docs does NOT use a standard <textarea>. Its editor is a contenteditable div. To type in Google Docs: (a) click the document body area, then (b) use type_text to type. Never use fill() on a Google Docs page — it will fail or target the wrong element. If you see a textarea in the snapshot and the current page is docs.google.com, that textarea is NOT the Google Docs editor — do NOT type into it.
 11. EXTENSION UI — The browser extension control panel may appear as a textarea or input at the bottom center of the page. NEVER type into it. Any element with data-tfa-ui is part of the extension, not the website.
-12. RESEARCH STEPS — If this step is about finding/researching information:
+12. JOB BOARD PANEL CLICKS — When clicking a job card/listing that should open a detail panel:
+    a. NEVER use UIDs from the step description — they are stale. Find the element by its text label in the CURRENT PAGE STATE snapshot.
+    b. After clicking, IMMEDIATELY call take_snapshot and verify that a right-side detail panel appeared showing the job title, company, and Apply/Auto Apply buttons.
+    c. If no panel appeared: the click likely missed. Try clicking the element text directly, or use evaluate_script to trigger a JavaScript click event on the element. Do NOT claim success if no panel is visible.
+    d. Once the detail panel is confirmed visible: find and click the 'Apply' button (NOT 'Auto Apply'). These buttons are typically in the right panel.
+    e. After clicking Apply: call take_snapshot and verify you navigated to an external application page or the URL changed.
+13. RESEARCH STEPS — If this step is about finding/researching information:
     a. You should already be on a search results page (pre-navigation happened). If not, immediately call navigate_page to https://www.google.com/search?q=<your+query>.
     b. Read the search results page snapshot to identify 2-3 most relevant links.
     c. Click on the most authoritative result (Wikipedia, official government site, reputable news).
