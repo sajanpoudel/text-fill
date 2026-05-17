@@ -369,23 +369,26 @@ export function ContextFAB({ visible, contexts, onContextsChange, showToast }: F
           width: 26,
           height: 28,
           padding: 0,
-          border: "none",
+          border: dark
+            ? "1px solid rgba(255,255,255,0.14)"
+            : "1px solid rgba(0,0,0,0.08)",
+          borderLeft: "none",
+          borderRight: "none",
           borderRadius: 0,
-          background: "rgba(12, 12, 12, 0.88)",
-          backdropFilter: "blur(6px)",
-          WebkitBackdropFilter: "blur(6px)",
+          background: dark ? "#303030" : "#181818",
           cursor: adding ? "wait" : "pointer",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          boxShadow: "-2px 0 8px rgba(0,0,0,0.25)",
+          boxShadow: dark
+            ? "0 2px 10px rgba(0,0,0,0.55)"
+            : "0 2px 10px rgba(0,0,0,0.22)",
           overflow: "visible",
-          transition: "opacity 0.15s ease",
+          transition: "background 0.15s ease",
           pointerEvents: "auto",
-          opacity: 0.82,
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
-        onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.82"; }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = dark ? "#444444" : "#2a2a2a"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = dark ? "#303030" : "#181818"; }}
       >
         {!logoBroken ? (
           <img

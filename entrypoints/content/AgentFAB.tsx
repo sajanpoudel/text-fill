@@ -53,13 +53,6 @@ function createRecognition(): SpeechRecognition | null {
   return recognition;
 }
 
-function relativeTime(ts: number): string {
-  const diff = Date.now() - ts;
-  if (diff < 60_000) return "just now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
-}
 
 function getStatusColors(status: string, dark: boolean) {
   switch (status) {
@@ -393,7 +386,7 @@ function AgentComposer({
                 overflowY: "auto",
               }}
             >
-            {latestRun.tasks.map((task, i) => {
+            {latestRun.tasks.map((task) => {
               const isActive = task.status === "running" || task.status === "retrying";
               const icon =
                 task.status === "pending"   ? "○" :
@@ -943,39 +936,37 @@ export function AgentFAB({
           bottom: 20,
           right: 26,
           zIndex: 2147483647,
-          width: 24,
+          width: 28,
           height: 28,
           padding: 0,
-          border: "none",
+          border: dark
+            ? "1px solid rgba(255,255,255,0.14)"
+            : "1px solid rgba(0,0,0,0.08)",
+          borderRight: "none",
           borderRadius: "6px 0 0 6px",
-          background: "rgba(12, 12, 12, 0.88)",
-          backdropFilter: "blur(6px)",
-          WebkitBackdropFilter: "blur(6px)",
+          background: dark ? "#303030" : "#181818",
           cursor: "pointer",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          boxShadow: "-2px 0 8px rgba(0,0,0,0.25)",
-          transition: "opacity 0.15s ease",
+          boxShadow: dark
+            ? "-3px 2px 10px rgba(0,0,0,0.55)"
+            : "-3px 2px 10px rgba(0,0,0,0.22)",
+          transition: "background 0.15s ease",
           pointerEvents: "auto",
           overflow: "visible",
-          opacity: 0.82,
         }}
-        onMouseEnter={(event) => { event.currentTarget.style.opacity = "1"; }}
-        onMouseLeave={(event) => { event.currentTarget.style.opacity = "0.82"; }}
+        onMouseEnter={(event) => { event.currentTarget.style.background = dark ? "#444444" : "#2a2a2a"; }}
+        onMouseLeave={(event) => { event.currentTarget.style.background = dark ? "#303030" : "#181818"; }}
       >
         <svg
-          width="12"
-          height="12"
+          width="16"
+          height="16"
           viewBox="0 0 24 24"
-          fill="none"
-          stroke="#ffffff"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
+          style={{ display: "block", stroke: "#ffffff", fill: "none", strokeWidth: 2.8, strokeLinecap: "round", strokeLinejoin: "round" }}
         >
-          <path d="M19 12H5" />
-          <path d="m11 18-6-6 6-6" />
+          <path d="M19 12H5" style={{ stroke: "#ffffff" }} />
+          <path d="m11 18-6-6 6-6" style={{ stroke: "#ffffff" }} />
         </svg>
         {approvals.length > 0 ? (
           <span
