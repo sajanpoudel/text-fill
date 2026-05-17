@@ -367,16 +367,42 @@ def _build_connect_step(profile_url: str, goal: str, count_label: str = "") -> d
     }
 
 
+_RESEARCH_TITLE_KEYWORDS = (
+    "research ", "find information", "look up", "investigate ", "search for",
+    "find facts", "gather information", "collect information", "find data",
+)
+
 def _extract_step_target_url(step: dict[str, Any], current_url: str) -> str | None:
     """
     If a step clearly intends to navigate to a specific site and the browser is
     NOT already there, return the target URL so _execute_step can pre-navigate.
     Returns None when no pre-navigation is needed.
     """
-    from urllib.parse import urlparse
+    from urllib.parse import urlparse, quote_plus
     title = str(step.get("title") or "").strip().lower()
     description = str(step.get("description") or "").strip()
     desc_lower = description.lower()
+
+    # Research steps: if no URL is provided and we're NOT on a search/info page,
+    # auto-navigate to a Google search so the executor starts with results, not a
+    # document editor or unrelated page.
+    is_research_title = any(title.startswith(kw) or kw in title for kw in _RESEARCH_TITLE_KEYWORDS)
+    if is_research_title and not _URL_RE.search(description):
+        on_search_or_wiki = any(s in current_url for s in (
+            "google.com/search", "wikipedia.org", "bing.com/search",
+            "duckduckgo.com", "scholar.google",
+        ))
+        if not on_search_or_wiki:
+            # Build query: strip common prefixes from title to get the subject
+            query = str(step.get("title") or "").strip()
+            for prefix in ("Research ", "Find information about ", "Look up ",
+                           "Investigate ", "Search for ", "Find facts about ",
+                           "Gather information about ", "Collect information on "):
+                if query.startswith(prefix):
+                    query = query[len(prefix):]
+                    break
+            if query:
+                return f"https://www.google.com/search?q={quote_plus(query)}"
 
     # Guard: if a step targets LinkedIn people search but the browser is on
     # linkedin.com/jobs, pre-navigate to the people search URL so the executor
@@ -1269,37 +1295,55 @@ Current page: {page_header}
 {context_block}
 
 === PLANNING RULES ===
-1. GROUNDED — Every step must reference exact element names, button labels, or URLs visible in the live snapshot. Never invent or guess UI elements.
-2. BOUNDED — Each step should be completable in ~15 LLM tool calls: one focused action + verification. Don't bundle unrelated actions.
-3. SPECIFIC — Step descriptions must include success criteria: what the executor should see after acting ("confirm cart shows 1 item", "verify URL changed to /checkout").
-4. CRITICAL — Mark critical:true if failure should abort the whole task. Mark critical:false for optional verifications or nice-to-have steps.
-5. CROSS-DOMAIN — If the task requires navigating to a different site or domain, make "Navigate to <URL>" an explicit step.
-6. OBSTACLES FIRST — If the snapshot shows a cookie banner, GDPR dialog, modal overlay, or login wall, the first step must handle it before any other action.
-7. FORM GROUPING — Group related form fields into one step. Do NOT create one step per field (e.g., "Fill personal details" covers name + email + phone).
-8. BATCH ITEMS — For work item lists, create one step per item (up to 8 max). Remaining items continue via progress.
-9. RESUME AWARENESS — If PREVIOUS RUN CONTEXT is present, check what was already completed and skip those steps.
-10. STEP COUNT — Simple task: 1–3 steps. Multi-page task: 4–6 steps. Complex batch: up to 8 steps. Never exceed 8.
-11. LINKEDIN PEOPLE vs JOBS — CRITICAL: LinkedIn has two SEPARATE sections:
-    • PEOPLE SEARCH (linkedin.com/search/results/people/) — finds individual PEOPLE: recruiters, employees, contacts.
-    • JOBS (linkedin.com/jobs/) — finds JOB POSTINGS, NOT people.
-    When the task asks to FIND PEOPLE (recruiters, employees, contacts), ALWAYS use People search. NEVER go to linkedin.com/jobs for this.
-    To search for people: navigate to https://www.linkedin.com/search/results/people/?keywords=<encoded+query>
-    Include the company name IN the keywords (e.g. "early technology recruiter Microsoft" → ?keywords=early+technology+recruiter+Microsoft).
-    Do NOT add a separate "filter by company" step — including the company in keywords is sufficient and more reliable.
-12. LINKEDIN BATCH CONNECT WORKFLOW — For "find N people at Company and send connection requests":
-    Step 1: Navigate to https://www.linkedin.com/search/results/people/?keywords=role+company
-    Step 2: From the results page, collect the full profile URLs of the first N people visible (list them in the result observations)
-    Steps 3 to N+2: For each profile URL — "Send connection to [Name]": navigate to that specific profile URL, click Connect, add note, send.
-    Each connect step must have the EXACT profile URL in its description so the executor navigates directly.
-13. CONTENT WRITING — If the task is to write an essay, email, cover letter, or any document content:
-    Plan ONE step: "Write [content type] in document". The executor will compose the text from
-    the user context provided and type it directly using type_text. Do NOT plan to click AI
-    buttons like "Write with Gemini" — the executor types content itself.
-    For Google Docs: the executor clicks the document body then uses type_text.
+
+1. RECIPE FORMAT (applies to EVERY step) — Each step description must be a self-contained
+   execution recipe with three parts:
+   • START: full URL or page state where this step begins
+   • ACTION: exact sequence — navigate_page to <URL>, click "<button label>", fill "<field name>"
+     with <value>, type_text <content>, scroll to element, etc.
+   • VERIFY: what the executor should see/confirm to know the step succeeded
+
+   Examples by step type:
+   • Research:   "Navigate to https://www.google.com/search?q=nepal+prime+minister. Click the
+                  Wikipedia or official result. Read the page and extract: PM name, ruling party,
+                  coalition partners, election date. Put ALL facts in observations."
+   • Form fill:  "On https://checkout.site.com, fill the 'Email' field with user's email, fill
+                  'Full Name' with user's full name, click 'Place Order'. Verify order confirmation."
+   • Navigation: "Navigate to https://linkedin.com/in/john-doe. Verify profile page loads and
+                  the Connect button is visible. Note current title in observations."
+   • Writing:    "In the open Google Docs tab, click the document body to focus the editor, then
+                  use type_text to type the essay. Verify the text appears in the document."
+   • Click/UI:   "On the current checkout page, click the 'Confirm Purchase' button. Verify the
+                  page shows a success message or redirects to /order-confirmed."
+
+2. BOUNDED — Each step = one focused action + verification. ~15 tool calls max. Don't bundle
+   unrelated actions in one step.
+
+3. CRITICAL — critical:true if failure should abort the task; critical:false for optional steps.
+
+4. OBSTACLES FIRST — If the snapshot shows a cookie banner, login wall, or modal overlay,
+   the FIRST step must handle it before any other action.
+
+5. FORM GROUPING — Group related fields into one step (name + email + phone = one step).
+
+6. BATCH ITEMS — For lists of items (e.g. send 5 connection requests), one step per item.
+   Collect all URLs first in one step, then process each item in its own step.
+
+7. STEP COUNT — Simple task: 1–3 steps. Multi-page: 4–6. Complex batch: up to 8. Max 8.
+
+8. RESUME AWARENESS — If PREVIOUS RUN CONTEXT is present, skip already-completed steps.
+
+9. LINKEDIN PEOPLE vs JOBS — People search URL: https://www.linkedin.com/search/results/people/?keywords=<query+company>
+   NEVER use linkedin.com/jobs to find people. Include company name in the keywords.
+   Batch connect: Step 1 collect profile URLs → Steps 2-N+1 one connect per profile (include full URL).
+
+10. CONTENT WRITING — For writing essays, letters, articles in a document editor: plan as
+    "Write [content type]". The executor generates and types the content directly.
+    Do NOT plan to click AI-assist buttons. The executor uses type_text on the document body.
 
 === RETURN FORMAT ===
 Return ONLY valid JSON — no markdown, no explanation:
-{{"steps": [{{"title": "≤60 chars, action-oriented", "description": "specific instructions + success criteria the executor must verify", "critical": true}}]}}"""
+{{"steps": [{{"title": "≤60 chars, verb-first action title", "description": "START + ACTION + VERIFY recipe as described above", "critical": true}}]}}"""
 
     def _build_step_prompt(
         self,
@@ -1409,6 +1453,13 @@ Current browser URL: {current_url or "(unknown)"}{extra_context}{completed_secti
 9. LINKEDIN PEOPLE vs JOBS — If the step requires finding PEOPLE (recruiters, employees, contacts) and you are on linkedin.com/jobs or any Jobs page, navigate_page immediately to linkedin.com/search/results/people/?keywords=<query> — do NOT search within Jobs.
 10. GOOGLE DOCS / CONTENTEDITABLE — Google Docs does NOT use a standard <textarea>. Its editor is a contenteditable div. To type in Google Docs: (a) click the document body area, then (b) use type_text to type. Never use fill() on a Google Docs page — it will fail or target the wrong element. If you see a textarea in the snapshot and the current page is docs.google.com, that textarea is NOT the Google Docs editor — do NOT type into it.
 11. EXTENSION UI — The browser extension control panel may appear as a textarea or input at the bottom center of the page. NEVER type into it. Any element with data-tfa-ui is part of the extension, not the website.
+12. RESEARCH STEPS — If this step is about finding/researching information:
+    a. You should already be on a search results page (pre-navigation happened). If not, immediately call navigate_page to https://www.google.com/search?q=<your+query>.
+    b. Read the search results page snapshot to identify 2-3 most relevant links.
+    c. Click on the most authoritative result (Wikipedia, official government site, reputable news).
+    d. Read the page content from the snapshot — extract the actual facts, figures, names, dates, and key points.
+    e. If one source isn't enough, navigate back or to another source.
+    f. Put ALL extracted facts verbatim in your observations field — this is the raw material for a later writing step. Vague observations like "found information about X" are USELESS. Include specific content.
 
 === RETURN ===
 Return ONLY valid JSON (no markdown):
