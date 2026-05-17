@@ -493,8 +493,8 @@ function AgentComposer({
           </div>
         )}
 
-        {/* Input Area */}
-        <div style={{ position: "relative" }}>
+        {/* Input Area — hidden during active runs so take_snapshot never sees this textarea */}
+        <div style={{ position: "relative", display: isAgentActive ? "none" : undefined }}>
           <textarea
             ref={inputRef}
             data-tfa-ui="agent-input"
@@ -915,8 +915,9 @@ export function AgentFAB({
 
   return (
     <>
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         data-tfa-ui="agent-fab"
         aria-hidden={
           (latestRun?.status === "executing" || latestRun?.status === "planning")
@@ -928,6 +929,12 @@ export function AgentFAB({
           event.preventDefault();
           event.stopPropagation();
           setPanelOpen((current) => !current);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setPanelOpen((current) => !current);
+          }
         }}
         onPointerDown={swallowPointer}
         onMouseDown={swallowPointer}
@@ -994,7 +1001,7 @@ export function AgentFAB({
             {approvals.length}
           </span>
         ) : null}
-      </button>
+      </div>
 
       {panelOpen && (
         <AgentComposer

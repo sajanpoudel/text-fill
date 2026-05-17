@@ -1397,6 +1397,8 @@ Current browser URL: {current_url or "(unknown)"}{extra_context}{completed_secti
 7. SINGLE STEP — Do NOT proceed to the next step. Execute only what is described above.
 8. NO INFINITE LOOPS — If you've called take_snapshot or list_pages more than 3 times without performing a navigation, click, or fill, STOP and return status "failed".
 9. LINKEDIN PEOPLE vs JOBS — If the step requires finding PEOPLE (recruiters, employees, contacts) and you are on linkedin.com/jobs or any Jobs page, navigate_page immediately to linkedin.com/search/results/people/?keywords=<query> — do NOT search within Jobs.
+10. GOOGLE DOCS / CONTENTEDITABLE — Google Docs does NOT use a standard <textarea>. Its editor is a contenteditable div. To type in Google Docs: (a) click the document body area, then (b) use type_text to type. Never use fill() on a Google Docs page — it will fail or target the wrong element. If you see a textarea in the snapshot and the current page is docs.google.com, that textarea is NOT the Google Docs editor — do NOT type into it.
+11. EXTENSION UI — The browser extension control panel may appear as a textarea or input at the bottom center of the page. NEVER type into it. Any element with data-tfa-ui is part of the extension, not the website.
 
 === RETURN ===
 Return ONLY valid JSON (no markdown):
