@@ -58,6 +58,10 @@ function _replaceNativeInput(
   el: HTMLInputElement | HTMLTextAreaElement,
   text: string
 ): void {
+  // Focus so React/Vue/Angular event delegation picks up the change (double-click
+  // lands on the icon button, not the field, so the field may not be focused).
+  el.focus();
+
   // Use native setter so React / Vue / Angular pick up the change
   const proto =
     el instanceof HTMLInputElement
@@ -149,9 +153,12 @@ function _replaceContentEditable(el: HTMLElement, text: string): void {
       targetDoc.execCommand("insertHTML", false, html);
   }
 
+  let usedFallback = false;
+
   if (!inserted) {
     // Last-resort fallback: direct DOM manipulation with <p> elements.
     // Quill picks this up via MutationObserver; other editors use it as a failsafe.
+    usedFallback = true;
     target.innerHTML = "";
     for (const para of text.split("\n\n")) {
       const p = targetDoc.createElement("p");
@@ -173,20 +180,37 @@ function _replaceContentEditable(el: HTMLElement, text: string): void {
 
   // Fire events so frameworks (React/Quill/Vue) update their state.
   // Order matches the reference extension: beforeinput → input → change → keydown/up → blur → (50ms) → focus.
-  target.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
-  target.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
-  target.dispatchEvent(new Event("change", { bubbles: true }));
-  target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Unidentified" }));
-  target.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Unidentified" }));
-  target.dispatchEvent(new Event("blur", { bubbles: true }));
+  //
+  // When the innerHTML fallback was used, MutationObserver callbacks (which editors
+  // like Quill/ProseMirror use to sync their internal model from the DOM) are
+  // microtasks — they fire after the current call stack. Firing `blur` synchronously
+  // would reach the editor's blur handler before MO fires, so the editor would see
+  // an empty model and re-show the placeholder even though the DOM has text.
+  // Wrapping in setTimeout(0) lets all microtasks (MO) run first.
+  const fireEvents = () => {
+    target.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
+    target.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+    target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Unidentified" }));
+    target.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Unidentified" }));
+    target.dispatchEvent(new Event("blur", { bubbles: true }));
 
-  // Re-focus after a tick and fire LinkedIn's form-level input to enable the Send button
-  setTimeout(() => {
-    try {
-      target.focus();
-      target.dispatchEvent(new Event("focus", { bubbles: true }));
-      const form = target.closest("form, .msg-form");
-      if (form) form.dispatchEvent(new Event("input", { bubbles: true }));
-    } catch { /* ok */ }
-  }, 50);
+    // Re-focus after a tick and fire LinkedIn's form-level input to enable the Send button
+    setTimeout(() => {
+      try {
+        target.focus();
+        target.dispatchEvent(new Event("focus", { bubbles: true }));
+        const form = target.closest("form, .msg-form");
+        if (form) form.dispatchEvent(new Event("input", { bubbles: true }));
+      } catch { /* ok */ }
+    }, 50);
+  };
+
+  if (usedFallback) {
+    // Let MutationObserver callbacks run first so the editor's model is populated
+    // before blur fires (otherwise editors re-show the placeholder).
+    setTimeout(fireEvents, 0);
+  } else {
+    fireEvents();
+  }
 }

@@ -43,6 +43,8 @@ function createConnectionMock(
         expect(name).toBe(next.name);
         return next.run(args);
       },
+      registerProgressHandler() {},
+      unregisterProgressHandler() {},
       async close() {
         return;
       },
@@ -227,6 +229,8 @@ describe("ChromeDevtoolsMcpRuntime", () => {
         async executeAgentTask() {
           throw new Error("not used");
         },
+        registerProgressHandler() {},
+        unregisterProgressHandler() {},
         async close() {
           return;
         },
@@ -316,6 +320,8 @@ describe("ChromeDevtoolsMcpRuntime", () => {
         async executeAgentTask() {
           throw new Error("not used");
         },
+        registerProgressHandler() {},
+        unregisterProgressHandler() {},
         async close() {
           return;
         },
@@ -416,6 +422,8 @@ describe("ChromeDevtoolsMcpRuntime", () => {
         async executeAgentTask() {
           throw new Error("not used");
         },
+        registerProgressHandler() {},
+        unregisterProgressHandler() {},
         async close() {
           return;
         },
@@ -493,6 +501,8 @@ describe("ChromeDevtoolsMcpRuntime", () => {
         async executeAgentTask() {
           throw new Error("not used");
         },
+        registerProgressHandler() {},
+        unregisterProgressHandler() {},
         async close() {
           return;
         },
@@ -578,6 +588,8 @@ describe("ChromeDevtoolsMcpRuntime", () => {
             },
           };
         },
+        registerProgressHandler() {},
+        unregisterProgressHandler() {},
         async close() {
           return;
         },
@@ -669,6 +681,8 @@ describe("ChromeDevtoolsMcpRuntime", () => {
         async executeAgentTask() {
           throw new Error("not used");
         },
+        registerProgressHandler() {},
+        unregisterProgressHandler() {},
         async close() {
           return;
         },

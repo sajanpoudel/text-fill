@@ -63,6 +63,7 @@ import {
 import {
   formatSavedSettingsContext,
   formatJobProfileContext,
+  formatUserBasicIdentity,
   shouldIncludeJobApplicationArtifacts,
 } from "../src/lib/agent-user-context.ts";
 import type {
@@ -127,22 +128,29 @@ async function refreshConvexToken(): Promise<boolean> {
   const refreshToken = getStoredConvexRefreshToken(stored);
   if (!refreshToken) return false;
 
-  try {
-    // Clear stale auth before calling the auth endpoint
-    convex.clearAuth();
-    // api.auth.signIn with just a refreshToken performs a silent token refresh
-    const result = await (convex as any).action(api.auth.signIn, { refreshToken });
-    const tokens = result?.tokens as { token: string; refreshToken?: string } | null;
-    if (!tokens?.token) return false;
+  // Retry on transient failures (network errors, SW wake-up latency).
+  // Service workers can be slow to establish connectivity on first wake.
+  const RETRY_DELAYS = [0, 1_500, 4_000];
+  for (const delay of RETRY_DELAYS) {
+    if (delay > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    }
+    try {
+      convex.clearAuth();
+      const result = await (convex as any).action(api.auth.signIn, { refreshToken });
+      const tokens = result?.tokens as { token: string; refreshToken?: string } | null;
+      if (!tokens?.token) return false;
 
-    const updates = buildStoredConvexTokenUpdates(tokens);
-    await chrome.storage.local.set(updates);
-    await syncTaskQueueScope(tokens.token);
-    convex.setAuth(tokens.token);
-    return true;
-  } catch {
-    return false;
+      const updates = buildStoredConvexTokenUpdates(tokens);
+      await chrome.storage.local.set(updates);
+      await syncTaskQueueScope(tokens.token);
+      convex.setAuth(tokens.token);
+      return true;
+    } catch {
+      // swallow and retry
+    }
   }
+  return false;
 }
 
 async function syncTaskQueueScope(token: string | null): Promise<void> {
@@ -196,9 +204,12 @@ async function loadToken() {
     return;
   }
 
-  // Proactively refresh if token is expired or expiring within the next 2 minutes
+  // Proactively refresh if the token is expired or expiring within the next 40 minutes.
+  // The expireContexts alarm fires every 30 min, so a 40-min window guarantees the
+  // alarm always catches the token while it still has time left — avoiding the window
+  // where the background tries to refresh an already-expired token.
   const expiry = parseJwtExpiry(convexToken);
-  if (expiry !== null && Date.now() >= expiry - 2 * 60 * 1000) {
+  if (expiry !== null && Date.now() >= expiry - 40 * 60 * 1000) {
     const refreshed = await refreshConvexToken();
     if (refreshed) return; // setAuth already called inside refreshConvexToken
   }
@@ -321,6 +332,13 @@ async function buildCurrentAgentRuntimeInputs(options?: {
     {}
   )) as BackgroundProfileSnapshot;
   const parts: string[] = [];
+
+  // Always include basic identity (name, email, links) so the agent knows who it's
+  // helping before doing anything — regardless of task type.
+  const userIdentity = formatUserBasicIdentity((profile as any)?.jobProfile);
+  if (userIdentity) {
+    parts.push(userIdentity);
+  }
 
   const formattedSettingsContext = formatSavedSettingsContext(profile?.contextText);
   if (formattedSettingsContext) {

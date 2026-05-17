@@ -275,14 +275,6 @@ export class ChromeDevtoolsMcpRuntime {
     }
   }
 
-  supportsManagedTaskRetries(): boolean {
-    return true;
-  }
-
-  supportsManagedTaskWorkflows(): boolean {
-    return true;
-  }
-
   async insertDraft(args: {
     pageUrl: string;
     fieldTarget: LocalCompanionFieldTarget;
@@ -378,6 +370,7 @@ export class ChromeDevtoolsMcpRuntime {
   async executeAgentTask(args: {
     providerConfig: LocalCompanionProviderConfig;
     goal: string;
+    runId?: string;
     pageUrl?: string;
     platformHint?: string;
     pageContext?: string;
@@ -390,12 +383,35 @@ export class ChromeDevtoolsMcpRuntime {
     scannedCandidates?: LocalCompanionCandidateScanItem[];
     workItems?: LocalCompanionBrowserWorkItem[];
     resumeFile?: ResumeFileData | null;
-  }): Promise<{
+  }, signal?: AbortSignal): Promise<{
     summary: string;
     metadata: Record<string, unknown>;
   }> {
     const pythonBridge = await this.getRequiredPythonBridge();
-    return pythonBridge.executeAgentTask(args);
+    return pythonBridge.executeAgentTask(args, signal);
+  }
+
+  killPythonBridge(): void {
+    if (!this.pythonBridgePromise) return;
+    void this.pythonBridgePromise
+      .then((bridge) => bridge.close())
+      .catch(() => undefined);
+    this.pythonBridgePromise = null;
+    this.lastHealthCheck = null;
+  }
+
+  async registerProgressHandler(
+    runId: string,
+    callback: (event: Record<string, unknown>) => void
+  ): Promise<void> {
+    const pythonBridge = await this.getPythonBridge().catch(() => null);
+    pythonBridge?.registerProgressHandler(runId, callback);
+  }
+
+  unregisterProgressHandler(runId: string): void {
+    void this.getPythonBridge().then((bridge) => {
+      bridge?.unregisterProgressHandler(runId);
+    }).catch(() => undefined);
   }
 
   async deriveBrowserWorkItems(args: {
@@ -419,90 +435,6 @@ export class ChromeDevtoolsMcpRuntime {
   }> {
     const pythonBridge = await this.getRequiredPythonBridge();
     return pythonBridge.deriveBrowserWorkItems(args);
-  }
-
-  async startAgentTaskWorkflow(args: {
-    providerConfig: LocalCompanionProviderConfig;
-    goal: string;
-    pageUrl?: string;
-    platformHint?: string;
-    pageContext?: string;
-    resumeContext?: string;
-    siteExperienceContext?: string;
-    userContext?: string;
-    systemPrompt?: string;
-    fieldTarget?: LocalCompanionFieldTarget;
-    structured?: LocalCompanionStructuredExtraction | null;
-    scannedCandidates?: LocalCompanionCandidateScanItem[];
-    workItems?: LocalCompanionBrowserWorkItem[];
-    resumeFile?: ResumeFileData | null;
-  }): Promise<{
-    workflowId: string;
-    runId?: string;
-  }> {
-    const pythonBridge = await this.getRequiredPythonBridge();
-    return pythonBridge.startGenericBrowserTaskWorkflow(args);
-  }
-
-  async startGenericBrowserQueueWorkflow(args: {
-    providerConfig: LocalCompanionProviderConfig;
-    goal: string;
-    pageUrl?: string;
-    platformHint?: string;
-    pageContext?: string;
-    resumeContext?: string;
-    siteExperienceContext?: string;
-    userContext?: string;
-    systemPrompt?: string;
-    fieldTarget?: LocalCompanionFieldTarget;
-    structured?: LocalCompanionStructuredExtraction | null;
-    scannedCandidates?: LocalCompanionCandidateScanItem[];
-    workItems: LocalCompanionBrowserWorkItem[];
-    resumeFile?: ResumeFileData | null;
-  }): Promise<{
-    workflowId: string;
-    runId?: string;
-  }> {
-    const pythonBridge = await this.getRequiredPythonBridge();
-    return pythonBridge.startGenericBrowserQueueWorkflow(args);
-  }
-
-  async startLinkedInConnectBatchWorkflow(args: {
-    items: LinkedInBatchItem[];
-    dailyLimit: number;
-    providerConfig: LocalCompanionProviderConfig;
-  }): Promise<{
-    workflowId: string;
-    runId?: string;
-  }> {
-    const pythonBridge = await this.getRequiredPythonBridge();
-    return pythonBridge.startLinkedInConnectBatchWorkflow(args);
-  }
-
-  async getAgentTaskWorkflowStatus(args: {
-    workflowId?: string;
-    runId?: string;
-  }): Promise<Record<string, unknown> | null> {
-    const pythonBridge = await this.getRequiredPythonBridge();
-    return pythonBridge.getWorkflowStatus(args);
-  }
-
-  async resumeAgentTaskWorkflow(args: {
-    workflowId?: string;
-    runId?: string;
-    signalName?: string;
-    payload?: unknown;
-  }): Promise<boolean> {
-    const pythonBridge = await this.getRequiredPythonBridge();
-    return pythonBridge.resumeWorkflow(args);
-  }
-
-  async cancelAgentTaskWorkflow(args: {
-    workflowId?: string;
-    runId?: string;
-  }): Promise<boolean> {
-    const pythonBridge = await this.getRequiredPythonBridge();
-    return pythonBridge.cancelWorkflow(args);
   }
 
   async dispose(): Promise<void> {

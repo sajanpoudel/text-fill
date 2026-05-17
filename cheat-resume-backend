@@ -11,6 +11,34 @@ TARGET_PIDS=()
 TEMPORAL_PID=""
 TEMPORAL_STARTED_BY_LAUNCHER="0"
 
+python_supports_mcp_agent() {
+  local python_bin="${1:-}"
+  [[ -n "$python_bin" ]] || return 1
+  "$python_bin" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+PY
+}
+
+resolve_python_bin() {
+  if [[ -n "${LOCAL_COMPANION_PYTHON:-}" ]]; then
+    command -v "$LOCAL_COMPANION_PYTHON"
+    return $?
+  fi
+
+  local candidate=""
+  for candidate in python3.12 python3.13 python3.11 python3.10 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && python_supports_mcp_agent "$candidate"; then
+      command -v "$candidate"
+      return 0
+    fi
+  done
+
+  command -v python3 2>/dev/null || true
+}
+
+PYTHON_BIN="$(resolve_python_bin)"
+
 show_help() {
   cat <<'EOF'
 Usage:
@@ -68,7 +96,7 @@ is_port_listening() {
     return $?
   fi
 
-  python3 - "$host" "$port" <<'PY' >/dev/null 2>&1
+    "$PYTHON_BIN" - "$host" "$port" <<'PY' >/dev/null 2>&1
 import socket
 import sys
 
@@ -138,7 +166,7 @@ ensure_temporal_server() {
     LOCAL_COMPANION_TEMPORAL_UI="${LOCAL_COMPANION_TEMPORAL_UI:-0}" \
     LOCAL_COMPANION_TEMPORAL_UI_PORT="${LOCAL_COMPANION_TEMPORAL_UI_PORT:-8233}" \
     LOCAL_COMPANION_TEMPORAL_LOG_LEVEL="${LOCAL_COMPANION_TEMPORAL_LOG_LEVEL:-warn}" \
-    python3 -m uv run --with temporalio python companion/temporal_dev_server.py &
+    "$PYTHON_BIN" -m uv run --with temporalio python companion/temporal_dev_server.py &
   TEMPORAL_PID="$!"
   TEMPORAL_STARTED_BY_LAUNCHER="1"
   echo "$TEMPORAL_PID" > "$temporal_pid_file"
@@ -374,8 +402,15 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
+if [[ -z "$PYTHON_BIN" ]]; then
   echo "Error: Python 3 is required for the mcp-agent bridge runtime." >&2
+  exit 1
+fi
+
+if ! python_supports_mcp_agent "$PYTHON_BIN"; then
+  echo "Error: Python 3.10+ is required for the mcp-agent bridge runtime." >&2
+  echo "Detected: $("$PYTHON_BIN" --version 2>&1)" >&2
+  echo "Install a newer Python, or set LOCAL_COMPANION_PYTHON=/path/to/python3.12." >&2
   exit 1
 fi
 
@@ -384,10 +419,10 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! python3 -m uv --version >/dev/null 2>&1; then
+if ! "$PYTHON_BIN" -m uv --version >/dev/null 2>&1; then
   echo "Installing uv for the mcp-agent bridge runtime..."
-  if ! python3 -m pip install --user uv; then
-    python3 -m pip install --user --break-system-packages uv
+  if ! "$PYTHON_BIN" -m pip install --user uv; then
+    "$PYTHON_BIN" -m pip install --user --break-system-packages uv
   fi
 fi
 
@@ -421,4 +456,6 @@ env \
   LOCAL_COMPANION_TEMPORAL_NAMESPACE="$TEMPORAL_NAMESPACE" \
   LOCAL_COMPANION_TEMPORAL_TASK_QUEUE="$TEMPORAL_TASK_QUEUE" \
   LOCAL_COMPANION_TEMPORAL_PID_FILE="$TEMPORAL_PID_FILE" \
+  MCP_AGENT_BRIDGE_COMMAND="$PYTHON_BIN" \
+  MCP_AGENT_PYTHON_RUNTIME_COMMAND="$PYTHON_BIN" \
   npm run companion:dev

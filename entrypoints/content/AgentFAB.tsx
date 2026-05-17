@@ -176,10 +176,8 @@ function AgentComposer({
   const summary = latestRun ? getAgentRunSummary(latestRun) : null;
   const progressSummary = latestRun ? getAgentRunProgressSummary(latestRun) : null;
   const currentTask = latestRun ? getAgentRunCurrentTask(latestRun) : null;
-  const [statusDetailsVisible, setStatusDetailsVisible] = useState(true);
   const canCancelLatestRun = Boolean(
     latestRun &&
-      latestRun.workflowId &&
       (latestRun.status === "planning" || latestRun.status === "executing")
   );
   const canResumeLatestRun = Boolean(
@@ -198,13 +196,13 @@ function AgentComposer({
     detail = summary;
   }
 
-  useEffect(() => {
-    setStatusDetailsVisible(true);
-  }, [latestRun?._id]);
+  const isAgentActive =
+    latestRun?.status === "executing" || latestRun?.status === "planning";
 
   return createPortal(
     <div
       data-tfa-ui="modal-overlay"
+      aria-hidden={isAgentActive ? "true" : undefined}
       style={{
         position: "fixed",
         inset: 0,
@@ -312,31 +310,6 @@ function AgentComposer({
                 <path d="M21 12a9 9 0 1 1-6.219-8.56" /><polyline points="21 3 21 9 15 9" />
               </svg>
             </button>
-            {(progressSummary || currentTask) && (
-              <button
-                onClick={() => setStatusDetailsVisible((current) => !current)}
-                onMouseDown={stopDown}
-                title={statusDetailsVisible ? "Hide run details" : "Show run details"}
-                style={{ background: "none", border: "none", color: textSub, cursor: "pointer", padding: 4, borderRadius: 4, display: "flex" }}
-                onMouseEnter={(e) => e.currentTarget.style.background = hoverBg}
-                onMouseLeave={(e) => e.currentTarget.style.background = "none"}
-              >
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  style={{
-                    transform: statusDetailsVisible ? "rotate(180deg)" : "rotate(0deg)",
-                    transition: "transform 0.16s ease",
-                  }}
-                >
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </button>
-            )}
             <button
               onClick={onClose}
               onMouseDown={stopDown}
@@ -352,86 +325,8 @@ function AgentComposer({
           </div>
         </div>
 
-        {(progressSummary || currentTask) && statusDetailsVisible && (
-          <div
-            style={{
-              padding: "8px 14px",
-              borderBottom: `1px solid ${divider}`,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-              background: dark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.015)",
-            }}
-          >
-            <div style={{ minWidth: 0, flex: 1 }}>
-              {progressSummary && (
-                <div style={{ fontSize: 11, fontWeight: 700, color: text }}>
-                  {progressSummary}
-                </div>
-              )}
-              {summary && (
-                <div
-                  style={{
-                    marginTop: progressSummary ? 2 : 0,
-                    fontSize: 10,
-                    color: textMuted,
-                    whiteSpace: "normal",
-                    lineHeight: 1.45,
-                  }}
-                >
-                  {summary}
-                </div>
-              )}
-              {currentTask && (
-                <div style={{ minWidth: 0, marginTop: summary ? 6 : 4 }}>
-                  <div
-                    style={{
-                      fontSize: 10,
-                      color: textSub,
-                      whiteSpace: "normal",
-                      overflowWrap: "anywhere",
-                      lineHeight: 1.45,
-                    }}
-                  >
-                    Current task: {currentTask.title}
-                    {currentTask.retryCount > 0 ? ` · retries ${currentTask.retryCount}` : ""}
-                  </div>
-                  {currentTask.pageUrl && (
-                    <div
-                      style={{
-                        marginTop: 2,
-                        fontSize: 10,
-                        color: textMuted,
-                        whiteSpace: "normal",
-                        overflowWrap: "anywhere",
-                        lineHeight: 1.45,
-                      }}
-                    >
-                      {currentTask.pageUrl}
-                    </div>
-                  )}
-                  {currentTask.resultSummary && (
-                    <div
-                      style={{
-                        marginTop: 2,
-                        fontSize: 10,
-                        color: textMuted,
-                        whiteSpace: "normal",
-                        overflowWrap: "anywhere",
-                        lineHeight: 1.45,
-                      }}
-                    >
-                      {currentTask.resultSummary}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {(progressSummary || currentTask) && !statusDetailsVisible && (
+        {/* Progress summary — only show the count when task list is visible */}
+        {progressSummary && !(latestRun?.tasks && latestRun.tasks.length > 0) && (
           <div
             style={{
               padding: "6px 14px",
@@ -439,39 +334,144 @@ function AgentComposer({
               background: dark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.015)",
             }}
           >
-            <button
-              onClick={() => setStatusDetailsVisible(true)}
-              onMouseDown={stopDown}
-              style={{
-                display: "flex",
-                width: "100%",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-                background: "none",
-                border: "none",
-                padding: 0,
-                cursor: "pointer",
-                color: textSub,
-                textAlign: "left",
-              }}
-            >
-              <span
+            <div style={{ fontSize: 11, fontWeight: 700, color: text }}>
+              {progressSummary}
+            </div>
+            {currentTask && (
+              <div
                 style={{
-                  minWidth: 0,
                   fontSize: 10,
-                  fontWeight: 600,
+                  color: textSub,
                   whiteSpace: "nowrap",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
+                  marginTop: 2,
                 }}
               >
-                {progressSummary ?? `Current task: ${currentTask?.title ?? "Show run details"}`}
-              </span>
-              <span style={{ fontSize: 10, fontWeight: 700, color: text }}>
-                Show details
-              </span>
-            </button>
+                {currentTask.title}
+                {currentTask.retryCount > 0 ? ` · retry ${currentTask.retryCount}` : ""}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Full Task List — Claude-Code style step-by-step plan */}
+        {latestRun?.tasks && latestRun.tasks.length > 0 && (
+          <div
+            style={{
+              padding: "4px 14px 6px",
+              borderBottom: `1px solid ${divider}`,
+              maxHeight: 260,
+              overflowY: "auto",
+            }}
+          >
+            {progressSummary && (
+              <div style={{ fontSize: 10, color: textMuted, paddingTop: 4, paddingBottom: 2, fontWeight: 600 }}>
+                {progressSummary}
+              </div>
+            )}
+            {latestRun.tasks.map((task, i) => {
+              const isActive = task.status === "running" || task.status === "retrying";
+              const icon =
+                task.status === "pending"   ? "○" :
+                task.status === "running"   ? "▶" :
+                task.status === "retrying"  ? "↻" :
+                task.status === "completed" ? "✓" :
+                task.status === "skipped"   ? "⊘" : "✗";
+              const iconColor =
+                task.status === "completed" ? "#16a34a" :
+                task.status === "failed"    ? "#b91c1c" :
+                task.status === "skipped"   ? textMuted :
+                isActive                    ? "#1d4ed8" : textMuted;
+
+              return (
+                <div
+                  key={task._id}
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 8,
+                    padding: "3px 0",
+                    fontSize: 11,
+                    opacity: task.status === "pending" ? 0.5 : 1,
+                  }}
+                >
+                  <span
+                    style={{
+                      color: iconColor,
+                      flexShrink: 0,
+                      width: 12,
+                      fontWeight: 700,
+                      paddingTop: 1,
+                    }}
+                  >
+                    {icon}
+                  </span>
+                  <div style={{ minWidth: 0 }}>
+                    <span
+                      style={{
+                        color: isActive ? text : task.status === "completed" ? textMuted : text,
+                        fontWeight: isActive ? 600 : 400,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        display: "block",
+                      }}
+                    >
+                      {task.title}
+                    </span>
+                    {task.status === "running" && (
+                      <span style={{ color: "#1d4ed8", fontSize: 10, display: "block" }}>
+                        running…
+                      </span>
+                    )}
+                    {task.status === "failed" && task.lastError && (
+                      <span
+                        style={{ color: "#b91c1c", fontSize: 10, display: "block" }}
+                      >
+                        {task.lastError.slice(0, 120)}
+                      </span>
+                    )}
+                    {task.status === "retrying" && (
+                      <span
+                        style={{ color: "#d97706", fontSize: 10, display: "block" }}
+                      >
+                        Retrying (attempt {task.retryCount})…
+                      </span>
+                    )}
+                    {task.status === "completed" && task.resultSummary && (
+                      <span
+                        style={{
+                          color: task.verified === false ? "#d97706" : textMuted,
+                          fontSize: 10,
+                          display: "block",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {task.verified === false ? "⚠ unverified · " : ""}{task.resultSummary}
+                      </span>
+                    )}
+                    {task.status === "completed" && task.observations && (
+                      <span
+                        style={{
+                          color: textMuted,
+                          fontSize: 10,
+                          display: "block",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          fontStyle: "italic",
+                        }}
+                      >
+                        {task.observations.slice(0, 100)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -649,20 +649,23 @@ export function AgentFAB({
     }
   }, [showToast]);
 
+  const latestRunStatus = latestRun?.status;
+
   useEffect(() => {
     if (!panelOpen) return;
     void refresh();
 
     const intervalId = window.setInterval(() => {
       void refresh();
-    }, getAgentPanelPollMs(document.hidden));
+    }, getAgentPanelPollMs(document.hidden, latestRun));
     const onVisibilityChange = () => void refresh();
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.clearInterval(intervalId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [panelOpen, refresh]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panelOpen, refresh, latestRunStatus]);
 
   useEffect(() => {
     return () => {
@@ -896,6 +899,11 @@ export function AgentFAB({
       <button
         type="button"
         data-tfa-ui="agent-fab"
+        aria-hidden={
+          (latestRun?.status === "executing" || latestRun?.status === "planning")
+            ? "true"
+            : undefined
+        }
         title="Agent Command Center"
         onClick={(event) => {
           event.preventDefault();

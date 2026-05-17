@@ -14,24 +14,16 @@ type ConsoleLike = Pick<typeof console, "log" | "warn" | "error">;
 type BridgeMethod =
   | "health"
   | "derive_browser_work_items"
-  | "start_generic_browser_task_workflow"
-  | "start_generic_browser_queue_workflow"
-  | "start_linkedin_connect_batch_workflow"
-  | "get_workflow_status"
-  | "resume_workflow"
-  | "cancel_workflow"
   | "navigate_to_url"
   | "insert_draft"
   | "execute_linkedin_connect_batch"
   | "execute_agent_task"
   | "shutdown";
 
-type BridgeArgs = Record<string, unknown>;
-
 type BridgeRequest = {
   id: string;
   method: BridgeMethod;
-  args?: BridgeArgs;
+  args?: Record<string, unknown>;
 };
 
 type BridgeResponse = {
@@ -46,37 +38,6 @@ type PendingBridgeRequest = {
   reject: (error: Error) => void;
 };
 
-type AgentTaskArgs = {
-  providerConfig: LocalCompanionProviderConfig;
-  goal: string;
-  pageUrl?: string;
-  platformHint?: string;
-  pageContext?: string;
-  resumeContext?: string;
-  siteExperienceContext?: string;
-  userContext?: string;
-  systemPrompt?: string;
-  fieldTarget?: LocalCompanionFieldTarget;
-  structured?: LocalCompanionStructuredExtraction | null;
-  scannedCandidates?: LocalCompanionCandidateScanItem[];
-  workItems?: LocalCompanionBrowserWorkItem[];
-};
-
-type ManagedWorkflowArgs = AgentTaskArgs & {
-  resumeFile?: ResumeFileData | null;
-};
-
-type LinkedInConnectBatchArgs = {
-  items: Array<{ targetUrl: string; targetName?: string; generatedText?: string }>;
-  dailyLimit: number;
-  providerConfig: LocalCompanionProviderConfig;
-};
-
-type WorkflowHandleArgs = {
-  workflowId?: string;
-  runId?: string;
-};
-
 export interface PythonBrowserRuntimeBridgeProcessOptions {
   command?: string;
   args?: string[];
@@ -87,31 +48,25 @@ export interface PythonBrowserRuntimeBridgeProcessOptions {
 
 export interface PythonBrowserRuntimeConnection {
   health(): Promise<{ connected: boolean; error?: string }>;
-  deriveBrowserWorkItems(args: AgentTaskArgs): Promise<{
+  deriveBrowserWorkItems(args: {
+    providerConfig: LocalCompanionProviderConfig;
+    goal: string;
+    pageUrl?: string;
+    platformHint?: string;
+    pageContext?: string;
+    resumeContext?: string;
+    siteExperienceContext?: string;
+    userContext?: string;
+    systemPrompt?: string;
+    fieldTarget?: LocalCompanionFieldTarget;
+    structured?: LocalCompanionStructuredExtraction | null;
+    scannedCandidates?: LocalCompanionCandidateScanItem[];
+    workItems?: LocalCompanionBrowserWorkItem[];
+  }): Promise<{
     mode: "single" | "queue";
     summary: string;
     workItems: LocalCompanionBrowserWorkItem[];
   }>;
-  startGenericBrowserTaskWorkflow(args: ManagedWorkflowArgs): Promise<{
-    workflowId: string;
-    runId?: string;
-  }>;
-  startGenericBrowserQueueWorkflow(args: ManagedWorkflowArgs & {
-    workItems: LocalCompanionBrowserWorkItem[];
-  }): Promise<{
-    workflowId: string;
-    runId?: string;
-  }>;
-  startLinkedInConnectBatchWorkflow(args: LinkedInConnectBatchArgs): Promise<{
-    workflowId: string;
-    runId?: string;
-  }>;
-  getWorkflowStatus(args: WorkflowHandleArgs): Promise<Record<string, unknown> | null>;
-  resumeWorkflow(args: WorkflowHandleArgs & {
-    signalName?: string;
-    payload?: unknown;
-  }): Promise<boolean>;
-  cancelWorkflow(args: WorkflowHandleArgs): Promise<boolean>;
   navigateToUrl(args: {
     targetUrl: string;
     currentPageUrl?: string;
@@ -131,14 +86,36 @@ export interface PythonBrowserRuntimeConnection {
     summary: string;
     metadata: Record<string, unknown>;
   }>;
-  executeLinkedInConnectBatch(args: LinkedInConnectBatchArgs): Promise<{
+  executeLinkedInConnectBatch(args: {
+    items: Array<{ targetUrl: string; targetName?: string; generatedText?: string }>;
+    dailyLimit: number;
+    providerConfig: LocalCompanionProviderConfig;
+  }): Promise<{
     summary: string;
     metadata: Record<string, unknown>;
   }>;
-  executeAgentTask(args: ManagedWorkflowArgs): Promise<{
+  executeAgentTask(args: {
+    providerConfig: LocalCompanionProviderConfig;
+    goal: string;
+    runId?: string;
+    pageUrl?: string;
+    platformHint?: string;
+    pageContext?: string;
+    resumeContext?: string;
+    siteExperienceContext?: string;
+    userContext?: string;
+    systemPrompt?: string;
+    fieldTarget?: LocalCompanionFieldTarget;
+    structured?: LocalCompanionStructuredExtraction | null;
+    scannedCandidates?: LocalCompanionCandidateScanItem[];
+    workItems?: LocalCompanionBrowserWorkItem[];
+    resumeFile?: ResumeFileData | null;
+  }, signal?: AbortSignal): Promise<{
     summary: string;
     metadata: Record<string, unknown>;
   }>;
+  registerProgressHandler(runId: string, callback: (event: Record<string, unknown>) => void): void;
+  unregisterProgressHandler(runId: string): void;
   close(): Promise<void>;
 }
 
@@ -147,24 +124,6 @@ function createRequestId(): string {
   return typeof randomUUID === "function"
     ? randomUUID()
     : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function parseProcessArgs(
-  env: NodeJS.ProcessEnv,
-  jsonKey: string,
-  rawKey: string
-): string[] | null {
-  const rawJson = env[jsonKey]?.trim();
-  if (rawJson) {
-    const parsed = JSON.parse(rawJson);
-    if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
-      throw new Error(`${jsonKey} must be a JSON string array.`);
-    }
-    return parsed;
-  }
-
-  const rawArgs = env[rawKey]?.trim();
-  return rawArgs ? rawArgs.split(/\s+/u) : null;
 }
 
 export function buildPythonBrowserRuntimeProcessOptions(
@@ -179,19 +138,14 @@ export function buildPythonBrowserRuntimeProcessOptions(
 
   return {
     command: env.MCP_AGENT_PYTHON_RUNTIME_COMMAND?.trim() || "python3",
-    args:
-      parseProcessArgs(
-        env,
-        "MCP_AGENT_PYTHON_RUNTIME_ARGS_JSON",
-        "MCP_AGENT_PYTHON_RUNTIME_ARGS"
-      ) ?? [
+    args: env.MCP_AGENT_PYTHON_RUNTIME_ARGS?.trim()
+      ? env.MCP_AGENT_PYTHON_RUNTIME_ARGS.trim().split(/\s+/u)
+      : [
           "-m",
           "uv",
           "run",
           "--with",
           "mcp-agent",
-          "--with",
-          "temporalio",
           "--with",
           "openai",
           "--with",
@@ -237,6 +191,7 @@ export async function createPythonBrowserRuntimeConnection(
   });
 
   const pending = new Map<string, PendingBridgeRequest>();
+  const progressHandlers = new Map<string, (event: Record<string, unknown>) => void>();
   let stdoutBuffer = "";
   let stderrBuffer = "";
   let closed = false;
@@ -265,14 +220,26 @@ export async function createPythonBrowserRuntimeConnection(
         continue;
       }
 
-      let response: BridgeResponse;
+      let parsed: Record<string, unknown>;
       try {
-        response = JSON.parse(line) as BridgeResponse;
+        parsed = JSON.parse(line) as Record<string, unknown>;
       } catch {
         logger.warn(`[python-browser-runtime] ignored non-JSON stdout: ${line}`);
         continue;
       }
 
+      if (parsed.__progress__ === true) {
+        const runId = typeof parsed.runId === "string" ? parsed.runId : undefined;
+        if (runId) {
+          const handler = progressHandlers.get(runId);
+          if (handler) {
+            try { handler(parsed); } catch { /* ignore handler errors */ }
+          }
+        }
+        continue;
+      }
+
+      const response = parsed as unknown as BridgeResponse;
       const request = pending.get(response.id);
       if (!request) {
         continue;
@@ -329,12 +296,16 @@ export async function createPythonBrowserRuntimeConnection(
     );
   });
 
-  const request = async <TResult, TArgs extends BridgeArgs = BridgeArgs>(
+  const request = async <TResult>(
     method: BridgeMethod,
-    args?: TArgs
+    args?: Record<string, unknown>,
+    signal?: AbortSignal
   ): Promise<TResult> => {
     if (closed) {
       throw new Error("python browser runtime is not running");
+    }
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
     }
     const id = createRequestId();
     const payload: BridgeRequest = { id, method, ...(args ? { args } : {}) };
@@ -343,6 +314,18 @@ export async function createPythonBrowserRuntimeConnection(
         resolve: (value) => resolve(value as TResult),
         reject,
       });
+
+      if (signal) {
+        signal.addEventListener(
+          "abort",
+          () => {
+            if (pending.delete(id)) {
+              reject(new DOMException("Aborted", "AbortError"));
+            }
+          },
+          { once: true }
+        );
+      }
 
       child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
         if (!error) {
@@ -371,84 +354,37 @@ export async function createPythonBrowserRuntimeConnection(
         mode: "single" | "queue";
         summary: string;
         workItems: LocalCompanionBrowserWorkItem[];
-      }, AgentTaskArgs>("derive_browser_work_items", args);
-    },
-    async startGenericBrowserTaskWorkflow(args) {
-      return request<{
-        workflowId: string;
-        runId?: string;
-      }, ManagedWorkflowArgs>("start_generic_browser_task_workflow", args);
-    },
-    async startGenericBrowserQueueWorkflow(args) {
-      return request<{
-        workflowId: string;
-        runId?: string;
-      }, ManagedWorkflowArgs & { workItems: LocalCompanionBrowserWorkItem[] }>(
-        "start_generic_browser_queue_workflow",
-        args
-      );
-    },
-    async startLinkedInConnectBatchWorkflow(args) {
-      return request<{
-        workflowId: string;
-        runId?: string;
-      }, LinkedInConnectBatchArgs>("start_linkedin_connect_batch_workflow", args);
-    },
-    async getWorkflowStatus(args) {
-      return request<Record<string, unknown> | null, WorkflowHandleArgs>(
-        "get_workflow_status",
-        args
-      );
-    },
-    async resumeWorkflow(args) {
-      return request<boolean, WorkflowHandleArgs & {
-        signalName?: string;
-        payload?: unknown;
-      }>(
-        "resume_workflow",
-        args
-      );
-    },
-    async cancelWorkflow(args) {
-      return request<boolean, WorkflowHandleArgs>(
-        "cancel_workflow",
-        args
-      );
+      }>("derive_browser_work_items", args as unknown as Record<string, unknown>);
     },
     async navigateToUrl(args) {
       return request<{
         summary: string;
         metadata: Record<string, unknown>;
-      }, {
-        targetUrl: string;
-        currentPageUrl?: string;
-        targetLabel?: string;
-      }>("navigate_to_url", args);
+      }>("navigate_to_url", args as unknown as Record<string, unknown>);
     },
     async insertDraft(args) {
       return request<{
         summary: string;
         metadata: Record<string, unknown>;
-      }, {
-        pageUrl: string;
-        fieldTarget: LocalCompanionFieldTarget;
-        generatedText: string;
-        verifyText: string;
-        targetName?: string;
-        providerConfig: LocalCompanionProviderConfig;
-      }>("insert_draft", args);
+      }>("insert_draft", args as unknown as Record<string, unknown>);
     },
     async executeLinkedInConnectBatch(args) {
       return request<{
         summary: string;
         metadata: Record<string, unknown>;
-      }, LinkedInConnectBatchArgs>("execute_linkedin_connect_batch", args);
+      }>("execute_linkedin_connect_batch", args as unknown as Record<string, unknown>);
     },
-    async executeAgentTask(args) {
+    async executeAgentTask(args, signal) {
       return request<{
         summary: string;
         metadata: Record<string, unknown>;
-      }, ManagedWorkflowArgs>("execute_agent_task", args);
+      }>("execute_agent_task", args as unknown as Record<string, unknown>, signal);
+    },
+    registerProgressHandler(runId, callback) {
+      progressHandlers.set(runId, callback);
+    },
+    unregisterProgressHandler(runId) {
+      progressHandlers.delete(runId);
     },
     async close() {
       if (closed || shuttingDown) {

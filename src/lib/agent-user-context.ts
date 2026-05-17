@@ -259,6 +259,39 @@ export function shouldIncludeJobApplicationArtifacts(
 }
 
 /**
+ * Extracts a compact identity block (name, email, phone, links) from a saved job profile.
+ * Always included in agent context so the agent knows who it is helping before doing anything.
+ * Kept short deliberately — under 200 chars in typical cases.
+ */
+export function formatUserBasicIdentity(raw: string | null | undefined): string | null {
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  if (!trimmed) return null;
+  try {
+    const jp = JSON.parse(trimmed);
+    if (typeof jp !== "object" || jp === null) return null;
+    const p = jp.personal ?? {};
+    const l = jp.links ?? {};
+    const parts: string[] = [];
+    const name = [p.firstName, p.lastName].filter(Boolean).join(" ");
+    if (name) {
+      parts.push(`Name: ${name}${p.preferredName ? ` (goes by ${p.preferredName})` : ""}`);
+    }
+    if (p.email) parts.push(`Email: ${p.email}`);
+    if (p.phone) parts.push(`Phone: ${p.phone}`);
+    const loc = [p.city, p.state, p.country].filter(Boolean).join(", ");
+    if (loc) parts.push(`Location: ${loc}`);
+    if (l.linkedin) parts.push(`LinkedIn: ${l.linkedin}`);
+    if (l.github) parts.push(`GitHub: ${l.github}`);
+    if (l.portfolio) parts.push(`Portfolio: ${l.portfolio}`);
+    if (l.website) parts.push(`Website: ${l.website}`);
+    if (parts.length === 0) return null;
+    return `=== User Identity ===\n${parts.join("\n")}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Formats a saved job profile JSON string into a structured block for agent context.
  * The JSON includes personal info, links, work auth, EEO, consents, and resume text.
  */

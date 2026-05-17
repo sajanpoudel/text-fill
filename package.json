@@ -49,6 +49,7 @@
     "@wxt-dev/module-react": "^1.1.0",
     "convex-test": "^0.0.46",
     "tailwindcss": "^4.0.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.7.2",
     "vitest": "^4.1.2",
     "wxt": "^0.20.20"

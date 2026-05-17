@@ -246,6 +246,56 @@ export class CompanionStateStore {
     });
   }
 
+  async getAllUserScopes(): Promise<string[]> {
+    const state = await this.loadState();
+    return Object.keys(state.users);
+  }
+
+  async updateRunTask(
+    userScope: string,
+    runId: string,
+    taskIndex: number,
+    patch: Partial<LocalCompanionRunTask>
+  ): Promise<void> {
+    await this.enqueueMutation(async (state) => {
+      const run = this.requireRun(state, userScope, runId);
+      if (!run.tasks || taskIndex < 0 || taskIndex >= run.tasks.length) {
+        return;
+      }
+      Object.assign(run.tasks[taskIndex], patch, { updatedAt: Date.now() });
+      run.updatedAt = Date.now();
+    });
+  }
+
+  async updateRunProgress(
+    userScope: string,
+    runId: string,
+    progressPatch: Partial<LocalCompanionRunProgress>
+  ): Promise<void> {
+    await this.enqueueMutation(async (state) => {
+      const run = this.requireRun(state, userScope, runId);
+      run.progress = { ...(run.progress ?? {
+        totalTasks: 0,
+        completedTasks: 0,
+        skippedTasks: 0,
+        blockedTasks: 0,
+        retryingTasks: 0,
+        currentTaskIndex: 0,
+      }), ...progressPatch };
+      run.updatedAt = Date.now();
+    });
+  }
+
+  async incrementCompletedTasks(userScope: string, runId: string): Promise<void> {
+    await this.enqueueMutation(async (state) => {
+      const run = this.requireRun(state, userScope, runId);
+      if (run.progress) {
+        run.progress.completedTasks = (run.progress.completedTasks ?? 0) + 1;
+      }
+      run.updatedAt = Date.now();
+    });
+  }
+
   private async loadState(): Promise<StoredState> {
     if (this.cachedState) {
       return this.cachedState;

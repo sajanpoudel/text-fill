@@ -58,6 +58,7 @@ export default defineConfig({
       "https://api.openai.com/*",
       "https://api.anthropic.com/*",
       "https://generativelanguage.googleapis.com/*",
+      "https://aiplatform.googleapis.com/*",
       "https://www.linkedin.com/*",
       "https://mail.google.com/*",
     ],

@@ -67,8 +67,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-export function getAgentPanelPollMs(hidden: boolean): number {
-  return hidden ? 15_000 : 5_000;
+export function getAgentPanelPollMs(hidden: boolean, activeRun?: AgentPanelRun | null): number {
+  if (hidden) return 15_000;
+  const isActive = activeRun?.status === "executing" || activeRun?.status === "planning";
+  return isActive ? 2_000 : 5_000;
 }
 
 export function normalizeAgentGoal(goal: string, maxLength = 280): string {
