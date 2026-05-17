@@ -325,6 +325,41 @@ _SITE_URL_MAP: dict[str, str] = {
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _DOMAIN_RE = re.compile(r"\b([\w-]+\.(?:com|org|net|io|co|gov|edu|app|dev))\b", re.IGNORECASE)
+_LINKEDIN_PROFILE_RE = re.compile(
+    r"https://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9_%-]+)/?", re.IGNORECASE
+)
+
+
+def _extract_linkedin_profile_urls(text: str) -> list[str]:
+    """Return deduplicated LinkedIn profile URLs found in text, preserving order."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for m in _LINKEDIN_PROFILE_RE.finditer(text):
+        url = m.group(0).rstrip("/") + "/"
+        if url not in seen:
+            seen.add(url)
+            result.append(url)
+    return result
+
+
+def _infer_name_from_linkedin_url(url: str) -> str:
+    """Convert 'https://www.linkedin.com/in/john-doe/' → 'John Doe'."""
+    slug = url.rstrip("/").rsplit("/", 1)[-1]
+    return " ".join(part.capitalize() for part in slug.replace("-", " ").split())
+
+
+def _build_connect_step(profile_url: str, goal: str, count_label: str = "") -> dict[str, Any]:
+    name = _infer_name_from_linkedin_url(profile_url)
+    title_suffix = f" {count_label}" if count_label else ""
+    return {
+        "title": f"Send Connection to {name}{title_suffix}",
+        "description": (
+            f"Navigate to {profile_url} and send a LinkedIn connection request "
+            f"with a personalized note based on the goal: {goal}"
+        ),
+        "critical": False,
+        "_injected": True,
+    }
 
 
 def _extract_step_target_url(step: dict[str, Any], current_url: str) -> str | None:
@@ -1644,6 +1679,39 @@ If this step cannot be completed on the current page: return status "failed" wit
                     "verified": verified,
                     "observations": observations,
                 })
+
+                # Dynamic plan injection: if this step collected LinkedIn profile URLs,
+                # replace any remaining generic "send connection" placeholders with one
+                # concrete step per URL so all N targets get processed.
+                if step_result:
+                    result_text = observations + " " + str(step_result.get("summary") or "")
+                    collected_urls = _extract_linkedin_profile_urls(result_text)
+                    if collected_urls:
+                        goal = str(payload.get("goal") or "")
+                        # Remove any not-yet-started generic connect placeholder steps.
+                        remaining_generic = [
+                            j for j, s in enumerate(plan_steps)
+                            if j > i and not s.get("_injected")
+                            and ("connect" in str(s.get("title") or "").lower()
+                                 or "connection" in str(s.get("title") or "").lower())
+                            and "linkedin.com/in/" not in str(s.get("description") or "")
+                        ]
+                        for j in sorted(remaining_generic, reverse=True):
+                            plan_steps.pop(j)
+                        # Inject one step per collected URL after current position.
+                        inject_at = i + 1
+                        for k, url in enumerate(collected_urls):
+                            label = f"({k + 1}/{len(collected_urls)})"
+                            plan_steps.insert(inject_at + k, _build_connect_step(url, goal, label))
+                        if collected_urls:
+                            self._emit_progress({
+                                "event": "plan_updated",
+                                "runId": run_id,
+                                "steps": [
+                                    {"title": s.get("title", ""), "description": s.get("description", "")}
+                                    for s in plan_steps
+                                ],
+                            })
 
             completed.append({"step": step, "result": step_result})
 
