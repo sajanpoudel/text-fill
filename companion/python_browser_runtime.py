@@ -1195,6 +1195,7 @@ Return ONLY valid JSON — no markdown, no explanation:
         index: int,
         current_url: str,
         resume_tmp_path: str | None = None,
+        live_snapshot: str = "",
     ) -> str:
         goal = str(payload.get("goal") or "").strip()
         user_context = str(payload.get("userContext") or "").strip()
@@ -1265,6 +1266,12 @@ Return ONLY valid JSON — no markdown, no explanation:
 
         extra_context = ("\n\n" + "\n\n".join(extra_parts)) if extra_parts else ""
 
+        snapshot_section = (
+            f"\n\n=== CURRENT PAGE STATE (live DOM snapshot) ===\n{live_snapshot[:4000]}"
+            if live_snapshot
+            else ""
+        )
+
         return f"""Execute ONLY this one step. Use Chrome DevTools MCP tools.
 
 === YOUR STEP ===
@@ -1273,17 +1280,17 @@ Step {index + 1} of {len(all_steps)}: {step.get("title", "")}
 
 === CONTEXT ===
 Overall goal: {goal}
-Current browser URL: {current_url or "(call take_snapshot to confirm)"}{extra_context}{completed_section}{remaining_section}
+Current browser URL: {current_url or "(unknown)"}{extra_context}{completed_section}{remaining_section}{snapshot_section}
 
 === EXECUTION RULES ===
 1. NAVIGATE FIRST (most important) — If this step requires going to a specific URL or site (e.g., "Navigate to Amazon", "Open google.com"), call navigate_page IMMEDIATELY as your very first action. Do NOT call take_snapshot or list_pages first — the current page is irrelevant and looking at it wastes iterations. After navigate_page completes, then take a snapshot to verify you arrived.
-2. SNAPSHOT BEFORE INTERACTION — For steps that interact with a page (click, fill, search), call take_snapshot first to see the live DOM before acting.
+2. ACT DIRECTLY — The CURRENT PAGE STATE above shows the live DOM. Use the element UIDs shown there to click/fill/type immediately. Do NOT call take_snapshot or list_pages before acting — you already have the snapshot. Call take_snapshot only AFTER an action to verify the result.
 3. OBSTACLES — If you see a cookie banner, GDPR dialog, or modal overlay: dismiss it first, then continue.
 4. FORM FILLING — Use fill() for input fields and textareas; fall back to type_text() only if fill() has no effect.
 5. VERIFY — After every action, call take_snapshot to confirm the change took effect.
-6. RETRY — If an element isn't found: scroll down, re-snapshot, look for alternative selectors.
+6. RETRY — If an element isn't found in the snapshot: call take_snapshot to refresh, scroll down, look for alternative selectors.
 7. SINGLE STEP — Do NOT proceed to the next step. Execute only what is described above.
-8. NO INFINITE LOOPS — If you've called take_snapshot or list_pages more than 3 times without performing a navigation or click, STOP observing and ACT: navigate to the correct URL or return status "failed".
+8. NO INFINITE LOOPS — If you've called take_snapshot or list_pages more than 3 times without performing a navigation, click, or fill, STOP and return status "failed".
 
 === RETURN ===
 Return ONLY valid JSON (no markdown):
@@ -1384,6 +1391,15 @@ If this step cannot be completed on the current page: return status "failed" wit
                 except Exception as nav_err:
                     log_runtime(f"[step] pre-navigate failed: {nav_err}")
 
+        # Capture the live DOM snapshot once here and embed it in the step prompt.
+        # This lets the LLM act on visible element UIDs immediately without wasting
+        # iterations on list_pages / select_page / take_snapshot before every action.
+        live_snapshot = ""
+        try:
+            live_snapshot = await self._take_planning_snapshot()
+        except Exception:
+            pass
+
         llm, _provider, model = await self.attach_augmented_llm(
             provider_config,
             build_effective_system_prompt(
@@ -1391,12 +1407,10 @@ If this step cannot be completed on the current page: return status "failed" wit
                 str(payload.get("systemPrompt") or "").strip() or None,
             ),
         )
-        # The executor is responsible for ALL navigation via tool calls.
-        # We do NOT pre-navigate here — a previous step may have intentionally
-        # landed on a different domain (e.g., LinkedIn → Amazon).
         prompt = self._build_step_prompt(
             step, payload, completed, all_steps, index, actual_url,
             resume_tmp_path=resume_tmp_path,
+            live_snapshot=live_snapshot,
         )
 
         response = await llm.generate_str(
