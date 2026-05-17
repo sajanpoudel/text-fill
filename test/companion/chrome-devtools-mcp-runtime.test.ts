@@ -105,6 +105,25 @@ describe("ChromeDevtoolsMcpRuntime", () => {
     ]);
   });
 
+  test("prefers JSON array args for the mcp-agent bridge when explicitly configured", () => {
+    const options = buildMcpAgentBridgeProcessOptions(
+      {
+        MCP_AGENT_BRIDGE_ARGS_JSON: JSON.stringify([
+          "python",
+          "/tmp/text fill/mcp_agent_bridge.py",
+          "--debug",
+        ]),
+      } as NodeJS.ProcessEnv,
+      "/tmp/text-fill-v2"
+    );
+
+    expect(options.args).toEqual([
+      "python",
+      "/tmp/text fill/mcp_agent_bridge.py",
+      "--debug",
+    ]);
+  });
+
   test("builds the python browser runtime launch command through python -m uv by default", () => {
     const options = buildPythonBrowserRuntimeProcessOptions(
       {} as NodeJS.ProcessEnv,
@@ -128,6 +147,25 @@ describe("ChromeDevtoolsMcpRuntime", () => {
       "google-genai",
       "python",
       "/tmp/text-fill-v2/companion/python_browser_runtime.py",
+    ]);
+  });
+
+  test("prefers JSON array runtime args when explicitly configured", () => {
+    const options = buildPythonBrowserRuntimeProcessOptions(
+      {
+        MCP_AGENT_PYTHON_RUNTIME_ARGS_JSON: JSON.stringify([
+          "python",
+          "/tmp/text fill/runtime.py",
+          "--flag=value",
+        ]),
+      } as NodeJS.ProcessEnv,
+      "/tmp/text-fill-v2"
+    );
+
+    expect(options.args).toEqual([
+      "python",
+      "/tmp/text fill/runtime.py",
+      "--flag=value",
     ]);
   });
 

@@ -15,14 +15,22 @@ if str(ROOT_DIR) not in sys.path:
 from companion.python_browser_runtime import (
     PythonBrowserRuntime,
     build_settings,
+    build_google_client_kwargs,
+    build_google_provider_settings,
+    build_general_task_prompt,
     build_retry_resume_context,
     build_resume_signal_context,
     build_effective_system_prompt,
+    extract_explicit_search_query,
     extract_json_payload,
+    is_permanent_provider_error,
     is_linkedin_profile_connect_goal,
+    is_retryable_browser_workflow_error,
     merge_resume_signal_payload,
 )
+from mcp_agent.executor.errors import WorkflowApplicationError
 from mcp_agent.app import MCPApp
+from mcp_agent.config import GoogleSettings
 
 
 class FakeLLM:
@@ -87,6 +95,73 @@ class ExtractJsonPayloadTests(unittest.TestCase):
             },
         )
 
+    def test_accepts_alternate_required_keys_for_work_item_discovery(self):
+        parsed = extract_json_payload(
+            '{"mode":"queue","summary":"Queued cards","workItems":[{"title":"Backend Engineer"}]}',
+            required_keys=("mode", "workItems"),
+        )
+
+        self.assertEqual(
+            parsed,
+            {
+                "mode": "queue",
+                "summary": "Queued cards",
+                "workItems": [{"title": "Backend Engineer"}],
+            },
+        )
+
+    def test_extracts_literal_query_from_explicit_google_search_goals(self):
+        self.assertEqual(
+            extract_explicit_search_query(
+                "go to google.com and search Sajan Poudel",
+                "https://www.google.com/",
+            ),
+            "Sajan Poudel",
+        )
+        self.assertEqual(
+            extract_explicit_search_query(
+                "search sajan poudel on google",
+                "https://www.google.com/",
+            ),
+            "sajan poudel",
+        )
+
+    def test_build_general_task_prompt_keeps_google_search_scope_literal(self):
+        prompt = build_general_task_prompt(
+            {
+                "goal": "search sajan poudel on google",
+                "pageUrl": "https://www.google.com/",
+                "resumeContext": "Previous run searched a phone number.",
+                "siteExperienceContext": "Earlier Google runs expanded the query with profile facts.",
+            }
+        )
+
+        self.assertIn("=== EXECUTION BOUNDARY ===", prompt)
+        self.assertIn('Exact search query: "sajan poudel"', prompt)
+        self.assertIn(
+            "Search only for that exact query text. Do not append extra keywords",
+            prompt,
+        )
+
+    def test_detects_permanent_provider_credit_exhaustion_errors(self):
+        error = RuntimeError(
+            "429 RESOURCE_EXHAUSTED. {'error': {'message': 'Your prepayment credits are depleted. "
+            "Please go to AI Studio at https://ai.studio/projects to manage your project and billing.'}}"
+        )
+
+        self.assertTrue(is_permanent_provider_error(error))
+        self.assertFalse(is_retryable_browser_workflow_error(str(error)))
+
+    def test_detects_permanent_provider_service_disabled_errors(self):
+        error = RuntimeError(
+            "403 PERMISSION_DENIED. {'error': {'message': 'Gemini API has not been used in project 871197118306 before or it is disabled. "
+            "Enable it by visiting https://console.developers.google.com/apis/api/generativelanguage.googleapis.com/overview?project=871197118306 then retry.', "
+            "'status': 'PERMISSION_DENIED', 'details': [{'reason': 'SERVICE_DISABLED'}]}}"
+        )
+
+        self.assertTrue(is_permanent_provider_error(error))
+        self.assertFalse(is_retryable_browser_workflow_error(str(error)))
+
     def test_detects_linkedin_profile_connect_goals(self):
         self.assertTrue(
             is_linkedin_profile_connect_goal(
@@ -136,6 +211,37 @@ class ExtractJsonPayloadTests(unittest.TestCase):
         self.assertEqual(settings.temporal.host, "127.0.0.1:7233")
         self.assertEqual(settings.temporal.namespace, "default")
         self.assertEqual(settings.temporal.task_queue, "cheatresume-browser-agent")
+
+    def test_build_google_provider_settings_uses_vertex_ai_express_defaults(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            settings = build_google_provider_settings(
+                "vertex-test-key",
+                "gemini-2.5-flash-lite",
+            )
+
+        self.assertIsInstance(settings, GoogleSettings)
+        self.assertEqual(settings.api_key, "vertex-test-key")
+        self.assertEqual(settings.default_model, "gemini-2.5-flash-lite")
+        self.assertTrue(settings.vertexai)
+        self.assertIsNone(settings.location)
+        self.assertIsNone(settings.project)
+
+    def test_build_google_client_kwargs_uses_vertex_ai_api_key_flow(self):
+        settings = GoogleSettings(
+            api_key="vertex-test-key",
+            default_model="gemini-2.5-flash-lite",
+            vertexai=True,
+            location="global",
+            project="test-project-493813",
+        )
+
+        kwargs = build_google_client_kwargs(settings)
+
+        self.assertEqual(kwargs["vertexai"], True)
+        self.assertEqual(kwargs["api_key"], "vertex-test-key")
+        self.assertEqual(kwargs["http_options"].api_version, "v1")
+        self.assertNotIn("location", kwargs)
+        self.assertNotIn("project", kwargs)
 
     def test_build_resume_signal_context_includes_updated_page_state(self):
         context = build_resume_signal_context(
@@ -293,6 +399,124 @@ class RunAgentJsonTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Do not call tools.", llm.prompts[1])
         self.assertIn("Easy Apply dialog is visible", llm.prompts[1])
 
+    async def test_retries_with_higher_output_budget_after_output_limit_error(self):
+        class OutputLimitThenSuccessLLM:
+            def __init__(self):
+                self.prompts: list[str] = []
+                self.max_tokens: list[int] = []
+
+            async def generate_str(self, prompt, params):
+                self.prompts.append(prompt)
+                self.max_tokens.append(int(params.maxTokens))
+                if len(self.max_tokens) == 1:
+                    raise WorkflowApplicationError(
+                        "invalid_request_error: Error code: 400 - {'error': {'message': 'Could not finish the message because max_tokens or model output limit was reached. Please try again with higher max_tokens.'}}",
+                        non_retryable=True,
+                    )
+                return '{"summary":"Completed after expanding the output budget.","status":"completed"}'
+
+        llm = OutputLimitThenSuccessLLM()
+        runtime = StubPythonBrowserRuntime(
+            llm,
+            {
+                "pageUrl": "https://example.com/start",
+                "pageTitle": "Start page",
+                "pageSnapshot": "Browser task page",
+            },
+        )
+
+        result = await runtime.run_agent_json_task(
+            provider_config={
+                "provider": "openai",
+                "apiKey": "test-key",
+                "model": "gpt-5-nano",
+            },
+            task_label="generic_browser_task",
+            system_prompt="You are a browser control agent.",
+            user_prompt="Open the target page and finish the browser task.",
+            max_iterations=10,
+            max_tokens=1000,
+        )
+
+        self.assertEqual(
+            result["summary"], "Completed after expanding the output budget."
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(llm.max_tokens, [1000, 2000])
+
+    async def test_fails_fast_for_permanent_provider_errors(self):
+        class PermanentProviderFailureLLM:
+            async def generate_str(self, _prompt, _params):
+                raise WorkflowApplicationError(
+                    "429 RESOURCE_EXHAUSTED. {'error': {'message': 'Your prepayment credits are depleted. "
+                    "Please go to AI Studio at https://ai.studio/projects to manage your project and billing.'}}",
+                    non_retryable=True,
+                )
+
+        runtime = StubPythonBrowserRuntime(
+            PermanentProviderFailureLLM(),
+            {
+                "pageUrl": "https://example.com/start",
+                "pageTitle": "Start page",
+                "pageSnapshot": "Browser task page",
+            },
+        )
+
+        with self.assertRaisesRegex(
+            WorkflowApplicationError,
+            "LLM request failed with a permanent error",
+        ) as captured:
+            await runtime.run_agent_json_task(
+                provider_config={
+                    "provider": "google",
+                    "apiKey": "test-key",
+                    "model": "gemini-2.5-flash",
+                },
+                task_label="generic_browser_task",
+                system_prompt="You are a browser control agent.",
+                user_prompt="Open the target page and finish the browser task.",
+                max_iterations=10,
+                max_tokens=1000,
+            )
+        self.assertTrue(captured.exception.non_retryable)
+
+    async def test_fails_fast_for_service_disabled_provider_errors(self):
+        class PermanentProviderFailureLLM:
+            async def generate_str(self, _prompt, _params):
+                raise WorkflowApplicationError(
+                    "403 PERMISSION_DENIED. {'error': {'message': 'Gemini API has not been used in project 871197118306 before or it is disabled. "
+                    "Enable it by visiting https://console.developers.google.com/apis/api/generativelanguage.googleapis.com/overview?project=871197118306 then retry.', "
+                    "'status': 'PERMISSION_DENIED', 'details': [{'reason': 'SERVICE_DISABLED'}]}}",
+                    non_retryable=True,
+                )
+
+        runtime = StubPythonBrowserRuntime(
+            PermanentProviderFailureLLM(),
+            {
+                "pageUrl": "https://example.com/start",
+                "pageTitle": "Start page",
+                "pageSnapshot": "Browser task page",
+            },
+        )
+
+        with self.assertRaisesRegex(
+            WorkflowApplicationError,
+            "LLM request failed with a permanent error",
+        ) as captured:
+            await runtime.run_agent_json_task(
+                provider_config={
+                    "provider": "google",
+                    "apiKey": "test-key",
+                    "model": "gemini-2.5-flash",
+                },
+                task_label="generic_browser_task",
+                system_prompt="You are a browser control agent.",
+                user_prompt="Open the target page and finish the browser task.",
+                max_iterations=10,
+                max_tokens=1000,
+            )
+        self.assertTrue(captured.exception.non_retryable)
+
 
 class DeriveBrowserWorkItemsTests(unittest.IsolatedAsyncioTestCase):
     async def test_derives_repeated_work_items_from_live_page_analysis(self):
@@ -353,6 +577,46 @@ class DeriveBrowserWorkItemsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(llm.prompts), 1)
         self.assertIn("Return JSON only", llm.prompts[0])
         self.assertIn("Review the visible jobs and queue the strong matches", llm.prompts[0])
+
+    async def test_fails_fast_for_permanent_provider_errors(self):
+        class DiscoveryRuntime(StubPythonBrowserRuntime):
+            async def focus_or_open_page(self, page_url: str) -> dict[str, object]:
+                return {"pageId": 7, "url": page_url, "selected": True}
+
+            async def wait_for_page_ready(self, page_id: int, timeout_ms: int) -> None:
+                return None
+
+        class PermanentProviderFailureLLM:
+            async def generate_str(self, _prompt, _params):
+                raise WorkflowApplicationError(
+                    "Project/location and API key are mutually exclusive in the client initializer.",
+                    non_retryable=True,
+                )
+
+        runtime = DiscoveryRuntime(
+            PermanentProviderFailureLLM(),
+            {
+                "pageUrl": "https://www.google.com/",
+                "pageTitle": "Google",
+                "pageSnapshot": "Google search page.",
+            },
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "permanent provider error",
+        ):
+            await runtime.derive_browser_work_items(
+                {
+                    "goal": "go to google.com and search sajan poudel",
+                    "pageUrl": "https://www.google.com/",
+                    "providerConfig": {
+                        "provider": "google",
+                        "apiKey": "test-key",
+                        "model": "gemini-2.5-flash-lite",
+                    },
+                }
+            )
 
 
 class GenericBrowserWorkflowTests(unittest.IsolatedAsyncioTestCase):

@@ -381,6 +381,7 @@ export class ChromeDevtoolsMcpRuntime {
     fieldTarget?: LocalCompanionFieldTarget;
     structured?: LocalCompanionStructuredExtraction | null;
     scannedCandidates?: LocalCompanionCandidateScanItem[];
+    workItems?: LocalCompanionBrowserWorkItem[];
     resumeFile?: ResumeFileData | null;
   }, signal?: AbortSignal): Promise<{
     summary: string;
