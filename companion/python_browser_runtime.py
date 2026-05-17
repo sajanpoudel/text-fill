@@ -1482,26 +1482,26 @@ If this step cannot be completed on the current page: return status "failed" wit
                 )
                 if content:
                     log_runtime(f"[plan] content_writing path, pre_generated len={len(content)}")
-                    nav_step = {
-                        "title": "Navigate to document",
-                        "description": (
-                            f"Navigate to {page_url} and verify the document is ready to edit. "
-                            f"Click the document body to place the cursor."
-                        ),
-                        "critical": True,
-                    }
+                    # IMPORTANT: do NOT use navigate_page — the document is already open.
+                    # Reloading the page while Google Docs is live causes "An error occurred".
+                    # Instead: find the tab via list_pages + select_page, then click and type.
                     write_step = {
                         "title": "Type content into document",
                         "description": (
-                            f"The document is open. Click the body of the document to focus it. "
-                            f"Then use type_text to type the following content exactly:\n\n"
+                            f"The document is already open. Do NOT call navigate_page — that "
+                            f"would reload and crash the document. Instead:\n"
+                            f"1. Call list_pages to find the tab with URL containing '{page_url[:60]}'\n"
+                            f"2. Call select_page with bringToFront=true to focus that tab\n"
+                            f"3. Call take_snapshot to confirm the document editor is visible\n"
+                            f"4. Click the document body area (the main content canvas) to place cursor\n"
+                            f"5. Call type_text to type the following content:\n\n"
                             f"{content}\n\n"
-                            f"After typing, take a screenshot to verify the text appears in the document."
+                            f"6. Take a screenshot to verify the text appears in the document."
                         ),
                         "critical": True,
                         "_pre_generated_content": content,
                     }
-                    return [nav_step, write_step]
+                    return [write_step]
             except Exception as e:
                 log_runtime(f"[plan] content_writing pre-generate failed: {e}")
 
