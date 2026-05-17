@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import signal
 import sys
@@ -37,15 +38,20 @@ async def run_server() -> None:
     db_file = Path(database_path)
     db_file.parent.mkdir(parents=True, exist_ok=True)
 
-    environment = await WorkflowEnvironment.start_local(
-        namespace=namespace,
-        ip=host,
-        port=port,
-        ui=ui_enabled,
-        ui_port=ui_port if ui_enabled else None,
-        dev_server_database_filename=str(db_file),
-        dev_server_log_level=log_level,
-    )
+    start_local_kwargs = {
+        "namespace": namespace,
+        "ip": host,
+        "port": port,
+        "ui": ui_enabled,
+        "dev_server_database_filename": str(db_file),
+        "dev_server_log_level": log_level,
+    }
+    if ui_enabled and "ui_port" in inspect.signature(
+        WorkflowEnvironment.start_local
+    ).parameters:
+        start_local_kwargs["ui_port"] = ui_port
+
+    environment = await WorkflowEnvironment.start_local(**start_local_kwargs)
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
