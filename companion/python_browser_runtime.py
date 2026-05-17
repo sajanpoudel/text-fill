@@ -597,6 +597,39 @@ def build_insert_draft_prompt(payload: dict[str, Any]) -> str:
     )
 
 
+def is_linkedin_profile_connect_goal(payload: dict[str, Any]) -> bool:
+    goal = str(payload.get("goal") or "").strip().lower()
+    platform_hint = str(payload.get("platformHint") or "").strip().lower()
+    page_url = str(payload.get("pageUrl") or "").strip().lower()
+    if not goal:
+        return False
+    is_linkedin = platform_hint == "linkedin" or "linkedin.com" in page_url
+    is_profile = "linkedin.com/in/" in page_url
+    wants_connect = any(
+        phrase in goal
+        for phrase in ("connect", "connection request", "invite", "add a note", "connection note")
+    )
+    return is_linkedin and is_profile and wants_connect
+
+
+def extract_linkedin_target_name(payload: dict[str, Any]) -> str | None:
+    structured = payload.get("structured")
+    if isinstance(structured, dict):
+        data = structured.get("data")
+        if isinstance(data, dict):
+            for key in ("name", "title"):
+                value = str(data.get(key) or "").strip()
+                if value:
+                    return value
+    page_context = str(payload.get("pageContext") or "").strip()
+    match = re.search(r"Page:\s*([^\n]+)", page_context)
+    if match:
+        value = match.group(1).strip()
+        if value:
+            return value
+    return None
+
+
 def build_linkedin_connect_prompt(item: dict[str, Any]) -> str:
     note_text = str(item.get("generatedText") or "").strip()
     target_url = str(item.get("targetUrl") or "").strip()
@@ -1812,6 +1845,32 @@ If this step cannot be completed on the current page: return status "failed" wit
         provider_config = payload.get("providerConfig")
         if not isinstance(provider_config, dict):
             raise RuntimeError("providerConfig is required")
+
+        # LinkedIn profile connect: use the specialized flow that knows how to
+        # handle the Connect → Add a note modal, already-connected, already-pending,
+        # and connect-button-not-found edge cases reliably.
+        if is_linkedin_profile_connect_goal(payload):
+            target_url = str(payload.get("pageUrl") or "").strip()
+            if not target_url:
+                raise RuntimeError("A LinkedIn profile URL is required for connect tasks.")
+            connect_result = await self.execute_linkedin_connect_item(
+                {
+                    **payload,
+                    "targetUrl": target_url,
+                    "targetName": extract_linkedin_target_name(payload),
+                },
+                provider_config,
+            )
+            if connect_result["outcome"] == "failed":
+                raise RuntimeError(connect_result["summary"])
+            return {
+                "summary": connect_result["summary"],
+                "status": "completed",
+                "taskType": "linkedin_profile_connect",
+                "finalState": connect_result["finalState"],
+                "preservedPage": connect_result["preservedPage"],
+            }
+
         return await self.execute_with_explicit_plan(payload)
 
 
