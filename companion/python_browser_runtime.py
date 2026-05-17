@@ -49,7 +49,7 @@ VERIFY_INSERT_FUNCTION = """
 
 
 BASE_AGENT_SYSTEM_PROMPT = """
-You are a browser control agent operating only through Chrome DevTools MCP tools.
+You are a browser control agent operating through Chrome DevTools MCP tools.
 Always call take_snapshot before clicking, typing, or filling — it shows the live DOM tree.
 Use take_screenshot when you need to visually verify the page (buttons, forms, modals, visual content).
 Prefer built-in browser tools: list_pages, select_page, new_page, navigate_page,
@@ -61,7 +61,12 @@ connect, or otherwise complete an on-page task, perform that task instead of sto
 Avoid destructive billing, account-security, or data-deletion actions unless the user explicitly asked for them.
 Never claim success unless you verified it from the live browser state (snapshot or screenshot).
 Return only compact JSON that matches the requested schema. Do not return markdown.
-IMPORTANT: The page snapshot may contain a browser extension overlay with attribute data-tfa-ui.
+CONTENT GENERATION: You CAN and SHOULD generate text content yourself (essays, cover letters,
+emails, summaries, code, etc.) when the task requires writing something. If the goal asks you to
+write an essay or any document content, compose the text yourself and type it into the page using
+type_text. Do NOT refuse content generation tasks. Do NOT try to use AI-assist buttons inside apps
+(like "Write with Gemini" in Google Docs) — generate and type the content directly yourself.
+EXTENSION UI: The page snapshot may contain a browser extension overlay with attribute data-tfa-ui.
 This is NOT part of the website — it is the control panel for this agent itself.
 NEVER interact with any element that has data-tfa-ui, aria-label containing "Agent", or that
 appears to be a floating panel at the bottom center of the screen. Always interact with the
@@ -73,6 +78,11 @@ You are a planning agent. Your ONLY job is to produce a JSON task plan.
 Do NOT call any tools. Do NOT navigate, click, or take snapshots.
 The live page snapshot is already embedded in the user prompt — read it there.
 Return ONLY valid JSON. No markdown, no explanation, no code blocks.
+IMPORTANT: You CAN plan steps that require generating text content (essays, emails, cover letters,
+summaries). Writing content is within scope. The executor that runs each step will generate the
+content itself and type it. NEVER refuse or say "I cannot write creative content".
+For document-writing tasks: plan a step like "Write personal essay in document" — the executor
+will compose the text and type it directly. Do NOT plan to click AI-assist buttons inside apps.
 """.strip()
 
 
@@ -1286,6 +1296,11 @@ Current page: {page_header}
     Step 2: From the results page, collect the full profile URLs of the first N people visible (list them in the result observations)
     Steps 3 to N+2: For each profile URL — "Send connection to [Name]": navigate to that specific profile URL, click Connect, add note, send.
     Each connect step must have the EXACT profile URL in its description so the executor navigates directly.
+13. CONTENT WRITING — If the task is to write an essay, email, cover letter, or any document content:
+    Plan ONE step: "Write [content type] in document". The executor will compose the text from
+    the user context provided and type it directly using type_text. Do NOT plan to click AI
+    buttons like "Write with Gemini" — the executor types content itself.
+    For Google Docs: the executor clicks the document body then uses type_text.
 
 === RETURN FORMAT ===
 Return ONLY valid JSON — no markdown, no explanation:
@@ -1406,10 +1421,89 @@ Return ONLY valid JSON (no markdown):
 
 If this step cannot be completed on the current page: return status "failed" with a clear reason in summary."""
 
+    _WRITING_KEYWORDS = frozenset([
+        "write", "draft", "compose", "type", "essay", "email", "letter",
+        "article", "paragraph", "blog", "post", "summary", "cover letter",
+        "personal statement", "statement of purpose",
+    ])
+
+    def _is_content_writing_goal(self, goal: str) -> bool:
+        goal_lower = goal.lower()
+        return any(kw in goal_lower for kw in self._WRITING_KEYWORDS)
+
+    async def _pre_generate_writing_content(
+        self,
+        goal: str,
+        user_context: str,
+        provider_config: dict[str, Any],
+    ) -> str:
+        """Generate the actual text content that should be typed into the document."""
+        llm, _provider, model = await self.attach_augmented_llm(
+            provider_config,
+            "You are a professional writer. Generate the requested content based on the "
+            "information provided. Write ONLY the content itself — no preamble, no instructions, "
+            "no explanation. Just the requested document content ready to be pasted.",
+        )
+        context_block = f"\n\nUser background / context:\n{user_context[:2000]}" if user_context else ""
+        prompt = (
+            f"Write the following content for a user:\n\n"
+            f"Request: {goal}{context_block}\n\n"
+            f"Return ONLY the final text content, no markdown formatting, no headings about "
+            f"'Here is your essay' — just the raw text ready to type into a document."
+        )
+        content = await llm.generate_str(
+            prompt,
+            RequestParams(
+                model=model or None,
+                max_iterations=1,
+                maxTokens=1200,
+                temperature=0.7,
+                use_history=False,
+            ),
+        )
+        return content.strip()
+
     async def _generate_plan(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         provider_config = payload.get("providerConfig")
         if not isinstance(provider_config, dict):
             raise RuntimeError("providerConfig is required")
+
+        goal = str(payload.get("goal") or "").strip()
+        page_url = str(payload.get("pageUrl") or "").strip()
+        user_context = str(payload.get("userContext") or "").strip()
+
+        # Content writing fast path: pre-generate the text and embed it verbatim
+        # in the step description. The executor then just navigates + types — no
+        # content generation needed during execution (avoids LLM refusals).
+        if self._is_content_writing_goal(goal):
+            try:
+                content = await self._pre_generate_writing_content(
+                    goal, user_context, provider_config
+                )
+                if content:
+                    log_runtime(f"[plan] content_writing path, pre_generated len={len(content)}")
+                    nav_step = {
+                        "title": "Navigate to document",
+                        "description": (
+                            f"Navigate to {page_url} and verify the document is ready to edit. "
+                            f"Click the document body to place the cursor."
+                        ),
+                        "critical": True,
+                    }
+                    write_step = {
+                        "title": "Type content into document",
+                        "description": (
+                            f"The document is open. Click the body of the document to focus it. "
+                            f"Then use type_text to type the following content exactly:\n\n"
+                            f"{content}\n\n"
+                            f"After typing, take a screenshot to verify the text appears in the document."
+                        ),
+                        "critical": True,
+                        "_pre_generated_content": content,
+                    }
+                    return [nav_step, write_step]
+            except Exception as e:
+                log_runtime(f"[plan] content_writing pre-generate failed: {e}")
 
         live_snapshot = await self._take_planning_snapshot()
         log_runtime(f"[plan] snapshot={'yes' if live_snapshot else 'no'} len={len(live_snapshot)}")
