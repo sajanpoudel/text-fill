@@ -1412,7 +1412,7 @@ Current browser URL: {current_url or "(unknown)"}{extra_context}{completed_secti
 
 === RETURN ===
 Return ONLY valid JSON (no markdown):
-{{"summary": "one sentence: what was accomplished", "status": "completed" or "failed", "verified": true or false, "observations": "exactly what you saw — element labels, field names, URL, values, any site quirks; be specific so subsequent steps can use this", "finalUrl": "current URL if this step navigated to a new page"}}
+{{"summary": "one sentence: what was accomplished", "status": "completed" or "failed", "verified": true or false, "observations": "CRITICAL for research steps: include the actual facts, data, names, quotes, and key points you found — not just 'found information'. Subsequent steps use this to write content. For non-research steps: element labels, field names, URL, values, any site quirks.", "finalUrl": "current URL if this step navigated to a new page"}}
 
 If this step cannot be completed on the current page: return status "failed" with a clear reason in summary."""
 
@@ -1456,7 +1456,7 @@ If this step cannot be completed on the current page: return status "failed" wit
         provider_config: dict[str, Any],
     ) -> str:
         """Generate the actual text content that should be typed into the document."""
-        llm, _provider, model = await self.attach_augmented_llm(
+        llm, _, model = await self.attach_augmented_llm(
             provider_config,
             "You are a professional writer. Generate the requested content based on the "
             "information provided. Write ONLY the content itself — no preamble, no instructions, "
@@ -1466,7 +1466,9 @@ If this step cannot be completed on the current page: return status "failed" wit
         prompt = (
             f"Write the following content for a user:\n\n"
             f"Request: {goal}{context_block}\n\n"
-            f"Return ONLY the final text content, no markdown formatting, no headings about "
+            f"If research findings are provided above, use them as the primary source of facts "
+            f"and details. Synthesize the research into cohesive content. "
+            f"Return ONLY the final text, no markdown formatting, no preamble like "
             f"'Here is your essay' — just the raw text ready to type into a document."
         )
         content = await llm.generate_str(
