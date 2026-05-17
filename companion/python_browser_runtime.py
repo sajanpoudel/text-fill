@@ -336,6 +336,21 @@ def _extract_step_target_url(step: dict[str, Any], current_url: str) -> str | No
     from urllib.parse import urlparse
     title = str(step.get("title") or "").strip().lower()
     description = str(step.get("description") or "").strip()
+    desc_lower = description.lower()
+
+    # Guard: if a step targets LinkedIn people search but the browser is on
+    # linkedin.com/jobs, pre-navigate to the people search URL so the executor
+    # does not waste iterations searching within Jobs postings.
+    if "linkedin.com/jobs" in current_url and (
+        "people" in title or "people" in desc_lower
+        or "recruiter" in title or "recruiter" in desc_lower
+        or "search/results/people" in description
+    ):
+        url_match = _URL_RE.search(description)
+        if url_match and "linkedin.com/search" in url_match.group(0):
+            return url_match.group(0).rstrip(".,)")
+        # Fall back to base people search; executor will fill keywords.
+        return "https://www.linkedin.com/search/results/people/"
 
     # Only activate for navigation-intent steps.
     nav_keywords = ("navigate to", "go to", "open ", "visit ")
@@ -350,7 +365,11 @@ def _extract_step_target_url(step: dict[str, Any], current_url: str) -> str | No
         try:
             parsed_target = urlparse(target)
             parsed_current = urlparse(current_url)
-            if parsed_target.netloc and parsed_target.netloc != parsed_current.netloc:
+            # Same-domain navigation (e.g. jobs → people search) is also valid.
+            if parsed_target.netloc and (
+                parsed_target.netloc != parsed_current.netloc
+                or parsed_target.path != parsed_current.path
+            ):
                 return target
         except Exception:
             pass
@@ -1212,6 +1231,18 @@ Current page: {page_header}
 8. BATCH ITEMS — For work item lists, create one step per item (up to 8 max). Remaining items continue via progress.
 9. RESUME AWARENESS — If PREVIOUS RUN CONTEXT is present, check what was already completed and skip those steps.
 10. STEP COUNT — Simple task: 1–3 steps. Multi-page task: 4–6 steps. Complex batch: up to 8 steps. Never exceed 8.
+11. LINKEDIN PEOPLE vs JOBS — CRITICAL: LinkedIn has two SEPARATE sections:
+    • PEOPLE SEARCH (linkedin.com/search/results/people/) — finds individual PEOPLE: recruiters, employees, contacts.
+    • JOBS (linkedin.com/jobs/) — finds JOB POSTINGS, NOT people.
+    When the task asks to FIND PEOPLE (recruiters, employees, contacts), ALWAYS use People search. NEVER go to linkedin.com/jobs for this.
+    To search for people: navigate to https://www.linkedin.com/search/results/people/?keywords=<encoded+query>
+    Include the company name IN the keywords (e.g. "early technology recruiter Microsoft" → ?keywords=early+technology+recruiter+Microsoft).
+    Do NOT add a separate "filter by company" step — including the company in keywords is sufficient and more reliable.
+12. LINKEDIN BATCH CONNECT WORKFLOW — For "find N people at Company and send connection requests":
+    Step 1: Navigate to https://www.linkedin.com/search/results/people/?keywords=role+company
+    Step 2: From the results page, collect the full profile URLs of the first N people visible (list them in the result observations)
+    Steps 3 to N+2: For each profile URL — "Send connection to [Name]": navigate to that specific profile URL, click Connect, add note, send.
+    Each connect step must have the EXACT profile URL in its description so the executor navigates directly.
 
 === RETURN FORMAT ===
 Return ONLY valid JSON — no markdown, no explanation:
@@ -1322,6 +1353,7 @@ Current browser URL: {current_url or "(unknown)"}{extra_context}{completed_secti
 6. RETRY — If an element isn't found in the snapshot: call take_snapshot to refresh, scroll down, look for alternative selectors.
 7. SINGLE STEP — Do NOT proceed to the next step. Execute only what is described above.
 8. NO INFINITE LOOPS — If you've called take_snapshot or list_pages more than 3 times without performing a navigation, click, or fill, STOP and return status "failed".
+9. LINKEDIN PEOPLE vs JOBS — If the step requires finding PEOPLE (recruiters, employees, contacts) and you are on linkedin.com/jobs or any Jobs page, navigate_page immediately to linkedin.com/search/results/people/?keywords=<query> — do NOT search within Jobs.
 
 === RETURN ===
 Return ONLY valid JSON (no markdown):
