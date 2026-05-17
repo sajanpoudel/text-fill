@@ -333,6 +333,7 @@ def _extract_step_target_url(step: dict[str, Any], current_url: str) -> str | No
     NOT already there, return the target URL so _execute_step can pre-navigate.
     Returns None when no pre-navigation is needed.
     """
+    from urllib.parse import urlparse
     title = str(step.get("title") or "").strip().lower()
     description = str(step.get("description") or "").strip()
 
@@ -347,7 +348,6 @@ def _extract_step_target_url(step: dict[str, Any], current_url: str) -> str | No
     if url_match:
         target = url_match.group(0).rstrip(".,)")
         try:
-            from urllib.parse import urlparse
             parsed_target = urlparse(target)
             parsed_current = urlparse(current_url)
             if parsed_target.netloc and parsed_target.netloc != parsed_current.netloc:
@@ -359,7 +359,6 @@ def _extract_step_target_url(step: dict[str, Any], current_url: str) -> str | No
     for site_name, site_url in _SITE_URL_MAP.items():
         if site_name in title:
             try:
-                from urllib.parse import urlparse
                 if urlparse(current_url).netloc not in site_url:
                     return site_url
             except Exception:
@@ -371,7 +370,6 @@ def _extract_step_target_url(step: dict[str, Any], current_url: str) -> str | No
     if domain_match:
         domain = domain_match.group(1)
         try:
-            from urllib.parse import urlparse
             if domain not in urlparse(current_url).netloc:
                 return f"https://www.{domain}"
         except Exception:
