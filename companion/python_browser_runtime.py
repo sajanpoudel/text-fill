@@ -1434,6 +1434,45 @@ If this step cannot be completed on the current page: return status "failed" wit
         if not isinstance(provider_config, dict):
             raise RuntimeError("providerConfig is required")
 
+        # LinkedIn connect step: route to the specialized handler that knows
+        # the Connect button → Add a note modal → Send flow and all edge cases.
+        step_title_lower = str(step.get("title") or "").lower()
+        step_description = str(step.get("description") or "")
+        is_connect_step = (
+            ("connect" in step_title_lower or "connection request" in step_title_lower)
+            and "linkedin.com/in/" in step_description
+        )
+        if is_connect_step:
+            profile_url_match = _URL_RE.search(step_description)
+            profile_url = (
+                profile_url_match.group(0).rstrip(".,)") if profile_url_match else ""
+            )
+            if profile_url and "linkedin.com/in/" in profile_url:
+                # Extract name from step title: "Send Connection to John Doe" → "John Doe"
+                raw_name = step.get("title", "")
+                for prefix in ("Send Connection to ", "Send connection to ", "Send connection request to ",
+                               "Send Connection Request to ", "Connect with ", "connect with "):
+                    if raw_name.lower().startswith(prefix.lower()):
+                        raw_name = raw_name[len(prefix):]
+                        break
+                connect_result = await self.execute_linkedin_connect_item(
+                    {
+                        **payload,
+                        "targetUrl": profile_url,
+                        "targetName": raw_name.strip() or None,
+                    },
+                    provider_config,
+                )
+                if connect_result["outcome"] == "failed":
+                    raise RuntimeError(connect_result["summary"])
+                return {
+                    "summary": connect_result["summary"],
+                    "status": "completed",
+                    "verified": connect_result["outcome"] in {"sent", "skipped"},
+                    "observations": f"finalState={connect_result['finalState']}",
+                    "finalUrl": profile_url,
+                }
+
         # Ground truth URL from Chrome — more reliable than tracked current_url,
         # which may be stale if the previous step navigated without setting finalUrl.
         actual_url = await self._get_actual_selected_url() or current_url
