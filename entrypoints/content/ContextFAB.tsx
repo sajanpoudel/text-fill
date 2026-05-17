@@ -364,42 +364,43 @@ export function ContextFAB({ visible, contexts, onContextsChange, showToast }: F
         style={{
           position: "fixed",
           bottom: 20,
-          right: 20,
+          right: 0,
           zIndex: 2147483647,
-          width: 32,
-          height: 32,
+          width: 26,
+          height: 28,
           padding: 0,
-          border: `1px solid ${dark ? "rgba(68, 64, 60, 0.5)" : "rgba(231, 229, 228, 0.5)"}`,
-          borderRadius: "50%",
-          background: dark ? "rgba(28, 25, 23, 0.7)" : "rgba(252, 252, 251, 0.7)",
-          backdropFilter: "blur(8px)",
-          WebkitBackdropFilter: "blur(8px)",
+          border: "none",
+          borderRadius: 0,
+          background: "rgba(12, 12, 12, 0.88)",
+          backdropFilter: "blur(6px)",
+          WebkitBackdropFilter: "blur(6px)",
           cursor: adding ? "wait" : "pointer",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          boxShadow: dark ? "0 2px 10px rgba(0,0,0,0.5)" : "0 2px 10px rgba(0,0,0,0.1)",
+          boxShadow: "-2px 0 8px rgba(0,0,0,0.25)",
           overflow: "visible",
-          transition: "transform 0.15s ease, box-shadow 0.15s ease",
+          transition: "opacity 0.15s ease",
           pointerEvents: "auto",
+          opacity: 0.82,
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.1)"; e.currentTarget.style.boxShadow = dark ? "0 4px 16px rgba(0,0,0,0.6)" : "0 4px 16px rgba(0,0,0,0.15)"; }}
-        onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = dark ? "0 2px 10px rgba(0,0,0,0.5)" : "0 2px 10px rgba(0,0,0,0.1)"; }}
+        onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.82"; }}
       >
         {!logoBroken ? (
           <img
             src={logoUrl}
             alt="Context"
             onError={() => setLogoBroken(true)}
-            style={{ width: 32, height: 32, borderRadius: "50%", objectFit: "cover", display: "block", opacity: 0.85 }}
+            style={{ width: 20, height: 20, borderRadius: "50%", objectFit: "cover", display: "block", opacity: 1 }}
           />
         ) : (
           <span
             style={{
-              fontSize: 14,
+              fontSize: 11,
               lineHeight: 1,
               fontWeight: 800,
-              color: dark ? "#fff" : "#000",
+              color: "#ffffff",
               fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
             }}
           >
@@ -410,12 +411,12 @@ export function ContextFAB({ visible, contexts, onContextsChange, showToast }: F
         {contexts.length > 0 && (
           <span style={{
             position: "absolute",
-            top: -4, right: -4,
-            minWidth: 16, height: 16,
-            background: dark ? "#fff" : "#000",
-            border: `2px solid ${dark ? "#000" : "#fff"}`,
-            borderRadius: 8,
-            fontSize: 9, fontWeight: 800, color: dark ? "#000" : "#fff",
+            top: -4, right: 2,
+            minWidth: 14, height: 14,
+            background: "#ffffff",
+            border: "1.5px solid rgba(12,12,12,0.88)",
+            borderRadius: 7,
+            fontSize: 8, fontWeight: 800, color: "#000",
             display: "flex", alignItems: "center", justifyContent: "center",
             padding: "0 3px",
             boxSizing: "border-box",

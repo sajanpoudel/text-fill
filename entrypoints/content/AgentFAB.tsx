@@ -941,73 +941,60 @@ export function AgentFAB({
         style={{
           position: "fixed",
           bottom: 20,
-          right: 48,
+          right: 26,
           zIndex: 2147483647,
-          width: 36,
-          height: 32,
+          width: 24,
+          height: 28,
           padding: 0,
-          border: `1px solid ${
-            dark ? "rgba(68, 64, 60, 0.5)" : "rgba(231, 229, 228, 0.5)"
-          }`,
-          borderRadius: "16px 0 0 16px",
-          background: dark ? "rgba(28, 25, 23, 0.7)" : "rgba(252, 252, 251, 0.7)",
-          backdropFilter: "blur(8px)",
-          WebkitBackdropFilter: "blur(8px)",
+          border: "none",
+          borderRadius: "6px 0 0 6px",
+          background: "rgba(12, 12, 12, 0.88)",
+          backdropFilter: "blur(6px)",
+          WebkitBackdropFilter: "blur(6px)",
           cursor: "pointer",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          boxShadow: dark
-            ? "0 2px 10px rgba(0,0,0,0.5)"
-            : "0 2px 10px rgba(0,0,0,0.1)",
-          transition: "transform 0.15s ease, box-shadow 0.15s ease",
+          boxShadow: "-2px 0 8px rgba(0,0,0,0.25)",
+          transition: "opacity 0.15s ease",
           pointerEvents: "auto",
           overflow: "visible",
+          opacity: 0.82,
         }}
-        onMouseEnter={(event) => {
-          event.currentTarget.style.transform = "scale(1.1)";
-          event.currentTarget.style.boxShadow = dark
-            ? "0 4px 16px rgba(0,0,0,0.6)"
-            : "0 4px 16px rgba(0,0,0,0.15)";
-        }}
-        onMouseLeave={(event) => {
-          event.currentTarget.style.transform = "scale(1)";
-          event.currentTarget.style.boxShadow = dark
-            ? "0 2px 10px rgba(0,0,0,0.5)"
-            : "0 2px 10px rgba(0,0,0,0.1)";
-        }}
+        onMouseEnter={(event) => { event.currentTarget.style.opacity = "1"; }}
+        onMouseLeave={(event) => { event.currentTarget.style.opacity = "0.82"; }}
       >
         <svg
-          width="14"
-          height="14"
+          width="12"
+          height="12"
           viewBox="0 0 24 24"
           fill="none"
-          stroke={dark ? "#fcfcfb" : "#1c1917"}
-          strokeWidth="2.2"
+          stroke="#ffffff"
+          strokeWidth="2.5"
           strokeLinecap="round"
           strokeLinejoin="round"
         >
-          <path d="M5 12h12" />
-          <path d="m13 6 6 6-6 6" />
+          <path d="M19 12H5" />
+          <path d="m11 18-6-6 6-6" />
         </svg>
         {approvals.length > 0 ? (
           <span
             style={{
               position: "absolute",
               top: -4,
-              right: -4,
-              minWidth: 16,
-              height: 16,
-              background: dark ? "#fcfcfb" : "#000000",
-              border: `2px solid ${dark ? "#44403c" : "#fcfcfb"}`,
-              borderRadius: 8,
-              fontSize: 9,
+              left: -4,
+              minWidth: 14,
+              height: 14,
+              background: "#ffffff",
+              border: "1.5px solid rgba(12,12,12,0.88)",
+              borderRadius: 7,
+              fontSize: 8,
               fontWeight: 800,
-              color: dark ? "#1c1917" : "#ffffff",
+              color: "#000000",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              padding: "0 3px",
+              padding: "0 2px",
               boxSizing: "border-box",
               pointerEvents: "none",
               lineHeight: 1,
