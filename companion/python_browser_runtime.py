@@ -707,6 +707,14 @@ def build_linkedin_connect_prompt(item: dict[str, Any]) -> str:
             "- After acting, verify the final page state from the live browser before returning.",
             "- If the flow becomes ambiguous or blocked, stop and report failure instead of guessing.",
             "",
+            "CRITICAL — typing the note:",
+            "- After clicking 'Add a note', LinkedIn opens a MODAL DIALOG (role=dialog) in the CENTER of the page.",
+            "- That modal contains the textarea where you must type the note.",
+            "- The textarea you must type into will be INSIDE the dialog/modal — NOT at the bottom of the page.",
+            "- NEVER type into any textarea at the bottom center of the page.",
+            "- NEVER interact with any element that has a data-tfa-ui attribute (those are part of the browser extension UI, not LinkedIn).",
+            "- Before filling any textarea, confirm its UID is inside a dialog element by checking the snapshot tree.",
+            "",
             f"Target profile URL: {target_url}",
             f"Target name: {target_name}",
             f"Note text: {json.dumps(note_text, ensure_ascii=True)}",
@@ -1685,6 +1693,15 @@ If this step cannot be completed on the current page: return status "failed" wit
                 # concrete step per URL so all N targets get processed.
                 if step_result:
                     result_text = observations + " " + str(step_result.get("summary") or "")
+                    # For collect/search/find steps, also scan the live page snapshot
+                    # because the LLM may only mention a subset of URLs in its summary.
+                    step_title_lower = str(step.get("title") or "").lower()
+                    if any(kw in step_title_lower for kw in ("collect", "gather", "find", "search", "list", "scrape")):
+                        try:
+                            fresh_snap = await self._take_planning_snapshot()
+                            result_text += " " + fresh_snap
+                        except Exception:
+                            pass
                     collected_urls = _extract_linkedin_profile_urls(result_text)
                     if collected_urls:
                         goal = str(payload.get("goal") or "")
@@ -1925,6 +1942,7 @@ If this step cannot be completed on the current page: return status "failed" wit
         provider_config: dict[str, Any],
     ) -> dict[str, Any]:
         target_url = str(item.get("targetUrl") or "").strip()
+        target_name = str(item.get("targetName") or "").strip()
         if not target_url:
             raise RuntimeError("LinkedIn batch item targetUrl is required")
 
@@ -1933,6 +1951,56 @@ If this step cannot be completed on the current page: return status "failed" wit
 
         try:
             await self.wait_for_page_ready(page["pageId"], 15000)
+
+            # Detect 404 / profile-not-found before spending LLM iterations.
+            # LinkedIn 404 pages have "Page Not Found" in the title or redirect to
+            # linkedin.com/404 or linkedin.com/in/*/recent-activity/... with a
+            # profile-unavailable message.
+            try:
+                page_title_raw = await self.evaluate_on_page(
+                    page_id=page["pageId"],
+                    function_source="() => document.title || ''",
+                )
+                page_title_lower = str(page_title_raw or "").strip().lower()
+                pages_list = await self.list_pages()
+                actual_url = next(
+                    (p.get("url", "") for p in pages_list if p.get("pageId") == page["pageId"]),
+                    "",
+                )
+                is_404 = (
+                    "page not found" in page_title_lower
+                    or "/404" in str(actual_url)
+                    or "unavailable" in page_title_lower
+                )
+                if is_404:
+                    # Fall back: search for the person by name on LinkedIn
+                    if target_name:
+                        search_url = (
+                            "https://www.linkedin.com/search/results/people/?keywords="
+                            + "+".join(target_name.split())
+                        )
+                        log_runtime(f"[connect] profile 404, falling back to name search: {search_url}")
+                        await self.navigate_page(page["pageId"], search_url)
+                        await self.wait_for_page_ready(page["pageId"], 12000)
+                        item = {
+                            **item,
+                            "targetUrl": search_url,
+                            "pageContext": (
+                                f"Profile URL was not found (404). "
+                                f"Now showing LinkedIn search results for '{target_name}'. "
+                                f"Find this person in the results and click their profile, "
+                                f"then send the connection request from their profile page."
+                            ),
+                        }
+                    else:
+                        return {
+                            "outcome": "skipped",
+                            "finalState": "profile_not_found",
+                            "summary": f"Profile page returned 404 and no name was available to search.",
+                            "preservedPage": False,
+                        }
+            except Exception as e404:
+                log_runtime(f"[connect] 404 check error (ignored): {e404}")
             agent_result = await self.run_agent_json_task(
                 provider_config=provider_config,
                 task_label="linkedin_connect",
