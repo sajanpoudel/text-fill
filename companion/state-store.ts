@@ -296,6 +296,16 @@ export class CompanionStateStore {
     });
   }
 
+  async incrementSkippedTasks(userScope: string, runId: string): Promise<void> {
+    await this.enqueueMutation(async (state) => {
+      const run = this.requireRun(state, userScope, runId);
+      if (run.progress) {
+        run.progress.skippedTasks = (run.progress.skippedTasks ?? 0) + 1;
+      }
+      run.updatedAt = Date.now();
+    });
+  }
+
   private async loadState(): Promise<StoredState> {
     if (this.cachedState) {
       return this.cachedState;

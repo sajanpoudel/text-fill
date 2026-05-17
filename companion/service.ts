@@ -2032,6 +2032,9 @@ export class LocalAgentCompanionService {
           status: skipped ? "skipped" : "failed",
           lastError: err,
         });
+        if (skipped) {
+          await this.store.incrementSkippedTasks(userScope, runId);
+        }
         break;
       }
     }

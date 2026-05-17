@@ -68,6 +68,13 @@ appears to be a floating panel at the bottom center of the screen. Always intera
 actual website content instead.
 """.strip()
 
+PLANNER_SYSTEM_PROMPT = """
+You are a planning agent. Your ONLY job is to produce a JSON task plan.
+Do NOT call any tools. Do NOT navigate, click, or take snapshots.
+The live page snapshot is already embedded in the user prompt — read it there.
+Return ONLY valid JSON. No markdown, no explanation, no code blocks.
+""".strip()
+
 
 def build_effective_system_prompt(base_prompt: str, custom_prompt: str | None) -> str:
     trimmed = str(custom_prompt or "").strip()
@@ -1294,16 +1301,17 @@ If this step cannot be completed on the current page: return status "failed" wit
 
         llm, _provider, model = await self.attach_augmented_llm(
             provider_config,
-            build_effective_system_prompt(BASE_AGENT_SYSTEM_PROMPT, None),
+            PLANNER_SYSTEM_PROMPT,
         )
         prompt = self._build_plan_prompt(payload, live_snapshot)
-        # max_iterations=3: snapshot is embedded but some LLMs (Gemini) still try to
-        # call take_snapshot first; give them 2 extra iterations to respond with JSON.
+        # max_iterations=1: PLANNER_SYSTEM_PROMPT prohibits tool calls so the LLM
+        # must return JSON in a single turn.  Give 2 iterations as a safety buffer
+        # in case the LLM framework adds a mandatory first-turn tool call.
         response = await llm.generate_str(
             prompt,
             RequestParams(
                 model=model or None,
-                max_iterations=3,
+                max_iterations=2,
                 maxTokens=900,
                 temperature=0.1,
                 use_history=False,

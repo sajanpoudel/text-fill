@@ -186,6 +186,7 @@ export class ChromeDevtoolsMcpRuntime {
   private readonly sleep: (durationMs: number) => Promise<void>;
   private connectionPromise: Promise<ChromeDevtoolsMcpConnection> | null = null;
   private pythonBridgePromise: Promise<PythonBrowserRuntimeConnection> | null = null;
+  private readonly pendingProgressHandlers = new Map<string, (event: Record<string, unknown>) => void>();
   private lastHealthCheck:
     | {
         checkedAt: number;
@@ -398,19 +399,29 @@ export class ChromeDevtoolsMcpRuntime {
       .catch(() => undefined);
     this.pythonBridgePromise = null;
     this.lastHealthCheck = null;
+    // Clear the local handler map so a future bridge doesn't inherit stale handlers.
+    this.pendingProgressHandlers.clear();
   }
 
   async registerProgressHandler(
     runId: string,
     callback: (event: Record<string, unknown>) => void
   ): Promise<void> {
+    this.pendingProgressHandlers.set(runId, callback);
     const pythonBridge = await this.getPythonBridge().catch(() => null);
-    pythonBridge?.registerProgressHandler(runId, callback);
+    // Re-check: bridge may have been killed while we were awaiting.
+    if (pythonBridge && this.pendingProgressHandlers.has(runId)) {
+      pythonBridge.registerProgressHandler(runId, callback);
+    }
   }
 
   unregisterProgressHandler(runId: string): void {
-    void this.getPythonBridge().then((bridge) => {
-      bridge?.unregisterProgressHandler(runId);
+    // Remove from local map first — no bridge spawn needed for this.
+    this.pendingProgressHandlers.delete(runId);
+    // Only forward to the bridge if it already exists; never spawn a new one.
+    if (!this.pythonBridgePromise) return;
+    void this.pythonBridgePromise.then((bridge) => {
+      bridge.unregisterProgressHandler(runId);
     }).catch(() => undefined);
   }
 
