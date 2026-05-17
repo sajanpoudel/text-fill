@@ -1304,32 +1304,35 @@ Current page: {page_header}
    • VERIFY: what the executor should see/confirm to know the step succeeded
 
    Examples by step type:
-   • Research:   "Navigate to https://www.google.com/search?q=nepal+prime+minister. Click the
-                  Wikipedia or official result. Read the page and extract: PM name, ruling party,
-                  coalition partners, election date. Put ALL facts in observations."
-   • Form fill:  "On https://checkout.site.com, fill the 'Email' field with user's email, fill
-                  'Full Name' with user's full name, click 'Place Order'. Verify order confirmation."
-   • Navigation: "Navigate to https://linkedin.com/in/john-doe. Verify profile page loads and
-                  the Connect button is visible. Note current title in observations."
-   • Writing:    "In the open Google Docs tab, click the document body to focus the editor, then
-                  use type_text to type the essay. Verify the text appears in the document."
-   • Click/UI:   "On the current checkout page, click the 'Confirm Purchase' button. Verify the
-                  page shows a success message or redirects to /order-confirmed."
+   • Research:    "Navigate to https://www.google.com/search?q=nepal+prime+minister. Click the
+                   Wikipedia or official result. Read the page and extract: PM name, ruling party,
+                   coalition partners, election date. Put ALL facts in observations."
+   • Form fill:   "On https://checkout.site.com, fill the 'Email' field with user's email, fill
+                   'Full Name' with user's full name. Verify fields are populated."
+   • Navigation:  "Navigate to https://linkedin.com/in/john-doe. Verify profile page loads and
+                   the Connect button is visible. Note current title in observations."
+   • Writing:     "In the open Google Docs tab, click the document body to focus the editor, then
+                   use type_text to type the essay. Verify the text appears in the document."
+   • Click/UI:    "On the current checkout page, click the 'Confirm Purchase' button. Verify the
+                   page shows a success message or redirects to /order-confirmed."
+   • Reveal + Act: "On https://jobs.site.com/jobs, click the '[Job Title]' listing to load the
+                   detail panel on the right. Then click the 'Apply' button (NOT 'Auto Apply') in
+                   the panel. Verify the application page or form opens."
 
-2. ONE ACTION PER STEP — A step must contain exactly ONE distinct action. An "action" is a
-   single navigation, a single click, a single form submission, or reading/extracting info.
-   NEVER combine actions like "filter then apply", "find then click", "navigate then fill and submit".
+2. ONE ACTION PER STEP — Each step must achieve ONE logical user goal. A goal may involve
+   sequential clicks that are mechanically linked (e.g. click to reveal → click to act).
+   What's banned is bundling DIFFERENT goals into one step.
 
-   ✗ BAD (too bundled):
-     "Click 'Software Engineering' filter, then click Apply Now for the first job"  ← 2 actions
-     "Navigate to checkout, fill name/email, and submit the form"  ← navigation + fill + submit
-     "Find the recruiter and send a connection request"  ← find + send
+   ✗ BAD (different goals bundled):
+     "Click the 'Software Engineering' filter, then apply to the first job"  ← filter ≠ apply
+     "Navigate to checkout, fill name/email, and submit the form"  ← nav + fill + submit
+     "Apply to Job A then scroll down and apply to Job B"  ← two separate job applications
 
-   ✓ GOOD (properly split):
-     Step N:   "Click the 'Software Engineering' filter button. Verify filtered results appear."
-     Step N+1: "Click 'Apply Now' for the first job listing. Verify application page opens."
-     Step N+2: "Fill the application form fields. Verify fields are populated."
-     Step N+3: "Click 'Submit Application'. Verify confirmation message appears."
+   ✓ GOOD — sequential clicks for ONE outcome are fine in one step:
+     "Click '[Job Title]' in the list → right panel loads → click 'Apply' in the panel" ← 1 job
+     "Click 'Connect' on profile → modal opens → click 'Send'" ← 1 connection request
+     "Click the 'Software Engineering' filter. Verify filtered results appear." ← 1 filter action
+     "Fill the application form fields (name, email, phone). Verify fields are populated." ← 1 form
 
 3. CRITICAL — critical:true if failure should abort the task; critical:false for optional steps.
 
@@ -1340,12 +1343,17 @@ Current page: {page_header}
    form is a SEPARATE step. And navigating to the form is ANOTHER separate step.
 
 6. BATCH ITEMS — For lists of items (e.g. send 5 connection requests), one step per item.
-   Collect all URLs first in one step, then process each item in its own step.
+   If item URLs/details are known upfront: collect all first, then one step per item.
+   If item details are only revealed by clicking (e.g. job board with detail panels): plan each
+   item as a self-contained step using the Reveal + Act pattern (see rule 1 example above).
+   Each item step = click listing → panel/detail loads → act (apply/connect/etc.) → verify.
 
-7. STEP COUNT — Use as many steps as the task genuinely requires. Do NOT artificially compress
-   steps to hit a lower count. A job application typically needs 5+ steps. A multi-site
-   research+write task needs 6+. Only truly single-action tasks have 1–2 steps.
-   Hard cap: 8 steps. If more are needed, batch the remainder into "process remaining items".
+7. STEP COUNT — Match step count to actual task complexity. Never compress artificially.
+   • Batch tasks (N jobs, N profiles, N emails): generate EXACTLY N item steps, plus any
+     setup/collect steps. If user says "apply to 10 jobs", plan must have 10+ steps.
+   • Research + write: typically 4–8 steps.
+   • Simple single-action tasks: 1–3 steps.
+   No hard cap — the executor handles as many steps as planned.
 
 8. RESUME AWARENESS — If PREVIOUS RUN CONTEXT is present, skip already-completed steps.
 
@@ -1609,7 +1617,7 @@ If this step cannot be completed on the current page: return status "failed" wit
         steps = parsed.get("steps") if isinstance(parsed, dict) else parsed if isinstance(parsed, list) else []
         if not isinstance(steps, list) or not steps:
             return [{"title": "Complete the requested task", "description": str(payload.get("goal") or ""), "critical": True}]
-        return [s for s in steps if isinstance(s, dict)][:8]
+        return [s for s in steps if isinstance(s, dict)][:30]
 
     async def _execute_step(
         self,
