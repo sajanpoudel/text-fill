@@ -14,12 +14,6 @@ type ConsoleLike = Pick<typeof console, "log" | "warn" | "error">;
 type BridgeMethod =
   | "health"
   | "derive_browser_work_items"
-  | "start_generic_browser_task_workflow"
-  | "start_generic_browser_queue_workflow"
-  | "start_linkedin_connect_batch_workflow"
-  | "get_workflow_status"
-  | "resume_workflow"
-  | "cancel_workflow"
   | "navigate_to_url"
   | "insert_draft"
   | "execute_linkedin_connect_batch"
@@ -73,66 +67,6 @@ export interface PythonBrowserRuntimeConnection {
     summary: string;
     workItems: LocalCompanionBrowserWorkItem[];
   }>;
-  startGenericBrowserTaskWorkflow(args: {
-    providerConfig: LocalCompanionProviderConfig;
-    goal: string;
-    pageUrl?: string;
-    platformHint?: string;
-    pageContext?: string;
-    resumeContext?: string;
-    siteExperienceContext?: string;
-    userContext?: string;
-    systemPrompt?: string;
-    fieldTarget?: LocalCompanionFieldTarget;
-    structured?: LocalCompanionStructuredExtraction | null;
-    scannedCandidates?: LocalCompanionCandidateScanItem[];
-    workItems?: LocalCompanionBrowserWorkItem[];
-    resumeFile?: ResumeFileData | null;
-  }): Promise<{
-    workflowId: string;
-    runId?: string;
-  }>;
-  startGenericBrowserQueueWorkflow(args: {
-    providerConfig: LocalCompanionProviderConfig;
-    goal: string;
-    pageUrl?: string;
-    platformHint?: string;
-    pageContext?: string;
-    resumeContext?: string;
-    siteExperienceContext?: string;
-    userContext?: string;
-    systemPrompt?: string;
-    fieldTarget?: LocalCompanionFieldTarget;
-    structured?: LocalCompanionStructuredExtraction | null;
-    scannedCandidates?: LocalCompanionCandidateScanItem[];
-    workItems: LocalCompanionBrowserWorkItem[];
-    resumeFile?: ResumeFileData | null;
-  }): Promise<{
-    workflowId: string;
-    runId?: string;
-  }>;
-  startLinkedInConnectBatchWorkflow(args: {
-    items: Array<{ targetUrl: string; targetName?: string; generatedText?: string }>;
-    dailyLimit: number;
-    providerConfig: LocalCompanionProviderConfig;
-  }): Promise<{
-    workflowId: string;
-    runId?: string;
-  }>;
-  getWorkflowStatus(args: {
-    workflowId?: string;
-    runId?: string;
-  }): Promise<Record<string, unknown> | null>;
-  resumeWorkflow(args: {
-    workflowId?: string;
-    runId?: string;
-    signalName?: string;
-    payload?: unknown;
-  }): Promise<boolean>;
-  cancelWorkflow(args: {
-    workflowId?: string;
-    runId?: string;
-  }): Promise<boolean>;
   navigateToUrl(args: {
     targetUrl: string;
     currentPageUrl?: string;
@@ -160,9 +94,10 @@ export interface PythonBrowserRuntimeConnection {
     summary: string;
     metadata: Record<string, unknown>;
   }>;
-    executeAgentTask(args: {
+  executeAgentTask(args: {
     providerConfig: LocalCompanionProviderConfig;
     goal: string;
+    runId?: string;
     pageUrl?: string;
     platformHint?: string;
     pageContext?: string;
@@ -175,10 +110,12 @@ export interface PythonBrowserRuntimeConnection {
     scannedCandidates?: LocalCompanionCandidateScanItem[];
     workItems?: LocalCompanionBrowserWorkItem[];
     resumeFile?: ResumeFileData | null;
-  }): Promise<{
+  }, signal?: AbortSignal): Promise<{
     summary: string;
     metadata: Record<string, unknown>;
   }>;
+  registerProgressHandler(runId: string, callback: (event: Record<string, unknown>) => void): void;
+  unregisterProgressHandler(runId: string): void;
   close(): Promise<void>;
 }
 
@@ -209,8 +146,6 @@ export function buildPythonBrowserRuntimeProcessOptions(
           "run",
           "--with",
           "mcp-agent",
-          "--with",
-          "temporalio",
           "--with",
           "openai",
           "--with",
@@ -256,6 +191,7 @@ export async function createPythonBrowserRuntimeConnection(
   });
 
   const pending = new Map<string, PendingBridgeRequest>();
+  const progressHandlers = new Map<string, (event: Record<string, unknown>) => void>();
   let stdoutBuffer = "";
   let stderrBuffer = "";
   let closed = false;
@@ -284,14 +220,26 @@ export async function createPythonBrowserRuntimeConnection(
         continue;
       }
 
-      let response: BridgeResponse;
+      let parsed: Record<string, unknown>;
       try {
-        response = JSON.parse(line) as BridgeResponse;
+        parsed = JSON.parse(line) as Record<string, unknown>;
       } catch {
         logger.warn(`[python-browser-runtime] ignored non-JSON stdout: ${line}`);
         continue;
       }
 
+      if (parsed.__progress__ === true) {
+        const runId = typeof parsed.runId === "string" ? parsed.runId : undefined;
+        if (runId) {
+          const handler = progressHandlers.get(runId);
+          if (handler) {
+            try { handler(parsed); } catch { /* ignore handler errors */ }
+          }
+        }
+        continue;
+      }
+
+      const response = parsed as unknown as BridgeResponse;
       const request = pending.get(response.id);
       if (!request) {
         continue;
@@ -350,10 +298,14 @@ export async function createPythonBrowserRuntimeConnection(
 
   const request = async <TResult>(
     method: BridgeMethod,
-    args?: Record<string, unknown>
+    args?: Record<string, unknown>,
+    signal?: AbortSignal
   ): Promise<TResult> => {
     if (closed) {
       throw new Error("python browser runtime is not running");
+    }
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
     }
     const id = createRequestId();
     const payload: BridgeRequest = { id, method, ...(args ? { args } : {}) };
@@ -362,6 +314,18 @@ export async function createPythonBrowserRuntimeConnection(
         resolve: (value) => resolve(value as TResult),
         reject,
       });
+
+      if (signal) {
+        signal.addEventListener(
+          "abort",
+          () => {
+            if (pending.delete(id)) {
+              reject(new DOMException("Aborted", "AbortError"));
+            }
+          },
+          { once: true }
+        );
+      }
 
       child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
         if (!error) {
@@ -392,51 +356,6 @@ export async function createPythonBrowserRuntimeConnection(
         workItems: LocalCompanionBrowserWorkItem[];
       }>("derive_browser_work_items", args as unknown as Record<string, unknown>);
     },
-    async startGenericBrowserTaskWorkflow(args) {
-      return request<{
-        workflowId: string;
-        runId?: string;
-      }>(
-        "start_generic_browser_task_workflow",
-        args as unknown as Record<string, unknown>
-      );
-    },
-    async startGenericBrowserQueueWorkflow(args) {
-      return request<{
-        workflowId: string;
-        runId?: string;
-      }>(
-        "start_generic_browser_queue_workflow",
-        args as unknown as Record<string, unknown>
-      );
-    },
-    async startLinkedInConnectBatchWorkflow(args) {
-      return request<{
-        workflowId: string;
-        runId?: string;
-      }>(
-        "start_linkedin_connect_batch_workflow",
-        args as unknown as Record<string, unknown>
-      );
-    },
-    async getWorkflowStatus(args) {
-      return request<Record<string, unknown> | null>(
-        "get_workflow_status",
-        args as unknown as Record<string, unknown>
-      );
-    },
-    async resumeWorkflow(args) {
-      return request<boolean>(
-        "resume_workflow",
-        args as unknown as Record<string, unknown>
-      );
-    },
-    async cancelWorkflow(args) {
-      return request<boolean>(
-        "cancel_workflow",
-        args as unknown as Record<string, unknown>
-      );
-    },
     async navigateToUrl(args) {
       return request<{
         summary: string;
@@ -455,11 +374,17 @@ export async function createPythonBrowserRuntimeConnection(
         metadata: Record<string, unknown>;
       }>("execute_linkedin_connect_batch", args as unknown as Record<string, unknown>);
     },
-    async executeAgentTask(args) {
+    async executeAgentTask(args, signal) {
       return request<{
         summary: string;
         metadata: Record<string, unknown>;
-      }>("execute_agent_task", args as unknown as Record<string, unknown>);
+      }>("execute_agent_task", args as unknown as Record<string, unknown>, signal);
+    },
+    registerProgressHandler(runId, callback) {
+      progressHandlers.set(runId, callback);
+    },
+    unregisterProgressHandler(runId) {
+      progressHandlers.delete(runId);
     },
     async close() {
       if (closed || shuttingDown) {

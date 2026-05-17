@@ -79,6 +79,8 @@ export interface LocalCompanionRunTask {
   resultSummary?: string;
   lastError?: string;
   skipReason?: string;
+  verified?: boolean;
+  observations?: string;
 }
 
 export interface LocalCompanionRunProgress {

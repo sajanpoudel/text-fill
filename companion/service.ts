@@ -163,23 +163,6 @@ function createInitialRunTasks(
   ];
 }
 
-function createRunTasksFromWorkItems(
-  workItems: LocalCompanionBrowserWorkItem[],
-  options?: { firstTaskRunning?: boolean }
-): LocalCompanionRunTask[] {
-  const now = Date.now();
-  return workItems.map((item, index) => ({
-    _id: createTaskId(),
-    title: item.title,
-    status: options?.firstTaskRunning && index === 0 ? "running" : "pending",
-    retryCount: 0,
-    createdAt: now,
-    updatedAt: now,
-    ...(options?.firstTaskRunning && index === 0 ? { startedAt: now } : {}),
-    ...(item.pageUrl ? { pageUrl: item.pageUrl } : {}),
-  }));
-}
-
 const RESUME_GOAL_PATTERN =
   /\b(continue|resume|pick up|keep going|proceed|try again|from where you left off)\b/i;
 
@@ -678,49 +661,6 @@ function coerceRuntimeTaskSteps(
     .filter((item): item is RuntimeTaskStep => item !== null);
 }
 
-function coerceWorkflowStatus(
-  value: unknown
-): {
-  status?: string;
-  running?: boolean;
-  completed?: boolean;
-  error?: string;
-  metadata?: Record<string, unknown>;
-  value?: Record<string, unknown>;
-  state?: Record<string, unknown>;
-} | null {
-  if (!isPlainObject(value)) {
-    return null;
-  }
-
-  const state = isPlainObject(value.state)
-    ? (value.state as Record<string, unknown>)
-    : undefined;
-  const result = isPlainObject(value.result)
-    ? (value.result as Record<string, unknown>)
-    : undefined;
-  const workflowValue =
-    result && isPlainObject(result.value)
-      ? (result.value as Record<string, unknown>)
-      : undefined;
-  const workflowMetadata =
-    result && isPlainObject(result.metadata)
-      ? (result.metadata as Record<string, unknown>)
-      : undefined;
-
-  return {
-    ...(typeof value.status === "string" ? { status: value.status } : {}),
-    ...(typeof value.running === "boolean" ? { running: value.running } : {}),
-    ...(typeof value.completed === "boolean" ? { completed: value.completed } : {}),
-    ...(typeof value.error === "string" && value.error.trim()
-      ? { error: value.error.trim() }
-      : {}),
-    ...(state ? { state } : {}),
-    ...(workflowMetadata ? { metadata: workflowMetadata } : {}),
-    ...(workflowValue ? { value: workflowValue } : {}),
-  };
-}
-
 function buildRunTasksFromRuntimeSteps(args: {
   existingTasks: LocalCompanionRunTask[] | undefined;
   runtimeSteps: RuntimeTaskStep[];
@@ -813,20 +753,6 @@ function isRetryableAgentError(message: string): boolean {
   return true;
 }
 
-function isLinkedInProfileConnectGoal(params: LocalCompanionStartRunParams): boolean {
-  const goal = params.goal.trim().toLowerCase();
-  const platformHint = String(params.platformHint ?? "").trim().toLowerCase();
-  const pageUrl = String(params.pageUrl ?? "").trim().toLowerCase();
-
-  const isLinkedIn = platformHint === "linkedin" || pageUrl.includes("linkedin.com");
-  const isProfile = pageUrl.includes("linkedin.com/in/");
-  const wantsConnect = ["connect", "connection request", "invite", "add a note", "connection note"].some(
-    (phrase) => goal.includes(phrase)
-  );
-
-  return isLinkedIn && isProfile && wantsConnect;
-}
-
 function isTerminalRunStatus(
   status: StoredRunRecord["status"] | LocalCompanionRunTask["status"] | undefined
 ): boolean {
@@ -837,38 +763,6 @@ function isTerminalRunStatus(
     status === "skipped"
   );
 }
-
-function isPausedWorkflowStatus(status: string | undefined): boolean {
-  return status === "paused";
-}
-
-function shouldUseManagedAgentWorkflow(
-  params: LocalCompanionStartRunParams,
-  runtime: ChromeDevtoolsMcpRuntime
-): boolean {
-  return (
-    typeof (runtime as { supportsManagedTaskWorkflows?: () => boolean })
-      .supportsManagedTaskWorkflows === "function" &&
-    (runtime as { supportsManagedTaskWorkflows: () => boolean })
-      .supportsManagedTaskWorkflows() &&
-    !isLinkedInProfileConnectGoal(params)
-  );
-}
-
-function shouldUseManagedQueueWorkflow(
-  params: LocalCompanionStartRunParams,
-  runtime: ChromeDevtoolsMcpRuntime
-): boolean {
-  return shouldUseManagedAgentWorkflow(params, runtime);
-}
-
-type ManagedWorkflowTrackingParams = {
-  goal: string;
-  platformHint?: string;
-  pageUrl?: string;
-  pageContext?: string;
-  fieldTarget?: LocalCompanionStartRunParams["fieldTarget"];
-};
 
 function coerceActionFromApproval(
   approval: StoredApprovalRecord
@@ -961,8 +855,7 @@ export class LocalAgentCompanionService {
   private readonly runtime: ChromeDevtoolsMcpRuntime;
   private readonly logger: CompanionLogger;
   private readonly activeExecutions = new Map<string, Promise<void>>();
-  private readonly recoveringManagedUsers = new Set<string>();
-  private recoveringAllManagedRuns = false;
+  private readonly activeRunAbortControllers = new Map<string, AbortController>();
   private runtimeHealth:
     | {
         connected: boolean;
@@ -986,14 +879,13 @@ export class LocalAgentCompanionService {
     this.runtime = runtime ?? new ChromeDevtoolsMcpRuntime({ logger });
     this.logger.event("info", "service", "constructed");
     this.ensureRuntimeHealthFresh(true);
-    this.kickOffManagedWorkflowRecovery();
+    void this.recoverInterruptedRuns();
   }
 
   async getPanelState(args: {
     userScope: string;
     limit?: number;
   }): Promise<LocalCompanionPanelState> {
-    this.kickOffManagedWorkflowRecovery(args.userScope);
     const panelState = await this.store.listPanelState(args.userScope, args.limit ?? 5);
     const runtimeHealth = this.getCachedRuntimeHealth();
     this.ensureRuntimeHealthFresh();
@@ -1042,10 +934,7 @@ export class LocalAgentCompanionService {
       params,
       resumeSourceRun?._id
     );
-    const initialTasks = createInitialRunTasks(
-      params,
-      shouldUseManagedQueueWorkflow(params, this.runtime)
-    );
+    const initialTasks = createInitialRunTasks(params);
     const initialWorkItems = deriveGenericBrowserWorkItems(params);
     const initialTask = initialTasks[0];
     const initialProgress = buildRunProgressPatch(initialTasks, {
@@ -1151,16 +1040,6 @@ export class LocalAgentCompanionService {
       };
     }
 
-    if (run.workflowId || run.workflowRunId) {
-      const cancelled = await this.runtime.cancelAgentTaskWorkflow({
-        workflowId: run.workflowId,
-        runId: run.workflowRunId,
-      });
-      if (!cancelled) {
-        throw new Error("Could not cancel the managed browser workflow.");
-      }
-    }
-
     await this.updatePrimaryRunTask(args.userScope, run._id, {
       status: "skipped",
       latestPageUrl: run.progress?.latestPageUrl ?? run.pageUrl,
@@ -1179,6 +1058,9 @@ export class LocalAgentCompanionService {
       workflowId: run.workflowId,
       workflowRunId: run.workflowRunId,
     });
+
+    this.activeRunAbortControllers.get(run._id)?.abort();
+    this.runtime.killPythonBridge();
 
     return {
       ok: true,
@@ -1210,76 +1092,6 @@ export class LocalAgentCompanionService {
       throw new Error(
         "Missing API key for the configured provider. Add it in Settings to resume Chrome MCP agent tasks."
       );
-    }
-
-    if (
-      sourceRun.status === "paused" &&
-      (sourceRun.workflowId || sourceRun.workflowRunId)
-    ) {
-      const resumePayload = this.buildWorkflowResumeSignalPayload({
-        pageUrl:
-          args.pageUrl ??
-          sourceRun.progress?.latestPageUrl ??
-          sourceRun.pageUrl,
-        pageContext: args.pageContext ?? sourceRun.pageContext,
-        userContext: args.userContext,
-        systemPrompt: args.systemPrompt,
-        fieldTarget: args.fieldTarget ?? sourceRun.fieldTarget,
-        scannedCandidates: args.scannedCandidates,
-        workItems: args.workItems,
-        structured: args.structured,
-        resumeFile: args.resumeFile,
-      });
-      const resumed = await this.runtime.resumeAgentTaskWorkflow({
-        workflowId: sourceRun.workflowId,
-        runId: sourceRun.workflowRunId,
-        signalName: "resume",
-        ...(resumePayload ? { payload: resumePayload } : {}),
-      });
-      if (!resumed) {
-        throw new Error("Could not resume the paused browser workflow.");
-      }
-      await this.store.updateRun(args.userScope, sourceRun._id, {
-        status: "executing",
-        workflowStatus: "running",
-        latestSummary:
-          "Resumed the paused browser workflow in the local Chrome runtime.",
-        completedAt: undefined,
-        lastError: undefined,
-      });
-      await this.updatePrimaryRunTask(args.userScope, sourceRun._id, {
-        status: "running",
-        latestPageUrl:
-          args.pageUrl ??
-          sourceRun.progress?.latestPageUrl ??
-          sourceRun.pageUrl,
-      });
-      this.startManagedWorkflowTracking(
-        args.userScope,
-        sourceRun._id,
-        {
-          goal: sourceRun.goal,
-          platformHint: sourceRun.platformHint,
-          pageUrl:
-            args.pageUrl ??
-            sourceRun.progress?.latestPageUrl ??
-            sourceRun.pageUrl,
-          pageContext: args.pageContext ?? sourceRun.pageContext,
-          fieldTarget: args.fieldTarget ?? sourceRun.fieldTarget,
-        },
-        {
-          workflowId: sourceRun.workflowId ?? sourceRun.workflowRunId ?? sourceRun._id,
-          runId: sourceRun.workflowRunId,
-        }
-      );
-      return {
-        ok: true,
-        status: "executing",
-        runId: sourceRun._id,
-        runtimeId: sourceRun.workflowRunId ?? sourceRun.workflowId,
-        resumedExistingRun: true,
-        sourceRunId: sourceRun._id,
-      };
     }
 
     const resumed = await this.createAndLaunchRun(
@@ -1484,172 +1296,33 @@ export class LocalAgentCompanionService {
     };
   }
 
-  private kickOffManagedWorkflowRecovery(userScope?: string): void {
-    void this.recoverManagedWorkflowTracking(userScope).catch((error) => {
-      this.logger.event("error", "service", "managed_workflow_recovery_failed", {
-        ...(userScope ? { userScope } : {}),
+  private async recoverInterruptedRuns(): Promise<void> {
+    try {
+      const userScopes = await this.store.getAllUserScopes();
+      for (const userScope of userScopes) {
+        const runs = await this.store.listRuns(userScope, 50);
+        for (const run of runs) {
+          if (run.status === "executing" || run.status === "planning") {
+            await this.store.updateRun(userScope, run._id, {
+              status: "failed",
+              lastError: "Run was interrupted when the companion server restarted.",
+              latestSummary: "Run interrupted by server restart.",
+              completedAt: Date.now(),
+              workflowId: undefined,
+              workflowRunId: undefined,
+              workflowStatus: undefined,
+            });
+            this.logger.event("info", "service", "run_marked_interrupted", {
+              runId: run._id,
+              userScope,
+            });
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.event("error", "service", "recover_interrupted_runs_failed", {
         message: error instanceof Error ? error.message : String(error),
       });
-    });
-  }
-
-  private buildManagedWorkflowTrackingParams(
-    run: StoredRunRecord
-  ): ManagedWorkflowTrackingParams {
-    return {
-      goal: run.goal,
-      ...(run.platformHint ? { platformHint: run.platformHint } : {}),
-      ...(run.progress?.latestPageUrl || run.pageUrl
-        ? { pageUrl: run.progress?.latestPageUrl ?? run.pageUrl }
-        : {}),
-      ...(run.pageContext ? { pageContext: run.pageContext } : {}),
-      ...(run.fieldTarget ? { fieldTarget: run.fieldTarget } : {}),
-    };
-  }
-
-  private buildManagedWorkflowTrackingParamsFromStartParams(
-    params: LocalCompanionStartRunParams
-  ): ManagedWorkflowTrackingParams {
-    return {
-      goal: params.goal,
-      ...(params.platformHint ? { platformHint: params.platformHint } : {}),
-      ...(params.pageUrl ? { pageUrl: params.pageUrl } : {}),
-      ...(params.pageContext ? { pageContext: params.pageContext } : {}),
-      ...(params.fieldTarget ? { fieldTarget: params.fieldTarget } : {}),
-    };
-  }
-
-  private async maybeDeriveManagedQueueWorkItems(
-    params: LocalCompanionStartRunParams,
-    resumeContext?: string,
-    siteExperienceContext?: string
-  ): Promise<LocalCompanionBrowserWorkItem[] | null> {
-    if (!shouldUseManagedAgentWorkflow(params, this.runtime)) {
-      return null;
-    }
-
-    const existingItems = deriveGenericBrowserWorkItems(params);
-
-    const discovery = await this.runtime.deriveBrowserWorkItems(
-      this.buildAgentTaskRuntimeArgs(params, resumeContext, siteExperienceContext)
-    );
-    const discoveredItems =
-      Array.isArray(discovery.workItems) && discovery.workItems.length > 1
-        ? discovery.workItems
-        : null;
-
-    this.logger.event("info", "service", "derive_work_items", {
-      goal: params.goal,
-      pageUrl: params.pageUrl,
-      mode: discovery.mode,
-      itemCount: discovery.workItems.length,
-      summary: discovery.summary,
-      fallbackItemCount: existingItems.length,
-    });
-
-    return discoveredItems ?? (existingItems.length > 1 ? existingItems : null);
-  }
-
-  private buildWorkflowResumeSignalPayload(args: {
-    pageUrl?: string;
-    pageContext?: string;
-    userContext?: string;
-    systemPrompt?: string;
-    fieldTarget?: LocalCompanionStartRunParams["fieldTarget"];
-    scannedCandidates?: LocalCompanionStartRunParams["scannedCandidates"];
-    workItems?: LocalCompanionStartRunParams["workItems"];
-    structured?: LocalCompanionStartRunParams["structured"];
-    resumeFile?: LocalCompanionStartRunParams["resumeFile"];
-  }): Record<string, unknown> | undefined {
-    const payload: Record<string, unknown> = {};
-
-    if (args.pageUrl?.trim()) {
-      payload.pageUrl = args.pageUrl.trim();
-    }
-    if (args.pageContext?.trim()) {
-      payload.pageContext = args.pageContext.trim();
-    }
-    if (args.userContext?.trim()) {
-      payload.userContext = args.userContext.trim();
-    }
-    if (args.systemPrompt?.trim()) {
-      payload.systemPrompt = args.systemPrompt.trim();
-    }
-    if (args.fieldTarget) {
-      payload.fieldTarget = args.fieldTarget;
-    }
-    if (args.structured) {
-      payload.structured = args.structured;
-    }
-    if (args.scannedCandidates?.length) {
-      payload.scannedCandidates = args.scannedCandidates;
-    }
-    if (args.workItems?.length) {
-      payload.workItems = args.workItems;
-    }
-    if (args.resumeFile) {
-      payload.resumeFile = args.resumeFile;
-    }
-
-    return Object.keys(payload).length > 0 ? payload : undefined;
-  }
-
-  private async recoverManagedWorkflowTracking(userScope?: string): Promise<void> {
-    if (userScope) {
-      if (this.recoveringManagedUsers.has(userScope)) {
-        return;
-      }
-      this.recoveringManagedUsers.add(userScope);
-    } else if (this.recoveringAllManagedRuns) {
-      return;
-    } else {
-      this.recoveringAllManagedRuns = true;
-    }
-
-    try {
-      const runtimeHealth = await this.ensureRuntimeHealthFresh();
-      if (!runtimeHealth.connected) {
-        return;
-      }
-
-      const runs = userScope
-        ? await this.store.listRuns(userScope, 40)
-        : await this.store.listRecoverableManagedRuns(80);
-
-      for (const run of runs) {
-        if (
-          run.status !== "executing" ||
-          (!run.workflowId && !run.workflowRunId)
-        ) {
-          continue;
-        }
-        const executionKey = `agent:${run._id}`;
-        if (this.activeExecutions.has(executionKey)) {
-          continue;
-        }
-
-        this.logger.event("info", "service", "managed_workflow_recovered", {
-          runId: run._id,
-          workflowId: run.workflowId,
-          workflowRunId: run.workflowRunId,
-          userScope: run.userScope,
-        });
-        this.startManagedWorkflowTracking(
-          run.userScope,
-          run._id,
-          this.buildManagedWorkflowTrackingParams(run),
-          {
-            workflowId: run.workflowId ?? run.workflowRunId ?? run._id,
-            runId: run.workflowRunId,
-          }
-        );
-      }
-    } finally {
-      if (userScope) {
-        this.recoveringManagedUsers.delete(userScope);
-      } else {
-        this.recoveringAllManagedRuns = false;
-      }
     }
   }
 
@@ -1873,56 +1546,11 @@ export class LocalAgentCompanionService {
       if (action.batchType !== "linkedin_connect") {
         throw new Error(`Unsupported task batch type: ${action.batchType}`);
       }
-      if (this.runtime.supportsManagedTaskWorkflows()) {
-        const workflowExecution = await this.runtime.startLinkedInConnectBatchWorkflow({
-          items: action.items,
-          dailyLimit: action.dailyLimit,
-          providerConfig,
-        });
-        await this.store.updateRun(userScope, approval.runId, {
-          status: "executing",
-          workflowId: workflowExecution.workflowId,
-          workflowRunId: workflowExecution.runId,
-          workflowStatus: "scheduled",
-          latestSummary:
-            "LinkedIn connect batch workflow started in the local Chrome runtime.",
-          completedAt: undefined,
-          lastError: undefined,
-        });
-        await this.trackManagedWorkflowExecution(
-          userScope,
-          approval.runId,
-          this.buildManagedWorkflowTrackingParams(run),
-          workflowExecution
-        );
-        const workflowStatus = coerceWorkflowStatus(
-          await this.runtime.getAgentTaskWorkflowStatus({
-            workflowId: workflowExecution.workflowId,
-            runId: workflowExecution.runId,
-          })
-        );
-        const workflowValue = workflowStatus?.value;
-        outcome =
-          workflowValue &&
-          typeof workflowValue.summary === "string" &&
-          workflowValue.summary.trim()
-            ? {
-                summary: workflowValue.summary.trim(),
-                metadata: isPlainObject(workflowValue.metadata)
-                  ? (workflowValue.metadata as Record<string, unknown>)
-                  : undefined,
-              }
-            : {
-                summary:
-                  "LinkedIn connect batch workflow completed in the local Chrome runtime.",
-              };
-      } else {
-        outcome = await this.runtime.executeLinkedInConnectBatch({
-          items: action.items,
-          dailyLimit: action.dailyLimit,
-          providerConfig,
-        });
-      }
+      outcome = await this.runtime.executeLinkedInConnectBatch({
+        items: action.items,
+        dailyLimit: action.dailyLimit,
+        providerConfig,
+      });
       const sentCount =
         typeof outcome.metadata?.sent === "number" ? outcome.metadata.sent : 0;
       const failedCount =
@@ -1968,12 +1596,16 @@ export class LocalAgentCompanionService {
       return;
     }
 
+    const controller = new AbortController();
+    this.activeRunAbortControllers.set(runId, controller);
+
     const execution = this.executeAgentTask(
       userScope,
       runId,
       params,
       resumeContext,
-      siteExperienceContext
+      siteExperienceContext,
+      controller.signal
     )
       .catch(async (error) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -2017,6 +1649,7 @@ export class LocalAgentCompanionService {
       })
       .finally(() => {
         this.activeExecutions.delete(executionKey);
+        this.activeRunAbortControllers.delete(runId);
       });
 
     this.activeExecutions.set(executionKey, execution);
@@ -2025,10 +1658,12 @@ export class LocalAgentCompanionService {
   private buildAgentTaskRuntimeArgs(
     params: LocalCompanionStartRunParams,
     resumeContext?: string,
-    siteExperienceContext?: string
+    siteExperienceContext?: string,
+    runId?: string
   ): {
     providerConfig: LocalCompanionProviderConfig;
     goal: string;
+    runId?: string;
     pageUrl?: string;
     platformHint?: string;
     pageContext?: string;
@@ -2046,6 +1681,7 @@ export class LocalAgentCompanionService {
     return {
       providerConfig: params.providerConfig as LocalCompanionProviderConfig,
       goal: params.goal,
+      ...(runId ? { runId } : {}),
       ...(typeof params.pageUrl === "string" ? { pageUrl: params.pageUrl } : {}),
       ...(typeof params.platformHint === "string"
         ? { platformHint: params.platformHint }
@@ -2076,7 +1712,7 @@ export class LocalAgentCompanionService {
   private async finalizeAgentTaskOutcome(
     userScope: string,
     runId: string,
-    params: ManagedWorkflowTrackingParams,
+    params: { pageUrl?: string },
     outcome: {
       summary: string;
       metadata?: Record<string, unknown>;
@@ -2089,40 +1725,56 @@ export class LocalAgentCompanionService {
           ? outcome.metadata.targetUrl.trim()
           : params.pageUrl;
     const updatedRun = await this.store.getRun(userScope, runId);
-    const runtimeSteps = coerceRuntimeTaskSteps(outcome.metadata);
-    const completedTasks =
-      buildRunTasksFromRuntimeSteps({
-        existingTasks: updatedRun?.tasks,
-        runtimeSteps,
-        finalPageUrl,
-      }) ??
-      updatedRun?.tasks?.map((task, index) => ({
-        ...task,
-        ...(index === 0
-          ? {
-              status: "completed" as const,
-              updatedAt: Date.now(),
-              completedAt: Date.now(),
-              ...(finalPageUrl ? { pageUrl: finalPageUrl } : {}),
-              lastError: undefined,
-              skipReason: undefined,
-            }
-          : task),
-      }));
 
-    if (completedTasks?.length) {
-      await this.store.updateRun(userScope, runId, {
-        tasks: completedTasks,
-        progress: buildRunProgressPatch(completedTasks, {
+    // Plan-managed tasks (ids "task_0", "task_1", …) are updated live via progress
+    // events. Rebuilding them here would race with pending incrementCompletedTasks
+    // mutations and double-count completions. Only touch tasks when there are no
+    // plan-managed tasks or when the metadata provides explicit runtime steps.
+    const hasPlanManagedTasks = updatedRun?.tasks?.some((t) =>
+      /^task_\d+$/.test(t._id)
+    );
+    const runtimeSteps = coerceRuntimeTaskSteps(outcome.metadata);
+
+    if (!hasPlanManagedTasks) {
+      const completedTasks =
+        buildRunTasksFromRuntimeSteps({
+          existingTasks: updatedRun?.tasks,
+          runtimeSteps,
+          finalPageUrl,
+        }) ??
+        updatedRun?.tasks?.map((task, index) => ({
+          ...task,
+          ...(index === 0
+            ? {
+                status: "completed" as const,
+                updatedAt: Date.now(),
+                completedAt: Date.now(),
+                ...(finalPageUrl ? { pageUrl: finalPageUrl } : {}),
+                lastError: undefined,
+                skipReason: undefined,
+              }
+            : task),
+        }));
+
+      if (completedTasks?.length) {
+        await this.store.updateRun(userScope, runId, {
+          tasks: completedTasks,
+          progress: buildRunProgressPatch(completedTasks, {
+            latestPageUrl: finalPageUrl,
+            lastCheckpointAt: Date.now(),
+          }),
+        });
+      } else {
+        await this.updatePrimaryRunTask(userScope, runId, {
+          status: "completed",
           latestPageUrl: finalPageUrl,
-          lastCheckpointAt: Date.now(),
-        }),
-      });
-    } else {
-      await this.updatePrimaryRunTask(userScope, runId, {
-        status: "completed",
+          clearResumeCursor: true,
+        });
+      }
+    } else if (finalPageUrl) {
+      await this.store.updateRunProgress(userScope, runId, {
         latestPageUrl: finalPageUrl,
-        clearResumeCursor: true,
+        lastCheckpointAt: Date.now(),
       });
     }
 
@@ -2142,7 +1794,7 @@ export class LocalAgentCompanionService {
             siteMemory: buildRunSiteMemory({
               run: refreshedRun,
               fallbackPageUrl: finalPageUrl,
-              tasks: completedTasks ?? refreshedRun.tasks,
+              tasks: refreshedRun.tasks,
               workflowName:
                 typeof outcome.metadata?.workflowName === "string"
                   ? outcome.metadata.workflowName
@@ -2171,332 +1823,15 @@ export class LocalAgentCompanionService {
     });
   }
 
-  private async trackManagedWorkflowExecution(
-    userScope: string,
-    runId: string,
-    params: ManagedWorkflowTrackingParams,
-    workflowExecution: {
-      workflowId: string;
-      runId?: string;
-    }
-  ): Promise<void> {
-    const deadline = Date.now() + 10 * 60_000;
-    while (Date.now() < deadline) {
-      const workflowStatus = coerceWorkflowStatus(
-        await this.runtime.getAgentTaskWorkflowStatus({
-          workflowId: workflowExecution.workflowId,
-          runId: workflowExecution.runId,
-        })
-      );
 
-      if (!workflowStatus) {
-        await new Promise((resolve) => setTimeout(resolve, 400));
-        continue;
-      }
-
-      const workflowState = workflowStatus.state;
-      const attemptCount =
-        typeof workflowState?.metadata === "object" &&
-        workflowState.metadata !== null &&
-        typeof (workflowState.metadata as Record<string, unknown>).attempts === "number"
-          ? Number((workflowState.metadata as Record<string, unknown>).attempts)
-          : undefined;
-      const workflowRunStatus =
-        typeof workflowStatus.status === "string" ? workflowStatus.status : undefined;
-      const latestPageUrl =
-        typeof workflowState?.metadata === "object" &&
-        workflowState.metadata !== null &&
-        typeof (workflowState.metadata as Record<string, unknown>).latestPageUrl ===
-          "string"
-          ? String((workflowState.metadata as Record<string, unknown>).latestPageUrl)
-          : params.pageUrl;
-      const workflowPauseReason =
-        typeof workflowState?.metadata === "object" &&
-        workflowState.metadata !== null &&
-        typeof (workflowState.metadata as Record<string, unknown>).pauseReason ===
-          "string"
-          ? String((workflowState.metadata as Record<string, unknown>).pauseReason)
-          : typeof workflowState?.metadata === "object" &&
-              workflowState.metadata !== null &&
-              typeof (workflowState.metadata as Record<string, unknown>).lastError ===
-                "string"
-            ? String((workflowState.metadata as Record<string, unknown>).lastError)
-            : undefined;
-      const workflowStateMetadata =
-        typeof workflowState?.metadata === "object" && workflowState.metadata !== null
-          ? (workflowState.metadata as Record<string, unknown>)
-          : undefined;
-      const workflowStateSteps = coerceRuntimeTaskSteps(workflowStateMetadata);
-      const currentRun = await this.store.getRun(userScope, runId);
-      if (currentRun?.status === "cancelled" && workflowRunStatus !== "cancelled") {
-        await new Promise((resolve) => setTimeout(resolve, 400));
-        continue;
-      }
-
-      await this.store.updateRun(userScope, runId, {
-        workflowId: workflowExecution.workflowId,
-        workflowRunId: workflowExecution.runId,
-        ...(workflowRunStatus ? { workflowStatus: workflowRunStatus } : {}),
-        latestSummary:
-          workflowRunStatus === "running" && attemptCount && attemptCount > 1
-            ? `Workflow retry ${attemptCount} in progress inside the local Chrome runtime.`
-            : workflowRunStatus === "running"
-              ? "Workflow running inside the local Chrome runtime."
-              : workflowRunStatus === "scheduled"
-                ? "Workflow scheduled in the local Chrome runtime."
-                : undefined,
-      });
-      if (workflowStateSteps.length > 0) {
-        const currentRunForSteps = await this.store.getRun(userScope, runId);
-        const updatedTasks = buildRunTasksFromRuntimeSteps({
-          existingTasks: currentRunForSteps?.tasks,
-          runtimeSteps: workflowStateSteps,
-          finalPageUrl: latestPageUrl,
-        });
-        if (updatedTasks) {
-          await this.store.updateRun(userScope, runId, {
-            tasks: updatedTasks,
-            progress: buildRunProgressPatch(updatedTasks, {
-              latestPageUrl,
-              lastCheckpointAt: Date.now(),
-            }),
-          });
-        }
-      }
-      if (isPausedWorkflowStatus(workflowRunStatus)) {
-        await this.updatePrimaryRunTask(userScope, runId, {
-          status: "blocked",
-          latestPageUrl,
-          ...(workflowPauseReason ? { lastError: workflowPauseReason } : {}),
-        });
-        await this.store.updateRun(userScope, runId, {
-          status: "paused",
-          workflowId: workflowExecution.workflowId,
-          workflowRunId: workflowExecution.runId,
-          workflowStatus: workflowRunStatus,
-          latestSummary:
-            workflowPauseReason && workflowPauseReason.trim()
-              ? `Workflow paused inside the local Chrome runtime. ${workflowPauseReason.trim()}`
-              : "Workflow paused inside the local Chrome runtime. Resume to continue from the last checkpoint.",
-          completedAt: undefined,
-        });
-        this.logger.event("info", "service", "agent_task_paused", {
-          runId,
-          workflowId: workflowExecution.workflowId,
-          workflowRunId: workflowExecution.runId,
-        });
-        return;
-      }
-
-      if (attemptCount && attemptCount > 1) {
-        await this.updatePrimaryRunTask(userScope, runId, {
-          status: "retrying",
-          latestPageUrl,
-        });
-      } else if (workflowRunStatus === "running" || workflowRunStatus === "scheduled") {
-        await this.updatePrimaryRunTask(userScope, runId, {
-          status: "running",
-          latestPageUrl,
-        });
-      }
-
-      if (workflowStatus.completed) {
-        const outcomeValue = workflowStatus.value;
-        if (
-          !outcomeValue ||
-          typeof outcomeValue.summary !== "string" ||
-          !outcomeValue.summary.trim()
-        ) {
-          throw new Error("Managed browser workflow completed without a usable result.");
-        }
-        await this.finalizeAgentTaskOutcome(userScope, runId, params, {
-          summary: outcomeValue.summary.trim(),
-          metadata: isPlainObject(outcomeValue.metadata)
-            ? (outcomeValue.metadata as Record<string, unknown>)
-            : undefined,
-        });
-        return;
-      }
-
-      if (
-        !workflowStatus.running &&
-        workflowRunStatus &&
-        workflowRunStatus !== "paused" &&
-        workflowRunStatus !== "scheduled" &&
-        workflowRunStatus !== "running"
-      ) {
-        const currentRun = await this.store.getRun(userScope, runId);
-        if (currentRun?.status === "cancelled" && workflowRunStatus === "cancelled") {
-          this.logger.event("info", "service", "managed_workflow_cancelled", {
-            runId,
-            workflowId: workflowExecution.workflowId,
-            workflowRunId: workflowExecution.runId,
-          });
-          return;
-        }
-        throw new Error(
-          workflowStatus.error || `Managed browser workflow ended with status ${workflowRunStatus}.`
-        );
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 400));
-    }
-
-    throw new Error("Managed browser workflow timed out.");
-  }
-
-  private startManagedWorkflowTracking(
-    userScope: string,
-    runId: string,
-    params: ManagedWorkflowTrackingParams,
-    workflowExecution: {
-      workflowId: string;
-      runId?: string;
-    }
-  ): void {
-    const executionKey = `agent:${runId}`;
-    if (this.activeExecutions.has(executionKey)) {
-      return;
-    }
-
-    const execution = this.trackManagedWorkflowExecution(
-      userScope,
-      runId,
-      params,
-      workflowExecution
-    )
-      .catch(async (error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        const currentRun = await this.store.getRun(userScope, runId);
-        if (currentRun?.status === "cancelled") {
-          this.logger.event("info", "service", "managed_workflow_cancelled", {
-            runId,
-            message,
-          });
-          return;
-        }
-        this.logger.event("error", "service", "agent_task_failed", {
-          runId,
-          message,
-        });
-        await this.updatePrimaryRunTask(userScope, runId, {
-          status: "failed",
-          lastError: message,
-          latestPageUrl: params.pageUrl,
-        });
-        const failedRun = await this.store.getRun(userScope, runId);
-        const progressSummary = summarizeRunProgress(failedRun?.progress);
-        await this.store.updateRun(userScope, runId, {
-          status: "failed",
-          latestSummary: progressSummary ? `${message} · ${progressSummary}` : message,
-          lastError: message,
-          completedAt: Date.now(),
-        });
-      })
-      .finally(() => {
-        this.activeExecutions.delete(executionKey);
-      });
-
-    this.activeExecutions.set(executionKey, execution);
-  }
-
-  private async executeAgentTaskViaManagedWorkflow(
-    userScope: string,
-    runId: string,
-    params: LocalCompanionStartRunParams,
-    resumeContext?: string,
-    siteExperienceContext?: string
-  ): Promise<void> {
-    let runtimeArgs = this.buildAgentTaskRuntimeArgs(
-      params,
-      resumeContext,
-      siteExperienceContext
-    );
-    let useQueueWorkflow = false;
-    try {
-      const discoveredWorkItems = await this.maybeDeriveManagedQueueWorkItems(
-        params,
-        resumeContext,
-        siteExperienceContext
-      );
-      if (discoveredWorkItems && discoveredWorkItems.length > 1) {
-        runtimeArgs = {
-          ...runtimeArgs,
-          workItems: discoveredWorkItems,
-        };
-        useQueueWorkflow = true;
-        const queuedTasks = createRunTasksFromWorkItems(discoveredWorkItems, {
-          firstTaskRunning: true,
-        });
-        await this.store.updateRun(userScope, runId, {
-          workItems: discoveredWorkItems,
-          tasks: queuedTasks,
-          progress: buildRunProgressPatch(queuedTasks, {
-            latestPageUrl:
-              discoveredWorkItems[0]?.pageUrl ?? params.pageUrl,
-            resumeCursor: queuedTasks[0]?._id,
-          }),
-          latestSummary:
-            "Started a durable queue workflow from repeated browser work items.",
-        });
-      }
-    } catch (error) {
-      this.logger.event("warn", "service", "derive_work_items_failed", {
-        runId,
-        goal: params.goal,
-        message: error instanceof Error ? error.message : String(error),
-      });
-      const fallbackWorkItems = deriveGenericBrowserWorkItems(params);
-      if (fallbackWorkItems.length > 1) {
-        runtimeArgs = {
-          ...runtimeArgs,
-          workItems: fallbackWorkItems,
-        };
-        useQueueWorkflow = true;
-        const queuedTasks = createRunTasksFromWorkItems(fallbackWorkItems, {
-          firstTaskRunning: true,
-        });
-        await this.store.updateRun(userScope, runId, {
-          workItems: fallbackWorkItems,
-          tasks: queuedTasks,
-          progress: buildRunProgressPatch(queuedTasks, {
-            latestPageUrl: fallbackWorkItems[0]?.pageUrl ?? params.pageUrl,
-            resumeCursor: queuedTasks[0]?._id,
-          }),
-          latestSummary:
-            "Started a durable queue workflow using fallback browser work items after agent discovery failed.",
-        });
-      }
-    }
-
-    const workflowExecution = useQueueWorkflow
-      ? await this.runtime.startGenericBrowserQueueWorkflow({
-          ...runtimeArgs,
-          workItems: runtimeArgs.workItems ?? deriveGenericBrowserWorkItems(params),
-        })
-      : await this.runtime.startAgentTaskWorkflow(runtimeArgs);
-    await this.store.updateRun(userScope, runId, {
-      workflowId: workflowExecution.workflowId,
-      workflowRunId: workflowExecution.runId,
-      workflowStatus: "scheduled",
-      latestSummary: useQueueWorkflow
-        ? "Generic browser queue workflow started in the local Chrome runtime."
-        : "Generic browser task workflow started in the local Chrome runtime.",
-    });
-    await this.trackManagedWorkflowExecution(
-      userScope,
-      runId,
-      this.buildManagedWorkflowTrackingParamsFromStartParams(params),
-      workflowExecution
-    );
-  }
 
   private async executeAgentTask(
     userScope: string,
     runId: string,
     params: LocalCompanionStartRunParams,
     resumeContext?: string,
-    siteExperienceContext?: string
+    siteExperienceContext?: string,
+    signal?: AbortSignal
   ): Promise<void> {
     if (!params.providerConfig?.apiKey) {
       throw new Error(
@@ -2512,16 +1847,9 @@ export class LocalAgentCompanionService {
       pageUrl: params.pageUrl,
     });
 
-    if (shouldUseManagedAgentWorkflow(params, this.runtime)) {
-      await this.executeAgentTaskViaManagedWorkflow(
-        userScope,
-        runId,
-        params,
-        resumeContext,
-        siteExperienceContext
-      );
-      return;
-    }
+    await this.runtime.registerProgressHandler(runId, (event) => {
+      void this.handleProgressEvent(event, userScope, runId);
+    });
 
     let outcome:
       | {
@@ -2530,15 +1858,9 @@ export class LocalAgentCompanionService {
         }
       | undefined;
     let lastErrorMessage = "";
-    const maxRetries =
-      typeof (this.runtime as { supportsManagedTaskRetries?: () => boolean })
-        .supportsManagedTaskRetries === "function" &&
-      (this.runtime as { supportsManagedTaskRetries: () => boolean })
-        .supportsManagedTaskRetries() &&
-      !isLinkedInProfileConnectGoal(params)
-        ? 0
-        : MAX_AGENT_TASK_RETRIES;
+    const maxRetries = MAX_AGENT_TASK_RETRIES;
 
+    try {
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       await this.updatePrimaryRunTask(userScope, runId, {
         status: attempt === 0 ? "running" : "retrying",
@@ -2559,8 +1881,10 @@ export class LocalAgentCompanionService {
           this.buildAgentTaskRuntimeArgs(
             params,
             resumeContext,
-            siteExperienceContext
-          )
+            siteExperienceContext,
+            runId
+          ),
+          signal
         );
         break;
       } catch (error) {
@@ -2597,6 +1921,120 @@ export class LocalAgentCompanionService {
       throw new Error(lastErrorMessage || "The browser agent did not return an outcome.");
     }
     await this.finalizeAgentTaskOutcome(userScope, runId, params, outcome);
+    } finally {
+      this.runtime.unregisterProgressHandler(runId);
+    }
+  }
+
+  private async handleProgressEvent(
+    event: Record<string, unknown>,
+    userScope: string,
+    runId: string
+  ): Promise<void> {
+    const eventType = typeof event.event === "string" ? event.event : null;
+    if (!eventType) return;
+
+    switch (eventType) {
+      case "planning":
+        await this.store.updateRun(userScope, runId, {
+          status: "planning",
+          latestSummary: "Generating a step-by-step plan…",
+        });
+        break;
+
+      case "plan_ready": {
+        const rawSteps = Array.isArray(event.steps) ? event.steps : [];
+        const now = Date.now();
+        const tasks: LocalCompanionRunTask[] = rawSteps.map((step, i) => ({
+          _id: `task_${i}`,
+          title:
+            typeof (step as Record<string, unknown>).title === "string"
+              ? String((step as Record<string, unknown>).title)
+              : `Step ${i + 1}`,
+          status: "pending" as const,
+          retryCount: 0,
+          createdAt: now,
+          updatedAt: now,
+        }));
+        await this.store.updateRun(userScope, runId, {
+          status: "executing",
+          tasks,
+          progress: {
+            totalTasks: tasks.length,
+            completedTasks: 0,
+            skippedTasks: 0,
+            blockedTasks: 0,
+            retryingTasks: 0,
+            currentTaskIndex: 0,
+          },
+          latestSummary: `Plan ready: ${tasks.length} step${tasks.length !== 1 ? "s" : ""}.`,
+        });
+        break;
+      }
+
+      case "step_started": {
+        const idx = typeof event.index === "number" ? event.index : 0;
+        const stepTitle = typeof event.title === "string" && event.title.trim()
+          ? event.title.trim() : null;
+        await this.store.updateRunTask(userScope, runId, idx, {
+          status: "running",
+          startedAt: Date.now(),
+        });
+        await this.store.updateRunProgress(userScope, runId, { currentTaskIndex: idx });
+        if (stepTitle) {
+          await this.store.updateRun(userScope, runId, {
+            latestSummary: `Step ${idx + 1}: ${stepTitle}`,
+          });
+        }
+        break;
+      }
+
+      case "step_retrying": {
+        const idx = typeof event.index === "number" ? event.index : 0;
+        const attempt = typeof event.attempt === "number" ? event.attempt : 1;
+        const err = typeof event.error === "string" ? event.error : undefined;
+        await this.store.updateRunTask(userScope, runId, idx, {
+          status: "retrying",
+          retryCount: attempt,
+          ...(err ? { lastError: err } : {}),
+        });
+        break;
+      }
+
+      case "step_completed": {
+        const idx = typeof event.index === "number" ? event.index : 0;
+        const summary = typeof event.summary === "string" && event.summary.trim()
+          ? event.summary.trim() : undefined;
+        const verified = typeof event.verified === "boolean" ? event.verified : undefined;
+        const observations = typeof event.observations === "string" && event.observations.trim()
+          ? event.observations.trim()
+          : undefined;
+        await this.store.updateRunTask(userScope, runId, idx, {
+          status: "completed",
+          completedAt: Date.now(),
+          lastError: undefined,
+          ...(summary ? { resultSummary: summary } : {}),
+          ...(verified !== undefined ? { verified } : {}),
+          ...(observations ? { observations } : {}),
+        });
+        await this.store.incrementCompletedTasks(userScope, runId);
+        if (summary) {
+          await this.store.updateRun(userScope, runId, { latestSummary: summary });
+        }
+        break;
+      }
+
+      case "step_failed": {
+        const idx = typeof event.index === "number" ? event.index : 0;
+        const err = typeof event.error === "string" ? event.error : "Step failed";
+        const skipped = event.skipped === true;
+        await this.store.updateRunTask(userScope, runId, idx, {
+          status: skipped ? "skipped" : "failed",
+          lastError: err,
+        });
+        break;
+      }
+    }
   }
 
   private async findResumeSourceRun(
