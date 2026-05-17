@@ -123,20 +123,17 @@ function _replaceContentEditable(el: HTMLElement, text: string): void {
   let inserted = false;
   let usedPaste = false;
 
-  // ── Primary path for Quill editors (LinkedIn, Slack, etc.) ────────────────
+  // ── Primary path for Quill editors (LinkedIn overlay, Slack, etc.) ─────────
   // A synthetic ClipboardEvent("paste") goes through Quill's full clipboard
   // pipeline: Quill reads the text, converts it to a delta, calls
-  // updateContents(), and fires its internal `text-change` event — which is
-  // exactly what LinkedIn's React component listens to in order to enable the
-  // Send button. execCommand and innerHTML do NOT reliably trigger text-change,
-  // which is why the Send button stays grayed out after injection.
+  // updateContents(), and fires its internal `text-change` event — exactly what
+  // Quill-based UIs need. execCommand and innerHTML bypass this pipeline.
   if (qlEditor) {
     try {
       const dt = new DataTransfer();
       dt.setData("text/plain", text);
-      // Quill's paste handler calls preventDefault() to suppress the browser
-      // default. dispatchEvent returns false when preventDefault was called,
-      // meaning Quill accepted and handled the paste.
+      // Quill calls preventDefault() on the paste event when it accepts it.
+      // dispatchEvent returns false when preventDefault was called.
       const quillAccepted = !target.dispatchEvent(
         new ClipboardEvent("paste", {
           bubbles: true,
@@ -153,29 +150,36 @@ function _replaceContentEditable(el: HTMLElement, text: string): void {
     }
   }
 
-  // ── Fallback 1: execCommand ───────────────────────────────────────────────
+  // ── execCommand("insertText") ─────────────────────────────────────────────
+  // Use insertText for ALL editors (Quill fallback + non-Quill).
+  // insertText goes through the browser's full editing pipeline:
+  //   beforeinput → DOM update → native input event → keyup
+  // React/Vue/Angular pick up the NATIVE input event, so the Send button and
+  // similar state updates happen automatically — no synthetic events needed.
+  // For multi-line text, Chrome creates <div> paragraph blocks per \n in a
+  // contenteditable, matching LinkedIn's own <div>-per-paragraph structure.
   if (!inserted) {
-    if (!text.includes("\n") || qlEditor) {
-      inserted =
-        typeof targetDoc.execCommand === "function" &&
-        targetDoc.execCommand("insertText", false, text);
-    } else {
-      // Multi-line in non-Quill editors (Outlook, Gmail, etc.)
-      const html = text
-        .split("\n\n")
-        .map((para) => {
-          if (!para.trim()) return "<div><br></div>";
-          const inner = para.split("\n").map(escapeLine).join("<br>");
-          return `<div>${inner}</div>`;
-        })
-        .join("<div><br></div>");
-      inserted =
-        typeof targetDoc.execCommand === "function" &&
-        targetDoc.execCommand("insertHTML", false, html);
-    }
+    inserted =
+      typeof targetDoc.execCommand === "function" &&
+      targetDoc.execCommand("insertText", false, text);
   }
 
-  // ── Fallback 2: direct DOM (last resort) ──────────────────────────────────
+  // ── execCommand("insertHTML") — fallback for non-Quill multi-line ─────────
+  if (!inserted && !qlEditor && text.includes("\n")) {
+    const html = text
+      .split("\n\n")
+      .map((para) => {
+        if (!para.trim()) return "<div><br></div>";
+        const inner = para.split("\n").map(escapeLine).join("<br>");
+        return `<div>${inner}</div>`;
+      })
+      .join("<div><br></div>");
+    inserted =
+      typeof targetDoc.execCommand === "function" &&
+      targetDoc.execCommand("insertHTML", false, html);
+  }
+
+  // ── Direct DOM (last resort) ──────────────────────────────────────────────
   let usedFallback = false;
   if (!inserted) {
     usedFallback = true;
@@ -199,45 +203,46 @@ function _replaceContentEditable(el: HTMLElement, text: string): void {
   sel?.addRange(endRange);
 
   // ── Post-insertion events ─────────────────────────────────────────────────
-  // For the paste path: Quill already fired text-change internally but did NOT
-  // fire a DOM `input` event. LinkedIn's React `onInput` handler needs a DOM
-  // input event to update the Send button, so we fire one explicitly.
   //
-  // For execCommand / innerHTML paths: fire the full sequence so that any
-  // framework (React/Vue) that missed the execCommand side-effects catches up.
+  // execCommand / paste paths: the browser already fired native beforeinput +
+  // input events through the editing pipeline. React/Vue/Angular picked those
+  // up. We must NOT fire `blur` here — on LinkedIn's messaging page a synthetic
+  // blur triggers an onBlur React handler that can reset the Send button state.
+  // A small async nudge (focus + form-level input) is enough to handle any edge
+  // cases where the framework missed the native events.
   //
-  // MutationObserver note: when innerHTML was used, MO callbacks are microtasks
-  // and fire after the current call stack. setTimeout(0) lets MO run first so
-  // Quill's model is populated before we fire blur/input.
-  const fireEvents = (fullSequence: boolean) => {
-    if (fullSequence) {
+  // innerHTML fallback: browser never fires native input for direct DOM writes,
+  // so we fire the full sequence. MutationObserver callbacks (Quill/ProseMirror)
+  // are microtasks — setTimeout(0) lets them run before we fire input/blur.
+  if (usedFallback) {
+    setTimeout(() => {
       target.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
       target.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
       target.dispatchEvent(new Event("change", { bubbles: true }));
       target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Unidentified" }));
       target.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Unidentified" }));
-    }
-    target.dispatchEvent(new Event("blur", { bubbles: true }));
-
+      target.dispatchEvent(new Event("blur", { bubbles: true }));
+      setTimeout(() => {
+        try {
+          target.focus();
+          target.dispatchEvent(new Event("focus", { bubbles: true }));
+          const form = target.closest("form, .msg-form");
+          if (form) form.dispatchEvent(new Event("input", { bubbles: true }));
+        } catch { /* ok */ }
+      }, 50);
+    }, 0);
+  } else {
+    // execCommand or paste succeeded — browser already fired native events.
+    // Just ensure focus is on the field so the cursor is visible and fire a
+    // form-level input nudge for any framework that defers state reads.
     setTimeout(() => {
       try {
         target.focus();
         target.dispatchEvent(new Event("focus", { bubbles: true }));
-        // LinkedIn's React onInput handler — fires on the editor and its ancestors
         target.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
         const form = target.closest("form, .msg-form");
         if (form) form.dispatchEvent(new Event("input", { bubbles: true }));
       } catch { /* ok */ }
     }, 50);
-  };
-
-  if (usedFallback) {
-    setTimeout(() => fireEvents(true), 0);
-  } else if (usedPaste) {
-    // Paste path: Quill handled text-change; just nudge the DOM input event
-    fireEvents(false);
-  } else {
-    // execCommand path: fire full sequence for frameworks that missed side-effects
-    fireEvents(true);
   }
 }

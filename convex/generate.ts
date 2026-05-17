@@ -607,7 +607,7 @@ async function executeTextAction(
     apiKey,
     system,
     user,
-    maxOutputTokens: 2048,
+    maxOutputTokens: 8192,
     temperature: 0.7,
   });
   const latencyMs = Date.now() - t0;

@@ -36,7 +36,7 @@ export async function callProvider(opts: {
     apiKey,
     system,
     user,
-    maxOutputTokens = 1024,
+    maxOutputTokens = 4096,
     temperature = 0.7,
   } = opts;
 
@@ -65,18 +65,26 @@ export async function callProvider(opts: {
   }
 
   if (provider === "gemini") {
+    // Gemini 3.x thinking models (e.g. gemini-3.1-pro-preview) allocate thinking
+    // tokens from the same maxOutputTokens budget. Use low thinking level so the
+    // budget is spent on visible output, not internal reasoning.
+    const isThinkingModel = /3\.[1-9]|thinking/i.test(model);
+    const body: Record<string, unknown> = {
+      contents: [{ parts: [{ text: `${system}\n\n${user}` }] }],
+      generationConfig: {
+        maxOutputTokens,
+        temperature,
+      },
+    };
+    if (isThinkingModel) {
+      body.thinkingConfig = { thinkingLevel: "low" };
+    }
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `${system}\n\n${user}` }] }],
-          generationConfig: {
-            maxOutputTokens,
-            temperature,
-          },
-        }),
+        body: JSON.stringify(body),
       }
     );
     const data = (await res.json()) as any;
@@ -97,7 +105,12 @@ export async function callProvider(opts: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({ model, instructions: system, input: user }),
+    body: JSON.stringify({
+      model,
+      instructions: system,
+      input: user,
+      max_output_tokens: maxOutputTokens,
+    }),
   });
   const data = (await res.json()) as any;
   if (!res.ok) {
