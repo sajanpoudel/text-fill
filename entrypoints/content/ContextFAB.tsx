@@ -82,7 +82,7 @@ interface PanelProps {
   onToggle: (id: string) => void;
   onDelete: (id: string) => void;
   onDeleteAll: () => void;
-  fabRef: RefObject<HTMLButtonElement | null>;
+  fabRef: RefObject<HTMLDivElement | null>;
 }
 
 function ContextPanel({ contexts, dark, onClose, onAdd, onToggle, onDelete, onDeleteAll, fabRef }: PanelProps) {
@@ -295,7 +295,7 @@ export function ContextFAB({ visible, contexts, onContextsChange, showToast }: F
   const [panelOpen, setPanelOpen] = useState(false);
   const [adding, setAdding] = useState(false);
   const [logoBroken, setLogoBroken] = useState(false);
-  const fabRef = useRef<HTMLButtonElement>(null);
+  const fabRef = useRef<HTMLDivElement>(null);
   const logoUrl = (() => { try { return chrome.runtime.getURL("logo.png"); } catch { return ""; } })();
   const dark = isPageDark();
 
@@ -353,14 +353,15 @@ export function ContextFAB({ visible, contexts, onContextsChange, showToast }: F
 
   return (
     <>
-      <button
+      <div
         ref={fabRef}
-        type="button"
+        role="button"
+        tabIndex={0}
         title="Context library — save pages to use as AI context"
-        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setPanelOpen((v) => !v); }}
+        onClick={(e) => { if (adding) return; e.preventDefault(); e.stopPropagation(); setPanelOpen((v) => !v); }}
+        onKeyDown={(e) => { if (adding) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPanelOpen((v) => !v); } }}
         onPointerDown={swallowPointer}
         onMouseDown={swallowPointer}
-        disabled={adding}
         style={{
           position: "fixed",
           bottom: 20,
@@ -430,7 +431,7 @@ export function ContextFAB({ visible, contexts, onContextsChange, showToast }: F
             {contexts.length}
           </span>
         )}
-      </button>
+      </div>
 
       {panelOpen && (
         <ContextPanel
