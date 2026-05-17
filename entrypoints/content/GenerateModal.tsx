@@ -238,54 +238,65 @@ export function GenerateModal({ field, platform, anchorRect, activeContextCount,
     }
     if (isListening) { stopListening(); return; }
 
-    const rec = createRecognition();
-    if (!rec) return;
-    recognitionRef.current = rec;
-
-    // Accumulate the committed (non-interim) transcript across chunks
+    // Accumulate committed text across multiple recognition sessions (browser
+    // auto-stops after one utterance or ~10s of silence with continuous=false).
     let committed = instruction;
 
-    rec.onresult = (e: SpeechRecognitionEvent) => {
-      let interim = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const chunk = e.results[i][0].transcript;
-        if (e.results[i].isFinal) {
-          committed += (committed ? " " : "") + chunk;
+    function startSession(): void {
+      const rec = createRecognition();
+      if (!rec) return;
+      recognitionRef.current = rec;
+
+      rec.onresult = (e: SpeechRecognitionEvent) => {
+        let interim = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const chunk = e.results[i][0].transcript;
+          if (e.results[i].isFinal) {
+            committed += (committed ? " " : "") + chunk;
+          } else {
+            interim = chunk;
+          }
+        }
+        onInstructionChange(committed + (interim ? " " + interim : ""));
+      };
+
+      rec.onend = () => {
+        // Sync interim text → committed on every end event
+        onInstructionChange(committed.trim());
+        if (recognitionRef.current === rec) {
+          // stopListening() was NOT called — browser timed out on silence.
+          // Auto-restart to keep the mic active until the user clicks stop.
+          startSession();
         } else {
-          interim = chunk;
+          // User manually stopped (stopListening cleared recognitionRef first).
+          setIsListening(false);
+          recognitionRef.current = null;
+          setTimeout(() => inputRef.current?.focus(), 50);
+        }
+      };
+
+      rec.onerror = (e: SpeechRecognitionErrorEvent) => {
+        if (e.error === "not-allowed") {
+          stopListening();
+          showToast("Microphone access denied", "error");
+          return;
+        }
+        // no-speech / audio-capture / network: non-fatal — onend will auto-restart
+      };
+
+      try {
+        rec.start();
+      } catch {
+        if (recognitionRef.current === rec) {
+          recognitionRef.current = null;
+          setIsListening(false);
+          setTimeout(() => inputRef.current?.focus(), 50);
         }
       }
-      onInstructionChange(committed + (interim ? " " + interim : ""));
-    };
-
-    rec.onend = () => {
-      // Finalise: strip any trailing interim text, keep only committed
-      onInstructionChange(committed.trim());
-      setIsListening(false);
-      recognitionRef.current = null;
-      // Restore focus to instruction field so user can edit/submit
-      setTimeout(() => inputRef.current?.focus(), 50);
-    };
-
-    rec.onerror = (e: SpeechRecognitionErrorEvent) => {
-      stopListening();
-      if (e.error !== "no-speech") {
-        showToast(
-          e.error === "not-allowed"
-            ? "Microphone access denied"
-            : `Voice error: ${e.error}`,
-          "error"
-        );
-      }
-    };
-
-    try {
-      rec.start();
-      setIsListening(true);
-    } catch {
-      showToast("Could not start microphone", "error");
-      recognitionRef.current = null;
     }
+
+    startSession();
+    setIsListening(true);
   }, [instruction, isListening, onInstructionChange, showToast, stopListening]);
 
   // Auto-start when voiceMode prop is true on mount

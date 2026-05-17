@@ -209,9 +209,23 @@ async function loadToken() {
   // alarm always catches the token while it still has time left — avoiding the window
   // where the background tries to refresh an already-expired token.
   const expiry = parseJwtExpiry(convexToken);
-  if (expiry !== null && Date.now() >= expiry - 40 * 60 * 1000) {
+  const tokenExpired = expiry !== null && Date.now() >= expiry;
+  const tokenExpiringSoon = expiry !== null && Date.now() >= expiry - 40 * 60 * 1000;
+
+  if (tokenExpiringSoon) {
     const refreshed = await refreshConvexToken();
     if (refreshed) return; // setAuth already called inside refreshConvexToken
+
+    // Background refresh failed. If the token is already expired, open the popup
+    // so ConvexAuthProvider can do a proper refresh — this covers every message
+    // type (generate, task queue, agent runs, etc.), not just GENERATE.
+    if (tokenExpired) {
+      const recovered = await recoverViaPopup();
+      // recoverViaPopup calls convex.setAuth internally on success.
+      // On failure, fall through and set the expired token — the individual
+      // handlers (handleGenerate etc.) have their own per-call retry logic.
+      if (recovered) return;
+    }
   }
 
   convex.setAuth(convexToken);
@@ -772,6 +786,58 @@ async function recordPlatformDomObservation(params: {
   }
 }
 
+/**
+ * Opens the extension popup so ConvexAuthProvider can silently refresh the
+ * token. Waits up to 8 s for a fresh JWT to land in chrome.storage.local,
+ * then applies it to the HTTP client. Returns true if recovery succeeded.
+ *
+ * chrome.action.openPopup() is available without a user gesture from Chrome 127.
+ * On older Chrome it throws — in that case we give up immediately.
+ */
+async function recoverViaPopup(): Promise<boolean> {
+  try {
+    await chrome.action.openPopup();
+  } catch {
+    // Chrome < 127, or the popup is already open and the call fails — can't recover.
+    return false;
+  }
+
+  return new Promise<boolean>((resolve) => {
+    const TIMEOUT_MS = 8_000;
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      chrome.storage.onChanged.removeListener(onStorageChange);
+      resolve(false);
+    }, TIMEOUT_MS);
+
+    function onStorageChange(
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName: string
+    ) {
+      if (areaName !== "local") return;
+      const newToken =
+        typeof changes[CONVEX_AUTH_JWT_STORAGE_KEY]?.newValue === "string"
+          ? changes[CONVEX_AUTH_JWT_STORAGE_KEY].newValue
+          : typeof changes[CONVEX_TOKEN_STORAGE_KEY]?.newValue === "string"
+            ? changes[CONVEX_TOKEN_STORAGE_KEY].newValue
+            : null;
+      if (!newToken || settled) return;
+
+      settled = true;
+      clearTimeout(timer);
+      chrome.storage.onChanged.removeListener(onStorageChange);
+      convex.setAuth(newToken);
+      void syncTaskQueueScope(newToken);
+      resolve(true);
+    }
+
+    chrome.storage.onChanged.addListener(onStorageChange);
+  });
+}
+
 async function handleGenerate(
   action: string,
   payload: Record<string, unknown>,
@@ -824,7 +890,14 @@ async function handleGenerate(
       if (refreshed) {
         response = await callConvex(); // retry once with fresh token
       } else {
-        throw new Error("Session expired. Please open the extension popup to sign in again.");
+        // Background refresh failed. Open the popup — ConvexAuthProvider will do a
+        // proper refresh and write a fresh token to chrome.storage.local.
+        const recovered = await recoverViaPopup();
+        if (recovered) {
+          response = await callConvex();
+        } else {
+          throw new Error("Session expired. Please open the extension popup to sign in again.");
+        }
       }
     } else {
       throw err;
