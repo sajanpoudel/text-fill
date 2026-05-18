@@ -133,7 +133,7 @@ function resolveGenerationProvider(profile: {
     (provider === "anthropic"
       ? "claude-haiku-3-5"
       : provider === "gemini"
-        ? "gemini-2.5-flash-lite"
+        ? "gemini-3.1-flash-lite"
         : "gpt-5-nano");
   return { provider, apiKey, model };
 }

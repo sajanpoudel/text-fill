@@ -75,7 +75,7 @@ export const parseIntent = action({
       (provider === "anthropic"
         ? "claude-haiku-4-5-20251001"
         : provider === "gemini"
-          ? "gemini-2.0-flash"
+          ? "gemini-3.1-flash-lite"
           : "gpt-4o-mini");
 
     try {

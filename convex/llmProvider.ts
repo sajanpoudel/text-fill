@@ -1,3 +1,16 @@
+// Maps deprecated/old model IDs to their current replacements.
+// Applied at call time so saved profiles with old names are silently upgraded.
+const MODEL_MIGRATIONS: Record<string, string> = {
+  "gemini-2.5-flash-lite":        "gemini-3.1-flash-lite",
+  "gemini-2.5-flash":             "gemini-3.1-flash-lite",
+  "gemini-2.0-flash":             "gemini-3.1-flash-lite",
+  "gemini-2.0-flash-lite":        "gemini-3.1-flash-lite",
+};
+
+export function migrateModelId(model: string): string {
+  return MODEL_MIGRATIONS[model] ?? model;
+}
+
 export type ProviderProfile = {
   provider?: string;
   openaiKey?: string;
@@ -32,13 +45,15 @@ export async function callProvider(opts: {
 }): Promise<string> {
   const {
     provider,
-    model,
+    model: rawModel,
     apiKey,
     system,
     user,
     maxOutputTokens = 4096,
     temperature = 0.7,
   } = opts;
+
+  const model = migrateModelId(rawModel);
 
   if (provider === "anthropic") {
     const res = await fetch("https://api.anthropic.com/v1/messages", {

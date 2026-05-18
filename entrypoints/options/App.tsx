@@ -14,8 +14,8 @@ const OPENAI_MEMORY_MODELS = ["gpt-5-nano"];
 const OPENAI_EMBED_MODELS = ["text-embedding-3-small", "text-embedding-3-large"];
 const ANTHROPIC_MODELS = ["claude-sonnet-4-5", "claude-haiku-3-5"];
 const ANTHROPIC_MEMORY_MODELS = ["claude-haiku-3-5"];
-const GEMINI_MODELS = ["gemini-3-pro-preview", "gemini-3-flash-preview"];
-const GEMINI_MEMORY_MODELS = ["gemini-2.5-flash-lite", "gemini-3-flash-preview"];
+const GEMINI_MODELS = ["gemini-3.1-flash-lite", "gemini-3-pro-preview", "gemini-3-flash-preview"];
+const GEMINI_MEMORY_MODELS = ["gemini-3.1-flash-lite", "gemini-3-flash-preview"];
 const GEMINI_EMBED_MODELS = ["gemini-embedding-001"];
 
 // ── Accordion helper ──────────────────────────────────────────────────────
